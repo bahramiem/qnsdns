@@ -160,8 +160,12 @@ static void render_resolvers(tui_ctx_t *t) {
     }
 
     hr(72, ANSI_CYAN);
-    printf(ANSI_BOLD " [1] Stats   [2] Resolvers   [3] Config   [q] Quit\n" ANSI_RESET);
+    printf(ANSI_BOLD " [1] Stats   [2] Resolvers   [3] Config   "
+           ANSI_CYAN "[r]" ANSI_RESET ANSI_BOLD " Add Resolver   [q] Quit\n" ANSI_RESET);
+    if (t->input_mode)
+        render_input_bar(t);
 }
+
 
 /* ── Panel 2: Config (live editable) ────────────────────────────────────────*/
 static void render_config(tui_ctx_t *t) {
@@ -211,6 +215,28 @@ static void on_domain_input_done(tui_ctx_t *t, const char *value) {
         config_set_key(t->cfg, "domains", "list", value);
         if (t->config_path)
             config_save_domains(t->config_path, t->cfg);
+    }
+}
+
+/* ── Resolver-add callback ──────────────────────────────────────────────────*/
+static void on_resolver_input_done(tui_ctx_t *t, const char *value) {
+    if (!value || !value[0]) return;
+    /* Trim whitespace */
+    char ip[64] = {0};
+    const char *p = value;
+    while (*p == ' ' || *p == '\t') p++;
+    strncpy(ip, p, sizeof(ip)-1);
+    char *end = ip + strlen(ip) - 1;
+    while (end > ip && (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n')) *end-- = '\0';
+    if (!ip[0]) return;
+
+    rpool_add(t->pool, ip);
+
+    /* Append to the resolver file so it persists across restarts */
+    if (t->config_path) {
+        /* Derive resolver file path: same dir as config, fixed name */
+        FILE *rf = fopen("client_resolvers.txt", "a");
+        if (rf) { fprintf(rf, "%s\n", ip); fclose(rf); }
     }
 }
 
@@ -305,6 +331,18 @@ void tui_handle_key(tui_ctx_t *t, int key) {
                 }
             }
             t->input_done_cb = on_domain_input_done;
+            break;
+
+        /* Add resolver — open input bar for a new IP */
+        case 'r':
+            t->panel = 1;   /* switch to resolver panel */
+            t->input_mode = 1;
+            t->input_len  = 0;
+            memset(t->input_buf, 0, sizeof(t->input_buf));
+            strncpy(t->input_label,
+                    "Add resolver IP (e.g. 8.8.8.8)",
+                    sizeof(t->input_label) - 1);
+            t->input_done_cb = on_resolver_input_done;
             break;
 
         default: break;

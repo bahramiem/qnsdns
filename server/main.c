@@ -719,6 +719,25 @@ int main(int argc, char *argv[]) {
             config_path);
     }
 
+    /* ── First-run: ask for tunnel domain if not configured ── */
+    if (g_cfg.domain_count == 0) {
+        printf("\n  No tunnel domain configured.\n");
+        printf("  Enter the subdomain this server will handle\n");
+        printf("  (e.g. tun.example.com, separate multiple with commas): ");
+        fflush(stdout);
+        char domain_buf[512] = {0};
+        if (fgets(domain_buf, sizeof(domain_buf), stdin)) {
+            domain_buf[strcspn(domain_buf, "\r\n")] = '\0';
+            if (domain_buf[0]) {
+                config_set_key(&g_cfg, "domains", "list", domain_buf);
+                if (config_save_domains(config_path, &g_cfg) == 0)
+                    printf("  Saved to %s\n\n", config_path);
+            }
+        }
+        if (g_cfg.domain_count == 0)
+            fprintf(stderr, "[WARN] No domain configured. Server will accept queries for any domain.\n");
+    }
+
     /* libuv thread pool */
     char threads_str[16];
     snprintf(threads_str, sizeof(threads_str), "%d", g_cfg.workers);
@@ -770,7 +789,8 @@ int main(int argc, char *argv[]) {
     uv_mutex_init(&dummy_pool.lock);
     dummy_pool.cfg = &g_cfg;
 
-    tui_init(&g_tui, &g_stats, &dummy_pool, &g_cfg, "SERVER");
+    tui_init(&g_tui, &g_stats, &dummy_pool, &g_cfg, "SERVER", config_path);
+
 
     /* Timers */
     uv_timer_init(g_loop, &g_tui_timer);

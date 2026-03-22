@@ -51,6 +51,51 @@ static uv_timer_t       g_penalty_timer;    /* release penalties */
 static session_t        g_sessions[DNSTUN_MAX_SESSIONS];
 static int              g_session_count = 0;
 
+/* Persistent resolver list file */
+#define RESOLVERS_FILE "client_resolvers.txt"
+
+/* ────────────────────────────────────────────── */
+/*  Resolver file persistence                     */
+/* ────────────────────────────────────────────── */
+static void resolvers_save(void) {
+    FILE *f = fopen(RESOLVERS_FILE, "w");
+    if (!f) return;
+    uv_mutex_lock(&g_pool.lock);
+    for (int i = 0; i < g_pool.count; i++) {
+        resolver_t *r = &g_pool.resolvers[i];
+        if (r->state != RSV_DEAD && r->ip[0])
+            fprintf(f, "%s\n", r->ip);
+    }
+    uv_mutex_unlock(&g_pool.lock);
+    fclose(f);
+}
+
+static void resolvers_load(void) {
+    FILE *f = fopen(RESOLVERS_FILE, "r");
+    if (!f) return;
+    char line[64];
+    int added = 0;
+    while (fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        /* Skip blanks and comments */
+        if (!line[0] || line[0] == '#') continue;
+        /* Don't re-add if already in pool (from seed_list) */
+        int dup = 0;
+        uv_mutex_lock(&g_pool.lock);
+        for (int i = 0; i < g_pool.count; i++) {
+            if (strcmp(g_pool.resolvers[i].ip, line) == 0) { dup = 1; break; }
+        }
+        uv_mutex_unlock(&g_pool.lock);
+        if (!dup) {
+            rpool_add(&g_pool, line);
+            added++;
+        }
+    }
+    fclose(f);
+    if (added > 0)
+        LOG_INFO("Loaded %d resolvers from %s\n", added, RESOLVERS_FILE);
+}
+
 /* ────────────────────────────────────────────── */
 /*  Utility                                       */
 /* ────────────────────────────────────────────── */
@@ -783,6 +828,13 @@ static void on_recovery_timer(uv_timer_t *t) {
     for (int i = 0; i < g_pool.count; i++)
         if (g_pool.resolvers[i].state == RSV_PENALTY)
             g_stats.penalty_resolvers++;
+
+    /* Persist active resolver list every 60 seconds */
+    static int save_tick = 0;
+    if (++save_tick >= 60) {
+        save_tick = 0;
+        resolvers_save();
+    }
 }
 
 /* ────────────────────────────────────────────── */
@@ -818,6 +870,28 @@ int main(int argc, char *argv[]) {
             config_path);
     }
 
+    /* ── First-run: ask for tunnel domain if not configured ────────────────
+       This writes the domain to the INI file so subsequent runs are silent. */
+    if (g_cfg.domain_count == 0) {
+        printf("\n  No tunnel domain configured.\n");
+        printf("  Enter the subdomain delegated to your dnstun-server\n");
+        printf("  (e.g. tun.example.com, separate multiple with commas): ");
+        fflush(stdout);
+        char domain_buf[512] = {0};
+        if (fgets(domain_buf, sizeof(domain_buf), stdin)) {
+            domain_buf[strcspn(domain_buf, "\r\n")] = '\0';
+            if (domain_buf[0]) {
+                config_set_key(&g_cfg, "domains", "list", domain_buf);
+                if (config_save_domains(config_path, &g_cfg) == 0)
+                    printf("  Saved to %s\n\n", config_path);
+            }
+        }
+        if (g_cfg.domain_count == 0) {
+            fprintf(stderr, "[ERROR] No domain configured. Cannot continue.\n");
+            return 1;
+        }
+    }
+
     /* libuv thread pool */
     char threads_str[16];
     snprintf(threads_str, sizeof(threads_str), "%d", g_cfg.workers);
@@ -829,8 +903,9 @@ int main(int argc, char *argv[]) {
 
     g_loop = uv_default_loop();
 
-    /* Init resolver pool */
+    /* Init resolver pool, then load saved resolvers from disk */
     rpool_init(&g_pool, &g_cfg);
+    resolvers_load();
 
     /* Parse SOCKS5 bind address */
     char bind_ip[64] = "127.0.0.1";
@@ -857,7 +932,7 @@ int main(int argc, char *argv[]) {
     }
 
     /* TUI */
-    tui_init(&g_tui, &g_stats, &g_pool, &g_cfg, "CLIENT");
+    tui_init(&g_tui, &g_stats, &g_pool, &g_cfg, "CLIENT", config_path);
 
     LOG_INFO("dnstun-client starting\n");
     LOG_INFO("  SOCKS5  : %s:%d\n", bind_ip, bind_port);
@@ -892,6 +967,7 @@ int main(int argc, char *argv[]) {
     uv_run(g_loop, UV_RUN_DEFAULT);
 
     tui_shutdown(&g_tui);
+    resolvers_save();   /* persist final resolver list on clean exit */
     rpool_destroy(&g_pool);
     return 0;
 }
