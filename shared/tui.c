@@ -5,6 +5,13 @@
 #include <stdint.h>
 #include <ctype.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#ifndef ENABLE_VIRTUAL_TERMINAL_PROCESSING
+#define ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004
+#endif
+#endif
+
 /* ANSI codes */
 #define ANSI_RESET     "\033[0m"
 #define ANSI_BOLD      "\033[1m"
@@ -53,6 +60,31 @@ static void render_stats(tui_ctx_t *t) {
     tui_stats_t *s = t->stats;
     printf(ANSI_BOLD ANSI_CYAN " ▌ DNSTUN %s ▌" ANSI_RESET "\n", s->mode);
     hr(72, ANSI_CYAN);
+
+    if (strcmp(s->mode, "CLIENT") == 0) {
+        uint64_t now = uv_hrtime() / 1000000ULL;
+        if (s->last_server_rx_ms > 0 && (now - s->last_server_rx_ms) < 5000) {
+            double min_rtt = 9999.0;
+            uv_mutex_lock(&t->pool->lock);
+            for (int i = 0; i < t->pool->count; i++) {
+                if (t->pool->resolvers[i].state == RSV_ACTIVE && t->pool->resolvers[i].rtt_ms > 0.1 && t->pool->resolvers[i].rtt_ms < min_rtt) {
+                    min_rtt = t->pool->resolvers[i].rtt_ms;
+                }
+            }
+            uv_mutex_unlock(&t->pool->lock);
+            
+            if (min_rtt > 9000.0) {
+                printf(ANSI_BOLD " Server:     " ANSI_GREEN "ONLINE" ANSI_RESET "\n");
+            } else {
+                printf(ANSI_BOLD " Server:     " ANSI_GREEN "ONLINE" ANSI_RESET "  (Latency: %.1f ms)\n", min_rtt);
+            }
+        } else if (s->last_server_rx_ms > 0) {
+            printf(ANSI_BOLD " Server:     " ANSI_RED "OFFLINE (No response for %llu s)" ANSI_RESET "\n", (unsigned long long)((now - s->last_server_rx_ms) / 1000ULL));
+        } else {
+            printf(ANSI_BOLD " Server:     " ANSI_YELLOW "CONNECTING..." ANSI_RESET "\n");
+        }
+        hr(72, ANSI_CYAN);
+    }
 
     printf(ANSI_BOLD " ↑ Upload:   " ANSI_RESET ANSI_GREEN "%8.1f KB/s" ANSI_RESET
            "   Total: %llu bytes\n",
@@ -296,6 +328,18 @@ void tui_init(tui_ctx_t *t, tui_stats_t *stats,
     t->panel       = 0;
     t->config_path = config_path;
     strncpy(stats->mode, mode, sizeof(stats->mode)-1);
+
+#ifdef _WIN32
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (hOut != INVALID_HANDLE_VALUE) {
+        DWORD dwMode = 0;
+        if (GetConsoleMode(hOut, &dwMode)) {
+            dwMode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+            SetConsoleMode(hOut, dwMode);
+        }
+    }
+#endif
+
     printf(ANSI_HIDE_CUR);
 }
 
@@ -334,6 +378,7 @@ void tui_handle_key(tui_ctx_t *t, int key) {
         } else if (isprint(key) && t->input_len < (int)sizeof(t->input_buf) - 1) {
             t->input_buf[t->input_len++] = (char)key;
         }
+        tui_render(t);
         return;
     }
 
@@ -344,6 +389,7 @@ void tui_handle_key(tui_ctx_t *t, int key) {
         } else {
             t->panel = 0; /* Any other key returns to stats */
         }
+        tui_render(t);
         return;
     }
 
@@ -399,6 +445,7 @@ void tui_handle_key(tui_ctx_t *t, int key) {
 
         default: break;
     }
+    tui_render(t);
 }
 
 void tui_shutdown(tui_ctx_t *t) {

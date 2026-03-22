@@ -765,7 +765,8 @@ static void on_tty_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
 }
 
 int main(int argc, char *argv[]) {
-    const char *config_path = "server.ini";
+    const char *config_path = NULL;
+    static char auto_config_path[1024] = {0};
     char domain_buf[512] = {0};
     char threads_str[16];
     char *slash;
@@ -781,9 +782,61 @@ int main(int argc, char *argv[]) {
     static resolver_pool_t dummy_pool;
 
     /* Parse arguments */
-    for (int i = 1; i < argc - 1; i++) {
-        if (strcmp(argv[i], "-c") == 0 || strcmp(argv[i], "--config") == 0)
+    for (int i = 1; i < argc; i++) {
+        if ((strcmp(argv[i], "-c") == 0 || strcmp(argv[i], "--config") == 0) && i + 1 < argc) {
             config_path = argv[i+1];
+            break;
+        }
+    }
+
+    if (!config_path) {
+        /* Auto-locate server.ini */
+        const char *candidates[] = {
+            "server.ini",
+            "../server.ini",
+            "../../server.ini",
+            "../../../server.ini",
+            "/etc/dnstun/server.ini"
+        };
+        for (int i = 0; i < 5; i++) {
+            FILE *f = fopen(candidates[i], "r");
+            if (f) {
+                fclose(f);
+                config_path = candidates[i];
+                break;
+            }
+        }
+        if (!config_path) {
+            /* Try relative to executable */
+            char exe_path[1024];
+            size_t size = sizeof(exe_path);
+            if (uv_exepath(exe_path, &size) == 0) {
+                char *eslash = strrchr(exe_path, '/');
+#ifdef _WIN32
+                char *ebslash = strrchr(exe_path, '\\');
+                if (ebslash > eslash) eslash = ebslash;
+#endif
+                if (eslash) {
+                    *eslash = '\0';
+                    const char *rel[] = {"", "/..", "/../..", "/../../.."};
+                    for (int i = 0; i < 4; i++) {
+                        snprintf(auto_config_path, sizeof(auto_config_path), "%s%s/server.ini", exe_path, rel[i]);
+                        FILE *tf = fopen(auto_config_path, "r");
+                        if (tf) {
+                            fclose(tf);
+                            config_path = auto_config_path;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if (!config_path) config_path = "server.ini";
+    }
+    
+    if (config_path && config_path != auto_config_path) {
+        strncpy(auto_config_path, config_path, sizeof(auto_config_path)-1);
+        config_path = auto_config_path;
     }
 
     /* Load config */

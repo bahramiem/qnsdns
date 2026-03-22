@@ -68,15 +68,15 @@ You can define a `user_id = your_name` variable in the `[core]` section of both 
 ## 📖 Usage Guide
 
 ### 1. Start the Server
-Run the server on a machine with a public IP (port 53 UDP must be open):
+Run the server on a machine with a public IP (port 53 UDP must be open). The `server.ini` file will be automatically loaded from your current directory, parent directories, or `/etc/dnstun/`:
 ```bash
-sudo ./build/server/dnstun-server -c server.ini
+sudo ./build/server/dnstun-server
 ```
 
 ### 2. Start the Client
-Run the client on your local machine:
+Run the client on your local machine. The `client.ini` config file is also auto-located:
 ```bash
-./build/client/dnstun-client -c client.ini
+./build/client/dnstun-client
 ```
 
 ### 3. Connect via SOCKS5
@@ -90,7 +90,7 @@ curl -x socks5h://127.0.0.1:1080 http://example.com
 
 ## 📊 Dashboard (TUI)
 
-Both the client and server feature a powerful 3-panel ANSI dashboard (use `Number Keys` to switch):
+Both the client and server feature a powerful 3-panel ANSI dashboard (use `Number Keys` to switch). The interface features zero-latency input rendering and includes full native Windows Console ANSI support:
 
 1.  **Stats Panel (`1`)**: Monitor live throughput (KB/s), active SOCKS5 sessions, global query health, and swarm limits.
 2.  **Resolver Table (`2` - Client)**: See the health of every resolver IP loaded via your config, their current AIMD transport window (`cwnd`), measured round-trip time (`RTT`), and MTU. 

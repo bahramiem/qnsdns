@@ -596,6 +596,7 @@ static void on_dns_recv(uv_udp_t *h,
                         }
                     }
                     g_stats.queries_recv++;
+                    g_stats.last_server_rx_ms = uv_hrtime() / 1000000ULL;
                 }
             }
         } else {
@@ -885,7 +886,8 @@ static void on_tty_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
 /*  Entry point                                   */
 /* ────────────────────────────────────────────── */
 int main(int argc, char *argv[]) {
-    const char *config_path = "client.ini";
+    const char *config_path = NULL;
+    static char auto_config_path[1024] = {0};
     char *slash;
 #ifdef _WIN32
     char *bslash;
@@ -902,9 +904,61 @@ int main(int argc, char *argv[]) {
     srand((unsigned)time(NULL));
 
     /* Parse arguments */
-    for (int i = 1; i < argc - 1; i++) {
-        if (strcmp(argv[i], "-c") == 0 || strcmp(argv[i], "--config") == 0)
+    for (int i = 1; i < argc; i++) {
+        if ((strcmp(argv[i], "-c") == 0 || strcmp(argv[i], "--config") == 0) && i + 1 < argc) {
             config_path = argv[i+1];
+            break;
+        }
+    }
+
+    if (!config_path) {
+        /* Auto-locate client.ini */
+        const char *candidates[] = {
+            "client.ini",
+            "../client.ini",
+            "../../client.ini",
+            "../../../client.ini",
+            "/etc/dnstun/client.ini"
+        };
+        for (int i = 0; i < 5; i++) {
+            FILE *f = fopen(candidates[i], "r");
+            if (f) {
+                fclose(f);
+                config_path = candidates[i];
+                break;
+            }
+        }
+        if (!config_path) {
+            /* Try relative to executable */
+            char exe_path[1024];
+            size_t size = sizeof(exe_path);
+            if (uv_exepath(exe_path, &size) == 0) {
+                char *eslash = strrchr(exe_path, '/');
+#ifdef _WIN32
+                char *ebslash = strrchr(exe_path, '\\');
+                if (ebslash > eslash) eslash = ebslash;
+#endif
+                if (eslash) {
+                    *eslash = '\0';
+                    const char *rel[] = {"", "/..", "/../..", "/../../.."};
+                    for (int i = 0; i < 4; i++) {
+                        snprintf(auto_config_path, sizeof(auto_config_path), "%s%s/client.ini", exe_path, rel[i]);
+                        FILE *tf = fopen(auto_config_path, "r");
+                        if (tf) {
+                            fclose(tf);
+                            config_path = auto_config_path;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if (!config_path) config_path = "client.ini";
+    }
+    
+    if (config_path && config_path != auto_config_path) {
+        strncpy(auto_config_path, config_path, sizeof(auto_config_path)-1);
+        config_path = auto_config_path;
     }
 
     /* Set g_resolvers_file to be safely beside config_path */

@@ -137,12 +137,12 @@ if [ "$INSTALL_TYPE" == "server" ]; then
     echo "    Config : $(pwd)/server.ini"
     echo ""
     echo "    Run (requires root to bind UDP port 53):"
-    echo "      sudo $BINARY -c $(pwd)/server.ini"
+    echo "      sudo $BINARY"
 else
     echo "    Config : $(pwd)/client.ini"
     echo ""
     echo "    Run:"
-    echo "      $BINARY -c $(pwd)/client.ini"
+    echo "      $BINARY"
     echo ""
     echo "    Configure proxy: socks5h://127.0.0.1:1080"
 fi
