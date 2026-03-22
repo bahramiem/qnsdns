@@ -25,9 +25,23 @@ FetchContent_Declare(
 # Note: libRaptorQ can be complex to FetchContent; using a simpler RFC 6330 header-only or basic C impl if possible.
 # For now, I'll use a placeholder or FetchContent a known stable one.
 FetchContent_Declare(
+  lz4
+  URL            https://github.com/lz4/lz4/archive/refs/tags/v1.9.4.tar.gz
+  SOURCE_SUBDIR  build/cmake
+)
+FetchContent_Declare(
   raptorq
   URL            https://github.com/LucaFulchir/libRaptorQ/archive/a394b22af6e8fc742ce88eacf9af5343ecded9d7.tar.gz
 )
+
+# Ensure raptorq can find the lz4 headers/libs we just fetched.
+FetchContent_GetProperties(lz4)
+if(NOT lz4_POPULATED)
+  FetchContent_Populate(lz4)
+  add_subdirectory(${lz4_SOURCE_DIR}/build/cmake ${lz4_BINARY_DIR})
+endif()
+set(LZ4_ROOT ${lz4_SOURCE_DIR})
+
 FetchContent_MakeAvailable(libuv zstd sodium raptorq)
 
 # ── Shared SPCDNS codec sources ───────────────────────────────────────────────
