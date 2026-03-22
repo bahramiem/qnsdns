@@ -27,18 +27,27 @@ typedef struct {
 /* ──────────────────────────────────────────────
    TUI context
 ────────────────────────────────────────────── */
-typedef struct {
+typedef struct tui_ctx {
     tui_stats_t      *stats;
     resolver_pool_t  *pool;
     dnstun_config_t  *cfg;
     volatile int      running;
     int               panel;        /* 0=stats, 1=resolvers, 2=config */
+    const char       *config_path;  /* path to INI file for saving    */
+
+    /* Inline text-input mode */
+    int   input_mode;               /* 0=normal, 1=collecting input   */
+    char  input_buf[512];
+    int   input_len;
+    char  input_label[64];
+    /* Callback invoked with final string when Enter is pressed */
+    void (*input_done_cb)(struct tui_ctx *t, const char *value);
 } tui_ctx_t;
 
 /* Init and run (called once per second from a timer or a dedicated thread) */
 void tui_init(tui_ctx_t *t, tui_stats_t *stats,
               resolver_pool_t *pool, dnstun_config_t *cfg,
-              const char *mode);
+              const char *mode, const char *config_path);
 void tui_render(tui_ctx_t *t);
 void tui_handle_key(tui_ctx_t *t, int key);
 void tui_shutdown(tui_ctx_t *t);

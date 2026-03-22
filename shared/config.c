@@ -268,3 +268,174 @@ void config_dump(const dnstun_config_t *cfg) {
     printf("  chaffing          = %s\n", cfg->chaffing     ? "true" : "false");
     printf("  chrome_cover      = %s\n", cfg->chrome_cover ? "true" : "false");
 }
+
+/* ── INI file writer ────────────────────────────────────────────────────────
+   Reads the entire INI file into memory, replaces (or inserts) a single
+   key under the given section, then writes the result back to disk.
+   Strategy:
+     1. If [section] + key found      → replace that line in-place.
+     2. If [section] found, key absent → insert "key = value" after header.
+     3. Neither found                  → append "\n[section]\nkey = value\n".
+   The file is kept small enough that reading it fully into memory is fine. */
+int config_save_key(const char *path, const char *section,
+                    const char *key, const char *value)
+{
+    /* ── Read whole file ── */
+    FILE *f = fopen(path, "r");
+    char **lines   = NULL;
+    int    nlines  = 0;
+    int    cap     = 64;
+
+    lines = malloc(cap * sizeof(char*));
+    if (!lines) return -1;
+
+    if (f) {
+        char buf[1024];
+        while (fgets(buf, sizeof(buf), f)) {
+            if (nlines >= cap) {
+                cap *= 2;
+                char **tmp = realloc(lines, cap * sizeof(char*));
+                if (!tmp) { fclose(f); goto fail; }
+                lines = tmp;
+            }
+            lines[nlines++] = strdup(buf);
+        }
+        fclose(f);
+    }
+    /* If file did not exist yet, we'll create it from scratch below. */
+
+    /* ── Scan for section + key ── */
+    char sec_hdr[80];
+    snprintf(sec_hdr, sizeof(sec_hdr), "[%s]", section);
+
+    int  in_section   = 0;
+    int  key_replaced = 0;
+    int  sec_line     = -1;     /* index of the section-header line */
+
+    for (int i = 0; i < nlines; i++) {
+        char *l = lines[i];
+        /* section header? */
+        if (l[0] == '[') {
+            if (strncmp(l, sec_hdr, strlen(sec_hdr)) == 0) {
+                in_section = 1;
+                sec_line   = i;
+            } else {
+                /* If we were in our section and haven't found the key yet,
+                   insert it BEFORE this next section header. */
+                if (in_section && !key_replaced && sec_line >= 0) {
+                    char newline[1024];
+                    snprintf(newline, sizeof(newline), "%s = %s\n", key, value);
+                    /* Insert at position i */
+                    if (nlines >= cap) {
+                        cap *= 2;
+                        char **tmp = realloc(lines, cap * sizeof(char*));
+                        if (!tmp) goto fail;
+                        lines = tmp;
+                    }
+                    memmove(&lines[i+1], &lines[i], (nlines - i) * sizeof(char*));
+                    lines[i] = strdup(newline);
+                    nlines++;
+                    key_replaced = 1;
+                }
+                in_section = 0;
+            }
+            continue;
+        }
+        if (!in_section) continue;
+
+        /* key = value line? */
+        char *eq = strchr(l, '=');
+        if (!eq) continue;
+        /* extract key name */
+        char lkey[128] = {0};
+        size_t klen = (size_t)(eq - l);
+        if (klen >= sizeof(lkey)) continue;
+        strncpy(lkey, l, klen);
+        /* trim lkey */
+        char *lk = lkey;
+        while (*lk == ' ' || *lk == '\t') lk++;
+        char *lke = lk + strlen(lk) - 1;
+        while (lke > lk && (*lke == ' ' || *lke == '\t')) *lke-- = '\0';
+
+        if (strcmp(lk, key) == 0) {
+            /* Replace this line */
+            free(lines[i]);
+            char newline[1024];
+            snprintf(newline, sizeof(newline), "%s = %s\n", key, value);
+            lines[i]     = strdup(newline);
+            key_replaced = 1;
+        }
+    }
+
+    /* If we ended while still in our section and never replaced */
+    if (in_section && !key_replaced && sec_line >= 0) {
+        if (nlines >= cap) {
+            cap *= 2;
+            char **tmp = realloc(lines, cap * sizeof(char*));
+            if (!tmp) goto fail;
+            lines = tmp;
+        }
+        char newline[1024];
+        snprintf(newline, sizeof(newline), "%s = %s\n", key, value);
+        lines[nlines++] = strdup(newline);
+        key_replaced = 1;
+    }
+
+    /* Section never found: append it */
+    if (!key_replaced) {
+        /* Ensure trailing newline separation */
+        if (nlines > 0) {
+            const char *last = lines[nlines-1];
+            size_t ll = strlen(last);
+            if (ll == 0 || last[ll-1] != '\n') {
+                if (nlines + 3 >= cap) {
+                    cap += 8;
+                    char **tmp = realloc(lines, cap * sizeof(char*));
+                    if (!tmp) goto fail;
+                    lines = tmp;
+                }
+                lines[nlines++] = strdup("\n");
+            }
+        }
+        if (nlines + 3 >= cap) {
+            cap += 8;
+            char **tmp = realloc(lines, cap * sizeof(char*));
+            if (!tmp) goto fail;
+            lines = tmp;
+        }
+        char hdr[80];
+        snprintf(hdr, sizeof(hdr), "[%s]\n", section);
+        lines[nlines++] = strdup(hdr);
+        char newline[1024];
+        snprintf(newline, sizeof(newline), "%s = %s\n", key, value);
+        lines[nlines++] = strdup(newline);
+    }
+
+    /* ── Write back ── */
+    f = fopen(path, "w");
+    if (!f) goto fail;
+    for (int i = 0; i < nlines; i++)
+        if (lines[i]) fputs(lines[i], f);
+    fclose(f);
+
+    for (int i = 0; i < nlines; i++) free(lines[i]);
+    free(lines);
+    return 0;
+
+fail:
+    for (int i = 0; i < nlines; i++) free(lines[i]);
+    free(lines);
+    return -1;
+}
+
+/* ── Persist domains list ───────────────────────────────────────────────────*/
+int config_save_domains(const char *path, const dnstun_config_t *cfg)
+{
+    /* Build "domain1,domain2,..." string */
+    char value[4096] = {0};
+    for (int i = 0; i < cfg->domain_count; i++) {
+        if (i > 0) strncat(value, ",", sizeof(value) - strlen(value) - 1);
+        strncat(value, cfg->domains[i], sizeof(value) - strlen(value) - 1);
+    }
+    return config_save_key(path, "domains", "list", value);
+}

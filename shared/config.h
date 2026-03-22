@@ -82,4 +82,12 @@ void config_dump(const dnstun_config_t *cfg);
 int  config_set_key(dnstun_config_t *cfg, const char *section,
                     const char *key, const char *value);
 
+/* Write one key back into an existing INI file (creates section if absent).
+   Returns 0 on success. */
+int  config_save_key(const char *path, const char *section,
+                     const char *key, const char *value);
+
+/* Persist the current domains list back to the INI file. */
+int  config_save_domains(const char *path, const dnstun_config_t *cfg);
+
 #endif /* DNSTUN_CONFIG_H */

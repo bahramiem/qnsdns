@@ -1,7 +1,9 @@
 #include "tui.h"
+#include "config.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <ctype.h>
 
 /* ANSI codes */
 #define ANSI_RESET     "\033[0m"
@@ -14,6 +16,7 @@
 #define ANSI_BLUE      "\033[34m"
 #define ANSI_WHITE     "\033[37m"
 #define ANSI_BG_BLACK  "\033[40m"
+#define ANSI_BG_BLUE   "\033[44m"
 #define ANSI_CLEAR     "\033[2J\033[H"
 #define ANSI_HIDE_CUR  "\033[?25l"
 #define ANSI_SHOW_CUR  "\033[?25h"
@@ -33,6 +36,16 @@ static const char *state_str(resolver_state_t s) {
         case RSV_TESTING: return ANSI_CYAN   "TESTING" ANSI_RESET;
         default:          return "UNKNOWN";
     }
+}
+
+/* ── Input bar (shown at bottom when input_mode == 1) ───────────────────────*/
+static void render_input_bar(tui_ctx_t *t) {
+    hr(72, ANSI_CYAN);
+    printf(ANSI_BG_BLUE ANSI_BOLD " %s " ANSI_RESET "\n", t->input_label);
+    printf(ANSI_CYAN " > " ANSI_RESET "%.*s" ANSI_BOLD "_" ANSI_RESET "\n",
+           t->input_len, t->input_buf);
+    printf(ANSI_YELLOW " [Enter] confirm   [Esc] cancel   [Backspace] delete"
+           ANSI_RESET "\n");
 }
 
 /* ── Panel 0: Stats ─────────────────────────────────────────────────────────*/
@@ -69,6 +82,18 @@ static void render_stats(tui_ctx_t *t) {
            s->queries_sent > 0
                ? 100.0 * (double)s->queries_lost / (double)s->queries_sent
                : 0.0);
+
+    /* Show current domains */
+    if (t->cfg->domain_count > 0) {
+        printf(" Domains:   " ANSI_CYAN);
+        for (int i = 0; i < t->cfg->domain_count; i++) {
+            if (i > 0) printf(", ");
+            printf("%s", t->cfg->domains[i]);
+        }
+        printf(ANSI_RESET "\n");
+    } else {
+        printf(" Domains:   " ANSI_RED "(none configured)" ANSI_RESET "\n");
+    }
 
     hr(72, ANSI_CYAN);
     printf(ANSI_BOLD " [1] Stats   [2] Resolvers   [3] Config   [q] Quit\n" ANSI_RESET);
@@ -140,10 +165,10 @@ static void render_resolvers(tui_ctx_t *t) {
 
 /* ── Panel 2: Config (live editable) ────────────────────────────────────────*/
 static void render_config(tui_ctx_t *t) {
-    printf(ANSI_BOLD ANSI_CYAN " ▌ LIVE CONFIG (press key number to toggle/edit) ▌\n" ANSI_RESET);
+    printf(ANSI_BOLD ANSI_CYAN " ▌ LIVE CONFIG (press key to toggle/edit) ▌\n" ANSI_RESET);
     hr(72, ANSI_CYAN);
     dnstun_config_t *c = t->cfg;
-    const char *ciphers[] = { "none","chacha20","aes256gcm","noise_nk" };
+    const char *ciphers[]    = { "none","chacha20","aes256gcm","noise_nk" };
     const char *transports[] = { "udp","doh","dot" };
 
     printf(" a) poll_interval_ms  = " ANSI_CYAN "%d" ANSI_RESET "\n",  c->poll_interval_ms);
@@ -161,21 +186,46 @@ static void render_config(tui_ctx_t *t) {
            (c->transport < 3) ? transports[c->transport] : "?");
     printf(" l) log_level         = " ANSI_CYAN "%d" ANSI_RESET "\n", c->log_level);
 
+    /* Domain editing */
+    printf(" m) domains           = " ANSI_CYAN);
+    if (c->domain_count > 0) {
+        for (int i = 0; i < c->domain_count; i++) {
+            if (i > 0) printf(",");
+            printf("%s", c->domains[i]);
+        }
+    } else {
+        printf(ANSI_RED "(none)");
+    }
+    printf(ANSI_RESET "\n");
+
     hr(72, ANSI_CYAN);
     printf(ANSI_BOLD " [1] Stats   [2] Resolvers   [3] Config   [q] Quit\n" ANSI_RESET);
+
+    if (t->input_mode)
+        render_input_bar(t);
+}
+
+/* ── Domain-edit callback ───────────────────────────────────────────────────*/
+static void on_domain_input_done(tui_ctx_t *t, const char *value) {
+    if (value && value[0]) {
+        config_set_key(t->cfg, "domains", "list", value);
+        if (t->config_path)
+            config_save_domains(t->config_path, t->cfg);
+    }
 }
 
 /* ── Public API ─────────────────────────────────────────────────────────────*/
 void tui_init(tui_ctx_t *t, tui_stats_t *stats,
               resolver_pool_t *pool, dnstun_config_t *cfg,
-              const char *mode)
+              const char *mode, const char *config_path)
 {
     memset(t, 0, sizeof(*t));
-    t->stats   = stats;
-    t->pool    = pool;
-    t->cfg     = cfg;
-    t->running = 1;
-    t->panel   = 0;
+    t->stats       = stats;
+    t->pool        = pool;
+    t->cfg         = cfg;
+    t->running     = 1;
+    t->panel       = 0;
+    t->config_path = config_path;
     strncpy(stats->mode, mode, sizeof(stats->mode)-1);
     printf(ANSI_HIDE_CUR);
 }
@@ -193,6 +243,32 @@ void tui_render(tui_ctx_t *t) {
 
 void tui_handle_key(tui_ctx_t *t, int key) {
     dnstun_config_t *c = t->cfg;
+
+    /* ── Input mode: accumulate text ── */
+    if (t->input_mode) {
+        if (key == '\r' || key == '\n') {
+            /* Confirm */
+            t->input_buf[t->input_len] = '\0';
+            if (t->input_done_cb)
+                t->input_done_cb(t, t->input_buf);
+            t->input_mode = 0;
+            t->input_len  = 0;
+            memset(t->input_buf, 0, sizeof(t->input_buf));
+        } else if (key == 27) {
+            /* Escape — cancel */
+            t->input_mode = 0;
+            t->input_len  = 0;
+            memset(t->input_buf, 0, sizeof(t->input_buf));
+        } else if ((key == 127 || key == '\b') && t->input_len > 0) {
+            /* Backspace */
+            t->input_buf[--t->input_len] = '\0';
+        } else if (isprint(key) && t->input_len < (int)sizeof(t->input_buf) - 1) {
+            t->input_buf[t->input_len++] = (char)key;
+        }
+        return;
+    }
+
+    /* ── Normal mode ── */
     switch (key) {
         case '1': t->panel = 0; break;
         case '2': t->panel = 1; break;
@@ -206,6 +282,30 @@ void tui_handle_key(tui_ctx_t *t, int key) {
         case 'h': config_set_key(c,"obfuscation","chaffing",c->chaffing   ? "false":"true"); break;
         case 'i': config_set_key(c,"obfuscation","chrome_cover",c->chrome_cover?"false":"true"); break;
         case 'j': config_set_key(c,"domains","dns_flux",   c->dns_flux    ? "false":"true"); break;
+
+        /* Domain edit — open input bar pre-filled with current domains */
+        case 'm':
+            t->panel = 2;   /* switch to config panel to show the bar */
+            t->input_mode = 1;
+            t->input_len  = 0;
+            memset(t->input_buf, 0, sizeof(t->input_buf));
+            strncpy(t->input_label,
+                    "Edit domains (comma-separated, e.g. tun.example.com)",
+                    sizeof(t->input_label) - 1);
+            /* Pre-fill with current values */
+            for (int i = 0; i < c->domain_count; i++) {
+                if (i > 0 && t->input_len < (int)sizeof(t->input_buf) - 2)
+                    t->input_buf[t->input_len++] = ',';
+                int rem = (int)sizeof(t->input_buf) - t->input_len - 1;
+                if (rem > 0) {
+                    int dl = (int)strlen(c->domains[i]);
+                    if (dl > rem) dl = rem;
+                    memcpy(t->input_buf + t->input_len, c->domains[i], (size_t)dl);
+                    t->input_len += dl;
+                }
+            }
+            t->input_done_cb = on_domain_input_done;
+            break;
 
         default: break;
     }

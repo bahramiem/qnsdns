@@ -7,6 +7,12 @@ set(CMAKE_DISABLE_FIND_PACKAGE_Git TRUE)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
+# MSVC: use static CRT (/MT) to match vcpkg x64-windows-static packages.
+# Without this, MSVC defaults to /MD (dynamic CRT), causing LNK4098.
+if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 # ── Common libRaptorQ options (LZ4 disabled: only used for optional caching) ──
 set(LTO       OFF CACHE BOOL "" FORCE)
 set(PROFILING OFF CACHE BOOL "" FORCE)

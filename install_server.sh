@@ -15,7 +15,7 @@ fi
 # ── 2. Install system dependencies ─────────────────────────────────────────
 echo "==> Installing system packages..."
 sudo apt-get update -qq
-sudo apt-get install -y git build-essential cmake ninja-build libuv1-dev libzstd-dev liblz4-dev libsodium-dev
+sudo apt-get install -y git build-essential cmake ninja-build pkg-config libuv1-dev libzstd-dev liblz4-dev libsodium-dev
 
 # ── 3. Clone source code if not already present ────────────────────────────
 REPO_DIR="qnsdns"
