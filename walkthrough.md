@@ -1,8 +1,8 @@
 # DNS Tunnel VPN Walkthrough
 
-The DNS Tunnel VPN project is now fully implemented and successfully built. It provides a robust, high-performance SOCKS5 proxy that encapsulates traffic within DNS queries, optimized for speed, reliability, and censorship circumvention.
+The DNS Tunnel VPN project is a high-performance SOCKS5 proxy that encapsulates traffic within DNS queries. It is optimized for speed, reliability, and evading deep packet inspection (DPI).
 
-## 🚀 Key Achievements
+## 🚀 Key Features
 
 - **Multipath Scatter-Gather**: Concurrent DNS queries are blasted across an entire pool of resolvers simultaneously to maximize bandwidth.
 - **RaptorQ FEC & Zstd**: Real-world forward error correction and high-ratio compression ensure stability on lossy paths and minimal query overhead.
@@ -10,51 +10,81 @@ The DNS Tunnel VPN project is now fully implemented and successfully built. It p
 - **Advanced Obfuscation**: Optional timing jitter, chaffing, and "Chrome mimicry" mode disguise the tunnel as normal web traffic.
 - **Resolver Swarm**: Client and server automatically synchronize known-good resolver IPs to bypass DNS discovery blocks.
 
-## 📦 Building the Project
+---
 
-The project uses CMake and fetches all dependencies (libuv, Zstd, libsodium, libRaptorQ) automatically.
+## 🛠️ Installation Guide
 
-```powershell
-cd d:/qns/qnsdns/build/YOUR_BUILD_DIR
-cmd.exe /c compile.bat
+### Automated One-Liner (Recommended)
+
+You can install the server or client with a single command on Linux (Ubuntu/Debian):
+
+**Server:**
+```bash
+curl -sSL https://raw.githubusercontent.com/bahramiem/qnsdns/main/install_server.sh | bash
 ```
 
-This generates:
-- `client/dnstun-client.exe`
-- `server/dnstun-server.exe`
+**Client:**
+```bash
+curl -sSL https://raw.githubusercontent.com/bahramiem/qnsdns/main/install_client.sh | bash
+```
+
+### Manual Build
+
+The project uses CMake and fetches all dependencies automatically.
+
+1.  **Dependencies**: Install `build-essential`, `cmake`, and `ninja-build`.
+2.  **Build**:
+    ```bash
+    mkdir build && cd build
+    cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release
+    ninja
+    ```
+
+---
 
 ## ⚙️ Configuration
 
-Fully documented sample INI files are provided in the root directory:
-- [client.ini](file:///d:/qns/qnsdns/client.ini)
-- [server.ini](file:///d:/qns/qnsdns/server.ini)
+Fully documented sample INI files are provided:
+- [client.ini](https://github.com/bahramiem/qnsdns/blob/main/client.ini)
+- [server.ini](https://github.com/bahramiem/qnsdns/blob/main/server.ini)
 
 > [!TIP]
-> You can edit these values **live** while the client is running using the TUI configuration panel.
+> You can edit these values **live** while the client is running using the TUI configuration panel (press `c`).
+
+---
+
+## 📖 Usage Guide
+
+### 1. Start the Server
+Run the server on a machine with a public IP (port 53 UDP must be open):
+```bash
+sudo ./build/server/dnstun-server -c server.ini
+```
+
+### 2. Start the Client
+Run the client on your local machine:
+```bash
+./build/client/dnstun-client -c client.ini
+```
+
+### 3. Connect via SOCKS5
+Configure your browser or application to use the SOCKS5 proxy at `127.0.0.1:1080`.
+Or test with curl:
+```bash
+curl -x socks5h://127.0.0.1:1080 http://example.com
+```
+
+---
 
 ## 📊 Dashboard (TUI)
 
 Both the client and server feature a powerful 3-panel ANSI dashboard:
 
-1. **Stats Panel**: Monitor live throughput (KB/s), active SOCKS5 sessions, and global query health.
-2. **Resolver Table**: See the health of every resolver IP, its current AIMD window (`cwnd`), RTT, and MTU.
-3. **Config View**: Toggle features like `jitter` or `encryption` instantly.
+1.  **Stats Panel**: Monitor live throughput (KB/s), active SOCKS5 sessions, and global query health.
+2.  **Resolver Table**: See the health of every resolver IP, its current AIMD window (`cwnd`), RTT, and MTU.
+3.  **Config View**: Toggle features like `jitter` or `encryption` instantly.
 
-## 🛠️ Performance Tuning
+---
 
-- **Adaptive FEC**: Set `fec_window = 32` to allow the tunnel to recalibrate its redundancy ratio every 32 chunks based on live loss measurement.
-- **DNS Flux**: Enable `dns_flux = true` to rotate your authoritative domain every few hours, evading domain-level blocking.
-- **Swarm Sync**: Enable `swarm_sync = true` to automatically pull thousands of functional public resolvers from the server's history.
-
-## ✅ Verification
-
-The project has been verified to compile and link all components successfully. The core logic for SOCKS5 handshake, data encapsulation, FEC coding, and DNS dispatch is active.
-
-```powershell
-# To test locally (assuming port 53 is free or mapped):
-./server/dnstun-server.exe -c server.ini
-./client/dnstun-client.exe -c client.ini
-
-# Test via proxy:
-curl -x socks5h://127.0.0.1:1080 http://example.com
-```
+## 🛡️ CI Build & Build Artifacts
+A comprehensive [.gitignore](https://github.com/bahramiem/qnsdns/blob/main/.gitignore) is included to ensure build artifacts and local configurations are not tracked by git, ensuring clean CI runs in GitHub Actions.

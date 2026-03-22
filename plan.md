@@ -113,7 +113,7 @@ flowchart LR
 
 ### Component 1 — Project restructure
 
-#### [MODIFY] [CMakeLists.txt](file:///d:/qns/qnsdns/CMakeLists.txt)
+#### [MODIFY] [CMakeLists.txt](https://github.com/bahramiem/qnsdns/blob/main/CMakeLists.txt)
 - Split into two targets: `dnstun-client` and `dnstun-server`
 - Keep SPCDNS codec sources shared between both
 - Add `FetchContent` for: `libRaptorQ` (FEC), `zstd` (compression), and `libsodium` or `mbedTLS` (ChaCha20-Poly1305 / AES-256-GCM encryption).
