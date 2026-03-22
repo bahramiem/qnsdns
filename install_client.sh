@@ -75,7 +75,7 @@ EOF
 fi
 
 # ── Done ────────────────────────────────────────────────────────────────────
-BINARY="$(pwd)/build/client/dnstun-client"
+BINARY="$(pwd)/build/dnstun-client"
 echo ""
 echo "==> Done!"
 echo "    Binary : $BINARY"

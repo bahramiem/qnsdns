@@ -70,7 +70,7 @@ EOF
 fi
 
 # ── Done ────────────────────────────────────────────────────────────────────
-BINARY="$(pwd)/build/server/dnstun-server"
+BINARY="$(pwd)/build/dnstun-server"
 echo ""
 echo "==> Done!"
 echo "    Binary : $BINARY"
