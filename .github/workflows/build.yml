@@ -8,13 +8,9 @@ on:
 
 jobs:
   build:
-    name: Build on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    name: Build on Linux
+    runs-on: ubuntu-latest
     timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
 
     steps:
     - uses: actions/checkout@v4
@@ -22,20 +18,11 @@ jobs:
         submodules: recursive
 
     # ── Linux ──────────────────────────────────────────────────────────────
-    - name: Install Dependencies (Ubuntu)
-      if: runner.os == 'Linux'
+    - name: Install Dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y build-essential cmake ninja-build pkg-config \
           libuv1-dev libzstd-dev libsodium-dev
-
-    # ── Windows ────────────────────────────────────────────────────────────
-    - name: Install Dependencies (Windows via vcpkg)
-      if: runner.os == 'Windows'
-      run: |
-        vcpkg install libuv libsodium zstd --triplet x64-windows-static
-      env:
-        VCPKG_DEFAULT_TRIPLET: x64-windows-static
 
     # ── Cache (speeds up Eigen/libRaptorQ recompile) ───────────────────────
     - name: Cache build directory
@@ -47,36 +34,18 @@ jobs:
           ${{ runner.os }}-cmake-
 
     # ── Configure ──────────────────────────────────────────────────────────
-    - name: Configure CMake (Linux)
-      if: runner.os == 'Linux'
+    - name: Configure CMake
       run: cmake -B build -DCMAKE_BUILD_TYPE=Release
-
-    - name: Configure CMake (Windows)
-      if: runner.os == 'Windows'
-      run: |
-        cmake -B build -DCMAKE_BUILD_TYPE=Release `
-          -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
-          -DVCPKG_TARGET_TRIPLET=x64-windows-static
 
     # ── Build ──────────────────────────────────────────────────────────────
     - name: Build
       run: cmake --build build --config Release --parallel
 
     # ── Artifacts ──────────────────────────────────────────────────────────
-    - name: Upload Artifacts (Linux)
-      if: runner.os == 'Linux'
+    - name: Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
         name: dnstun-linux
         path: |
           build/dnstun-client
           build/dnstun-server
-
-    - name: Upload Artifacts (Windows)
-      if: runner.os == 'Windows'
-      uses: actions/upload-artifact@v4
-      with:
-        name: dnstun-windows
-        path: |
-          build/Release/dnstun-client.exe
-          build/Release/dnstun-server.exe
