@@ -26,7 +26,7 @@ fi
 # 3. Install system dependencies (Linux)
 if [[ "$OSTYPE" == "linux-gnu"* ]]; then
     sudo apt-get update
-    sudo apt-get install -y build-essential cmake ninja-build
+    sudo apt-get install -y build-essential cmake ninja-build liblz4-dev
 fi
 
 # 3. Build the project

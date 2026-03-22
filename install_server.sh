@@ -25,7 +25,7 @@ fi
 
 # 3. Install system dependencies
 sudo apt-get update
-sudo apt-get install -y build-essential cmake ninja-build
+sudo apt-get install -y build-essential cmake ninja-build liblz4-dev
 
 # 3. Build the project
 mkdir -p build && cd build
