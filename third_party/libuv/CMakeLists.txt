@@ -99,18 +99,21 @@ string(CONCAT is-msvc $<OR:
   $<STREQUAL:${CMAKE_C_COMPILER_FRONTEND_VARIANT},MSVC>
 >)
 
-check_c_compiler_flag(/W4 UV_LINT_W4)
-check_c_compiler_flag(/wd4100 UV_LINT_NO_UNUSED_PARAMETER_MSVC)
-check_c_compiler_flag(/wd4127 UV_LINT_NO_CONDITIONAL_CONSTANT_MSVC)
-check_c_compiler_flag(/wd4201 UV_LINT_NO_NONSTANDARD_MSVC)
-check_c_compiler_flag(/wd4206 UV_LINT_NO_NONSTANDARD_EMPTY_TU_MSVC)
-check_c_compiler_flag(/wd4210 UV_LINT_NO_NONSTANDARD_FILE_SCOPE_MSVC)
-check_c_compiler_flag(/wd4232 UV_LINT_NO_NONSTANDARD_NONSTATIC_DLIMPORT_MSVC)
-check_c_compiler_flag(/wd4456 UV_LINT_NO_HIDES_LOCAL)
-check_c_compiler_flag(/wd4457 UV_LINT_NO_HIDES_PARAM)
-check_c_compiler_flag(/wd4459 UV_LINT_NO_HIDES_GLOBAL)
-check_c_compiler_flag(/wd4706 UV_LINT_NO_CONDITIONAL_ASSIGNMENT_MSVC)
-check_c_compiler_flag(/wd4996 UV_LINT_NO_UNSAFE_MSVC)
+if(MSVC OR CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+  check_c_compiler_flag(/W4 UV_LINT_W4)
+  check_c_compiler_flag(/wd4100 UV_LINT_NO_UNUSED_PARAMETER_MSVC)
+  check_c_compiler_flag(/wd4127 UV_LINT_NO_CONDITIONAL_CONSTANT_MSVC)
+  check_c_compiler_flag(/wd4201 UV_LINT_NO_NONSTANDARD_MSVC)
+  check_c_compiler_flag(/wd4206 UV_LINT_NO_NONSTANDARD_EMPTY_TU_MSVC)
+  check_c_compiler_flag(/wd4210 UV_LINT_NO_NONSTANDARD_FILE_SCOPE_MSVC)
+  check_c_compiler_flag(/wd4232 UV_LINT_NO_NONSTANDARD_NONSTATIC_DLIMPORT_MSVC)
+  check_c_compiler_flag(/wd4456 UV_LINT_NO_HIDES_LOCAL)
+  check_c_compiler_flag(/wd4457 UV_LINT_NO_HIDES_PARAM)
+  check_c_compiler_flag(/wd4459 UV_LINT_NO_HIDES_GLOBAL)
+  check_c_compiler_flag(/wd4706 UV_LINT_NO_CONDITIONAL_ASSIGNMENT_MSVC)
+  check_c_compiler_flag(/wd4996 UV_LINT_NO_UNSAFE_MSVC)
+  check_c_compiler_flag(/utf-8 UV_LINT_UTF8_MSVC)
+endif()
 
 check_c_compiler_flag(-Wall UV_LINT_WALL) # DO NOT use this under MSVC
 
@@ -118,8 +121,6 @@ check_c_compiler_flag(-Wall UV_LINT_WALL) # DO NOT use this under MSVC
 check_c_compiler_flag(-Wno-unused-parameter UV_LINT_NO_UNUSED_PARAMETER)
 check_c_compiler_flag(-Wstrict-prototypes UV_LINT_STRICT_PROTOTYPES)
 check_c_compiler_flag(-Wextra UV_LINT_EXTRA)
-
-check_c_compiler_flag(/utf-8 UV_LINT_UTF8_MSVC)
 
 set(lint-no-unused-parameter $<$<BOOL:${UV_LINT_NO_UNUSED_PARAMETER}>:-Wno-unused-parameter>)
 set(lint-strict-prototypes $<$<BOOL:${UV_LINT_STRICT_PROTOTYPES}>:-Wstrict-prototypes>)

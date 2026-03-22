@@ -39,10 +39,11 @@ set(LZ4_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/lz4")
 add_subdirectory(third_party/libRaptorQ EXCLUDE_FROM_ALL)
 
 # Link targets
+# Link targets
 set(UV_LIBRARIES uv_a)
 set(ZSTD_LIBRARIES libzstd_static)
 set(SODIUM_LIBRARIES sodium)
-set(RAPTORQ_LIBRARIES RaptorQ)
+set(RAPTORQ_LIBRARIES RaptorQ_Static)
 
 # ── Shared SPCDNS codec sources ───────────────────────────────────────────────
 set(SPCDNS_SOURCES
@@ -67,7 +68,7 @@ add_executable(dnstun-client
     ${SHARED_SOURCES}
 )
 target_include_directories(dnstun-client PRIVATE . shared SPCDNS)
-target_link_libraries(dnstun-client uv libzstd_static sodium RaptorQ_static)
+target_link_libraries(dnstun-client ${UV_LIBRARIES} ${ZSTD_LIBRARIES} ${SODIUM_LIBRARIES} ${RAPTORQ_LIBRARIES})
 if(WIN32)
     target_link_libraries(dnstun-client ws2_32 iphlpapi userenv)
 endif()
@@ -79,7 +80,7 @@ add_executable(dnstun-server
     ${SHARED_SOURCES}
 )
 target_include_directories(dnstun-server PRIVATE . shared SPCDNS)
-target_link_libraries(dnstun-server uv libzstd_static sodium RaptorQ_static)
+target_link_libraries(dnstun-server ${UV_LIBRARIES} ${ZSTD_LIBRARIES} ${SODIUM_LIBRARIES} ${RAPTORQ_LIBRARIES})
 if(WIN32)
     target_link_libraries(dnstun-server ws2_32 iphlpapi userenv)
 endif()
