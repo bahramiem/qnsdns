@@ -1,0 +1,52 @@
+-- summary of build options:
+    Install prefix:  C:/Program Files (x86)/qnsdns
+    Target system:   Windows
+    Compiler:
+      C compiler:    C:/Qt/Tools/mingw1310_64/bin/gcc.exe (GNU)
+      CFLAGS:         
+
+-- ZSTD VERSION: 1.5.6
+-- CMAKE_INSTALL_PREFIX: C:/Program Files (x86)/qnsdns
+-- CMAKE_INSTALL_LIBDIR: lib
+-- ZSTD_LEGACY_SUPPORT defined!
+-- ZSTD_MULTITHREAD_SUPPORT is enabled
+-- Disabling playTests.sh test because requirements not met
+mingw32-make.exe[1]: Entering directory 'D:/qns/qnsdns/build/Desktop_Qt_6_10_2_MinGW_64_bit-Debug/_deps/raptorq-subbuild'
+mingw32-make.exe[2]: Entering directory 'D:/qns/qnsdns/build/Desktop_Qt_6_10_2_MinGW_64_bit-Debug/_deps/raptorq-subbuild'
+mingw32-make.exe[3]: Entering directory 'D:/qns/qnsdns/build/Desktop_Qt_6_10_2_MinGW_64_bit-Debug/_deps/raptorq-subbuild'
+mingw32-make.exe[3]: Leaving directory 'D:/qns/qnsdns/build/Desktop_Qt_6_10_2_MinGW_64_bit-Debug/_deps/raptorq-subbuild'
+mingw32-make.exe[3]: Entering directory 'D:/qns/qnsdns/build/Desktop_Qt_6_10_2_MinGW_64_bit-Debug/_deps/raptorq-subbuild'
+[ 11%] Performing download step (git clone) for 'raptorq-populate'
+Cloning into 'raptorq-src'...
+remote: Repository not found.
+fatal: repository 'https://github.com/c-m-m/libRaptorQ.git/' not found
+Cloning into 'raptorq-src'...
+remote: Repository not found.
+fatal: repository 'https://github.com/c-m-m/libRaptorQ.git/' not found
+Cloning into 'raptorq-src'...
+remote: Repository not found.
+fatal: repository 'https://github.com/c-m-m/libRaptorQ.git/' not found
+Had to git clone more than once: 3 times.
+CMake Error at raptorq-subbuild/raptorq-populate-prefix/tmp/raptorq-populate-gitclone.cmake:50 (message):
+  Failed to clone repository: 'https://github.com/c-m-m/libRaptorQ.git'
+
+
+mingw32-make.exe[3]: *** [CMakeFiles\raptorq-populate.dir\build.make:101: raptorq-populate-prefix/src/raptorq-populate-stamp/raptorq-populate-download] Error 1
+mingw32-make.exe[3]: Leaving directory 'D:/qns/qnsdns/build/Desktop_Qt_6_10_2_MinGW_64_bit-Debug/_deps/raptorq-subbuild'
+mingw32-make.exe[2]: *** [CMakeFiles\Makefile2:82: CMakeFiles/raptorq-populate.dir/all] Error 2
+mingw32-make.exe[2]: Leaving directory 'D:/qns/qnsdns/build/Desktop_Qt_6_10_2_MinGW_64_bit-Debug/_deps/raptorq-subbuild'
+mingw32-make.exe[1]: *** [Makefile:90: all] Error 2
+mingw32-make.exe[1]: Leaving directory 'D:/qns/qnsdns/build/Desktop_Qt_6_10_2_MinGW_64_bit-Debug/_deps/raptorq-subbuild'
+
+CMake Error at C:/Qt/Tools/CMake_64/share/cmake-3.30/Modules/FetchContent.cmake:1918 (message):
+  Build step for raptorq failed: 2
+Call Stack (most recent call first):
+  C:/Qt/Tools/CMake_64/share/cmake-3.30/Modules/FetchContent.cmake:1609 (__FetchContent_populateSubbuild)
+  C:/Qt/Tools/CMake_64/share/cmake-3.30/Modules/FetchContent.cmake:2145:EVAL:2 (__FetchContent_doPopulation)
+  C:/Qt/Tools/CMake_64/share/cmake-3.30/Modules/FetchContent.cmake:2145 (cmake_language)
+  C:/Qt/Tools/CMake_64/share/cmake-3.30/Modules/FetchContent.cmake:2384 (__FetchContent_Populate)
+  CMakeLists.txt:32 (FetchContent_MakeAvailable)
+
+
+-- Configuring incomplete, errors occurred!
+mingw32-make.exe: *** [Makefile:898: cmake_check_build_system] Error 1

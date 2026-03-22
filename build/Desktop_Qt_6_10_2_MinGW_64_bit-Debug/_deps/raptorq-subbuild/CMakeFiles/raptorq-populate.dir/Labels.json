@@ -1,0 +1,46 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "D:/qns/qnsdns/build/Desktop_Qt_6_10_2_MinGW_64_bit-Debug/_deps/raptorq-subbuild/CMakeFiles/raptorq-populate"
+		},
+		{
+			"file" : "D:/qns/qnsdns/build/Desktop_Qt_6_10_2_MinGW_64_bit-Debug/_deps/raptorq-subbuild/CMakeFiles/raptorq-populate.rule"
+		},
+		{
+			"file" : "D:/qns/qnsdns/build/Desktop_Qt_6_10_2_MinGW_64_bit-Debug/_deps/raptorq-subbuild/CMakeFiles/raptorq-populate-complete.rule"
+		},
+		{
+			"file" : "D:/qns/qnsdns/build/Desktop_Qt_6_10_2_MinGW_64_bit-Debug/_deps/raptorq-subbuild/raptorq-populate-prefix/src/raptorq-populate-stamp/raptorq-populate-build.rule"
+		},
+		{
+			"file" : "D:/qns/qnsdns/build/Desktop_Qt_6_10_2_MinGW_64_bit-Debug/_deps/raptorq-subbuild/raptorq-populate-prefix/src/raptorq-populate-stamp/raptorq-populate-configure.rule"
+		},
+		{
+			"file" : "D:/qns/qnsdns/build/Desktop_Qt_6_10_2_MinGW_64_bit-Debug/_deps/raptorq-subbuild/raptorq-populate-prefix/src/raptorq-populate-stamp/raptorq-populate-download.rule"
+		},
+		{
+			"file" : "D:/qns/qnsdns/build/Desktop_Qt_6_10_2_MinGW_64_bit-Debug/_deps/raptorq-subbuild/raptorq-populate-prefix/src/raptorq-populate-stamp/raptorq-populate-install.rule"
+		},
+		{
+			"file" : "D:/qns/qnsdns/build/Desktop_Qt_6_10_2_MinGW_64_bit-Debug/_deps/raptorq-subbuild/raptorq-populate-prefix/src/raptorq-populate-stamp/raptorq-populate-mkdir.rule"
+		},
+		{
+			"file" : "D:/qns/qnsdns/build/Desktop_Qt_6_10_2_MinGW_64_bit-Debug/_deps/raptorq-subbuild/raptorq-populate-prefix/src/raptorq-populate-stamp/raptorq-populate-patch.rule"
+		},
+		{
+			"file" : "D:/qns/qnsdns/build/Desktop_Qt_6_10_2_MinGW_64_bit-Debug/_deps/raptorq-subbuild/raptorq-populate-prefix/src/raptorq-populate-stamp/raptorq-populate-test.rule"
+		},
+		{
+			"file" : "D:/qns/qnsdns/build/Desktop_Qt_6_10_2_MinGW_64_bit-Debug/_deps/raptorq-subbuild/raptorq-populate-prefix/src/raptorq-populate-stamp/raptorq-populate-update.rule"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"raptorq-populate"
+		],
+		"name" : "raptorq-populate"
+	}
+}
