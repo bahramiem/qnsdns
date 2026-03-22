@@ -20,7 +20,7 @@
 
 FIND_PATH(RQ_LZ4_INCLUDE_DIR
     NAMES lz4.h
-    PATH_SUFFIXES include/ include/lz4/ lz4/
+    PATH_SUFFIXES include/ include/lz4/ lz4/ lib/
     PATHS
     ${LZ4_ROOT}
     $ENV{LZ4_ROOT}
