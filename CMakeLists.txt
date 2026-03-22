@@ -35,7 +35,11 @@ else()
 endif()
 
 # libRaptorQ
+# Setup RaptorQ (disable LTO and PROFILING for stability during initial setup)
+set(LTO OFF CACHE BOOL "" FORCE)
+set(PROFILING OFF CACHE BOOL "" FORCE)
 set(LZ4_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/lz4")
+set(EIGEN3_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libRaptorQ/external/eigen3")
 add_subdirectory(third_party/libRaptorQ EXCLUDE_FROM_ALL)
 
 # Link targets

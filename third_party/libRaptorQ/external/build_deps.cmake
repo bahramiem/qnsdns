@@ -29,7 +29,8 @@ if(RQ_BUILD_LZ4)
 
     set(RQ_LZ4_LIBNAME rq_lz4_static)
 
-    set(RQ_LZ4_DIR ${PROJECT_SOURCE_DIR}/external/lz4/lib/)
+    set(RQ_LZ4_DIR ${CMAKE_SOURCE_DIR}/third_party/lz4/lib/)
+    include_directories(SYSTEM PUBLIC ${RQ_LZ4_DIR})
     set(RQ_LZ4_SRCS_LIB ${RQ_LZ4_DIR}lz4.c
                         ${RQ_LZ4_DIR}lz4hc.c
                         ${RQ_LZ4_DIR}lz4.h
