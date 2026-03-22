@@ -65,11 +65,20 @@ static char g_resolvers_file[1024];
 /* ────────────────────────────────────────────── */
 /*  Utility                                       */
 /* ────────────────────────────────────────────── */
-static int log_level(void) { return g_cfg.log_level; }
-
-#define LOG_INFO(...)  do { if (log_level() >= 1) { fprintf(stdout, "[INFO]  " __VA_ARGS__); } } while(0)
-#define LOG_DEBUG(...) do { if (log_level() >= 2) { fprintf(stdout, "[DEBUG] " __VA_ARGS__); } } while(0)
-#define LOG_ERR(...)   fprintf(stderr, "[ERROR] " __VA_ARGS__)
+/* LOG_* macros are provided by shared/tui.h (ring-buffer + level-gated) */
+/* Level gating: tui_log entries are always stored; filter in render if needed */
+static int log_level_check(tui_log_level_t required) {
+    /* Suppress DEBUG messages if log_level < 2 */
+    if (required == TUI_LOG_DEBUG && g_cfg.log_level < 2) return 0;
+    if (required == TUI_LOG_INFO  && g_cfg.log_level < 1) return 0;
+    return 1;
+}
+#undef LOG_DEBUG
+#undef LOG_INFO
+#undef LOG_ERR
+#define LOG_DEBUG(fmt, ...) do { if (log_level_check(TUI_LOG_DEBUG)) tui_log(g_tui_ctx, TUI_LOG_DEBUG, fmt, ##__VA_ARGS__); } while(0)
+#define LOG_INFO(fmt, ...)  do { if (log_level_check(TUI_LOG_INFO))  tui_log(g_tui_ctx, TUI_LOG_INFO,  fmt, ##__VA_ARGS__); } while(0)
+#define LOG_ERR(fmt, ...)   tui_log(g_tui_ctx, TUI_LOG_ERR, fmt, ##__VA_ARGS__)
 
 static uint16_t rand_u16(void) {
     return (uint16_t)(rand() & 0xFFFF);

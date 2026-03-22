@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdarg.h>
 #include <ctype.h>
 
 #ifdef _WIN32
@@ -11,6 +12,9 @@
 #define ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004
 #endif
 #endif
+
+/* ── Global TUI context pointer (set by tui_init) ───────────────────────────*/
+tui_ctx_t *g_tui_ctx = NULL;
 
 /* ANSI codes */
 #define ANSI_RESET     "\033[0m"
@@ -228,14 +232,59 @@ static void render_resolvers(tui_ctx_t *t) {
     }
 
     hr(72, ANSI_CYAN);
-    printf(ANSI_BOLD " [1] Stats   [2] Resolvers   [3] Config   "
-           ANSI_CYAN "[r]" ANSI_RESET ANSI_BOLD " Add Resolver   [q] Quit\n" ANSI_RESET);
+    printf(ANSI_BOLD " [1] Stats   [2] Resolvers   [3] Logs   [4] Config   [q] Quit\n" ANSI_RESET);
+
     if (t->input_mode)
         render_input_bar(t);
 }
 
+/* ── Panel 2: Log viewer ─────────────────────────────────────────────────────*/
+#define LOG_DISPLAY_ROWS 22
+static void render_log_panel(tui_ctx_t *t) {
+    printf(ANSI_BOLD ANSI_CYAN " ▌ DEBUG LOG ▌" ANSI_RESET
+           ANSI_YELLOW "  [↑/↓] scroll  [PgUp/PgDn] fast  [c] clear  [q] back" ANSI_RESET "\n");
+    hr(72, ANSI_CYAN);
 
-/* ── Panel 2: Config (live editable) ────────────────────────────────────────*/
+    uv_mutex_lock(&t->log_lock);
+    int total  = t->log_count < TUI_LOG_LINES ? t->log_count : TUI_LOG_LINES;
+    int scroll = t->log_scroll;
+    if (scroll > total - LOG_DISPLAY_ROWS) scroll = total - LOG_DISPLAY_ROWS;
+    if (scroll < 0) scroll = 0;
+
+    /* Render last LOG_DISPLAY_ROWS entries, shifted by scroll */
+    for (int row = 0; row < LOG_DISPLAY_ROWS; row++) {
+        int line_from_end = LOG_DISPLAY_ROWS - 1 - row + scroll;
+        if (line_from_end >= total) {
+            printf("\n"); /* empty rows at top */
+            continue;
+        }
+        /* Index in ring: head points to the NEXT write slot */
+        int idx = (t->log_head - 1 - line_from_end + TUI_LOG_LINES) % TUI_LOG_LINES;
+        tui_log_entry_t *e = &t->log_ring[idx];
+
+        const char *color;
+        const char *tag;
+        switch (e->level) {
+            case TUI_LOG_DEBUG: color = ANSI_WHITE;   tag = "DBG"; break;
+            case TUI_LOG_INFO:  color = ANSI_CYAN;    tag = "INF"; break;
+            case TUI_LOG_WARN:  color = ANSI_YELLOW;  tag = "WRN"; break;
+            case TUI_LOG_ERR:   color = ANSI_RED;     tag = "ERR"; break;
+            default:            color = ANSI_RESET;   tag = "   "; break;
+        }
+        printf("%s[%s]%s %.170s\n", color, tag, ANSI_RESET, e->text);
+    }
+    uv_mutex_unlock(&t->log_lock);
+
+    hr(72, ANSI_CYAN);
+    int visible_of = total;
+    printf(" Showing %d-%d of %d entries   (scroll: %d)\n",
+           (scroll == 0 ? 1 : scroll),
+           (scroll + LOG_DISPLAY_ROWS > total ? total : scroll + LOG_DISPLAY_ROWS),
+           visible_of, scroll);
+}
+
+
+/* ── Panel 3: Config (live editable) ────────────────────────────────────────*/
 static void render_config(tui_ctx_t *t) {
     printf(ANSI_BOLD ANSI_CYAN " ▌ LIVE CONFIG (press key to toggle/edit) ▌\n" ANSI_RESET);
     hr(72, ANSI_CYAN);
@@ -271,7 +320,7 @@ static void render_config(tui_ctx_t *t) {
     printf(ANSI_RESET "\n");
 
     hr(72, ANSI_CYAN);
-    printf(ANSI_BOLD " [1] Stats   [2] Resolvers   [3] Config   [q] Quit\n" ANSI_RESET);
+    printf(ANSI_BOLD " [1] Stats   [2] Resolvers   [3] Logs   [4] Config   [q] Quit\n" ANSI_RESET);
 
     if (t->input_mode)
         render_input_bar(t);
@@ -335,6 +384,11 @@ void tui_init(tui_ctx_t *t, tui_stats_t *stats,
     t->running     = 1;
     t->panel       = 0;
     t->config_path = config_path;
+    uv_mutex_init(&t->log_lock);
+    t->log_head   = 0;
+    t->log_count  = 0;
+    t->log_scroll = 0;
+    g_tui_ctx = t;   /* expose global for LOG_* macros */
     strncpy(stats->mode, mode, sizeof(stats->mode)-1);
 
 #ifdef _WIN32
@@ -356,7 +410,8 @@ void tui_render(tui_ctx_t *t) {
     switch (t->panel) {
         case 0: render_stats(t);     break;
         case 1: render_resolvers(t); break;
-        case 2: render_config(t);    break;
+        case 2: render_log_panel(t); break;
+        case 3: render_config(t);    break;
         default: render_stats(t);    break;
     }
     fflush(stdout);
@@ -404,8 +459,40 @@ void tui_handle_key(tui_ctx_t *t, int key) {
     switch (key) {
         case '1': t->panel = 0; break;
         case '2': t->panel = 1; break;
-        case '3': t->panel = 2; break;
+        case '3': t->panel = 2; break;   /* Logs */
+        case '4': t->panel = 3; break;   /* Config */
         case 'q': t->running = 0; break;
+
+        /* Log panel navigation */
+        case 'A': /* Up arrow (ANSI \033[A → we get 'A' after ESC [ ) */
+        case 'k':  /* vim-style */
+            if (t->panel == 2) { t->log_scroll++; }
+            break;
+        case 'B': /* Down arrow */
+        case 'j':  /* vim-style */
+            if (t->panel == 2 && t->log_scroll > 0) { t->log_scroll--; }
+            break;
+        case 5: /* Ctrl-E: scroll down one */
+            if (t->panel == 2 && t->log_scroll > 0) { t->log_scroll--; }
+            break;
+        case 25: /* Ctrl-Y: scroll up one */
+            if (t->panel == 2) { t->log_scroll++; }
+            break;
+        case 6: /* Ctrl-F: page down */
+            if (t->panel == 2) { t->log_scroll = (t->log_scroll > LOG_DISPLAY_ROWS) ? t->log_scroll - LOG_DISPLAY_ROWS : 0; }
+            break;
+        case 2: /* Ctrl-B: page up */
+            if (t->panel == 2) { t->log_scroll += LOG_DISPLAY_ROWS; }
+            break;
+        case 'c': /* clear log while on log panel */
+            if (t->panel == 2) {
+                uv_mutex_lock(&t->log_lock);
+                t->log_head  = 0;
+                t->log_count = 0;
+                t->log_scroll = 0;
+                uv_mutex_unlock(&t->log_lock);
+            }
+            break;
 
         /* Config panel live toggles */
         case 'd': config_set_key(c,"encryption","enabled", c->encryption ? "false":"true"); break;
@@ -458,7 +545,37 @@ void tui_handle_key(tui_ctx_t *t, int key) {
 
 void tui_shutdown(tui_ctx_t *t) {
     t->running = 0;
+    uv_mutex_destroy(&t->log_lock);
+    g_tui_ctx = NULL;
     uv_tty_reset_mode();
     printf(ANSI_SHOW_CUR ANSI_RESET "\n");
     fflush(stdout);
+}
+
+/* ── tui_log — thread-safe ring-buffer logger ───────────────────────────────*/
+void tui_log(tui_ctx_t *t, tui_log_level_t level, const char *fmt, ...) {
+    if (!t) {
+        /* TUI not initialised yet — fall back to stderr */
+        va_list ap;
+        va_start(ap, fmt);
+        vfprintf(stderr, fmt, ap);
+        va_end(ap);
+        return;
+    }
+    uv_mutex_lock(&t->log_lock);
+    tui_log_entry_t *e = &t->log_ring[t->log_head];
+    e->level = level;
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(e->text, TUI_LOG_WIDTH - 1, fmt, ap);
+    va_end(ap);
+    /* Strip trailing newline so the panel's own \n is clean */
+    int len = (int)strlen(e->text);
+    if (len > 0 && e->text[len - 1] == '\n') e->text[len - 1] = '\0';
+
+    t->log_head = (t->log_head + 1) % TUI_LOG_LINES;
+    t->log_count++;
+    /* Auto-scroll to bottom when new entry arrives (unless user is scrolling) */
+    if (t->log_scroll == 0) { /* already pinned to bottom — nothing to do */ }
+    uv_mutex_unlock(&t->log_lock);
 }

@@ -100,9 +100,18 @@ static uv_mutex_t g_swarm_lock;
 /* ────────────────────────────────────────────── */
 /*  Logging                                       */
 /* ────────────────────────────────────────────── */
-#define LOG_INFO(...)  do { if (g_cfg.log_level >= 1) fprintf(stdout, "[INFO]  " __VA_ARGS__); } while(0)
-#define LOG_DEBUG(...) do { if (g_cfg.log_level >= 2) fprintf(stdout, "[DEBUG] " __VA_ARGS__); } while(0)
-#define LOG_ERR(...)   fprintf(stderr, "[ERROR] " __VA_ARGS__)
+/* LOG_* macros route through tui.h's ring-buffer logger */
+static int srv_log_level_check(tui_log_level_t req) {
+    if (req == TUI_LOG_DEBUG && g_cfg.log_level < 2) return 0;
+    if (req == TUI_LOG_INFO  && g_cfg.log_level < 1) return 0;
+    return 1;
+}
+#undef LOG_INFO
+#undef LOG_DEBUG
+#undef LOG_ERR
+#define LOG_INFO(fmt, ...)  do { if (srv_log_level_check(TUI_LOG_INFO))  tui_log(g_tui_ctx, TUI_LOG_INFO,  fmt, ##__VA_ARGS__); } while(0)
+#define LOG_DEBUG(fmt, ...) do { if (srv_log_level_check(TUI_LOG_DEBUG)) tui_log(g_tui_ctx, TUI_LOG_DEBUG, fmt, ##__VA_ARGS__); } while(0)
+#define LOG_ERR(fmt, ...)   tui_log(g_tui_ctx, TUI_LOG_ERR, fmt, ##__VA_ARGS__)
 
 /* ────────────────────────────────────────────── */
 /*  Swarm management                              */
