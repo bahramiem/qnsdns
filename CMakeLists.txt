@@ -8,26 +8,22 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 include(FetchContent)
 FetchContent_Declare(
   libuv
-  GIT_REPOSITORY https://github.com/libuv/libuv.git
-  GIT_TAG        v1.48.0
+  URL https://dist.libuv.org/dist/v1.48.0/libuv-v1.48.0.tar.gz
 )
 FetchContent_Declare(
   zstd
-  GIT_REPOSITORY https://github.com/facebook/zstd.git
-  GIT_TAG        v1.5.6
+  URL            https://github.com/facebook/zstd/releases/download/v1.5.6/zstd-1.5.6.tar.gz
   SOURCE_SUBDIR  build/cmake
 )
 FetchContent_Declare(
   sodium
-  GIT_REPOSITORY https://github.com/jedisct1/libsodium.git
-  GIT_TAG        1.0.19
+  URL            https://github.com/jedisct1/libsodium/releases/download/1.0.19-RELEASE/libsodium-1.0.19.tar.gz
 )
 # Note: libRaptorQ can be complex to FetchContent; using a simpler RFC 6330 header-only or basic C impl if possible.
 # For now, I'll use a placeholder or FetchContent a known stable one.
 FetchContent_Declare(
   raptorq
-  GIT_REPOSITORY https://github.com/LucaFulchir/libRaptorQ.git
-  GIT_TAG        master
+  URL            https://github.com/LucaFulchir/libRaptorQ/archive/refs/heads/master.tar.gz
 )
 FetchContent_MakeAvailable(libuv zstd sodium raptorq)
 

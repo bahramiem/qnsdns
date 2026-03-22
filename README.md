@@ -30,11 +30,12 @@ curl -sSL https://raw.githubusercontent.com/bahramiem/qnsdns/main/install_client
 
 ### Manual Build
 
-The project uses CMake and fetches all dependencies automatically.
+The project uses CMake and fetches all dependencies automatically via secure tarball URLs for maximum reliability and speed.
 
 1.  **Dependencies**: Install `build-essential`, `cmake`, and `ninja-build`.
 2.  **Build**:
     ```bash
+    rm -rf build # Clear old cache
     mkdir build && cd build
     cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release
     ninja
