@@ -46,10 +46,50 @@ The project uses CMake and fetches all dependencies automatically via secure tar
 
 ---
 
+# ⚙️ Configuration Guide
+
+For a detailed explanation of every configuration parameter, please see the [**CONFIG.md**](file:///d:/qns/qnsdns/CONFIG.md) guide.
+
+# 🧠 Smart DNS Scanning & Selection
+
+The client features a sophisticated 4-stage initialization pipeline to ensure maximum performance and security:
+
+1.  **Hijack Detection**: Automatically flags and isolates resolvers that return "fake" A-records for non-existent domains (NXDOMAIN hijacking).
+2.  **EDNS0 Support**: Explicitly probes for EDNS0 support to utilize larger UDP payloads (up to 4096 bytes if supported).
+3.  **Empirical MTU Discovery**: Tests 512, 1024, and 1400 byte payloads to establish a baseline.
+4.  **MTU Binary Search Refinement**: Performs a 3-step binary search to find the *exact* maximum payload size each resolver can handle, significantly boosting data efficiency.
+
+# 🛡️ Reliability & Health
+
+- **Packet Duplication**: Critical handshake (seq 0) and control packets are sent to the top 3 resolvers simultaneously. This ensures a fast, reliable connection even if your primary resolver is jittery.
+- **Windowed Health Tracking**: Uses a 30-sample sliding window bitmask to track resolver success rates. Resolvers with low success rates are automatically demoted, preventing "flapping" during temporary network congestion.
+
+# ⚙️ Configuration Guide (`client.ini`)
+
+### `[core]`
+- `socks5_bind`: The local address and port for the SOCKS5 proxy (default: `127.0.0.1:1080`).
+- `log_level`: Verbosity (`silent`, `info`, `debug`). Use `debug` to see live RTT/MTU discovery logs.
+
+### `[resolvers]`
+- `seed_list`: Comma-separated list of initial "bootstrap" DNS resolvers.
+- `cidr_scan`: If `true`, the client scans the `/24` or `/16` subnet around each seed to find faster sibling resolvers.
+- `swarm_sync`: If `true`, the client pulls a list of vetted, high-performance resolvers from the server.
+- `background_recovery_rate`: How many "dead" resolvers to re-probe per second to check if they've come back online.
+
+### `[tuning]`
+- `poll_interval_ms`: Frequency of downstream POLL queries. Lower values reduce latency but increase query overhead.
+- `cwnd_max`: The maximum number of concurrent in-flight queries per resolver. Higher values increase throughput but can trigger rate-limiting.
+
+### `[obfuscation]`
+- `jitter`: Adds random 0-50ms delays to queries to defeat timing-based DPI analysis.
+- `chaffing`: Sends periodic decoy DNS queries when idle to hide the fact that you are tunneling.
+- `chrome_cover`: Mimics the specific DNS query fingerprint of the Google Chrome browser.
+
+---
+
 ## ⚙️ Configuration
 
 Fully documented sample INI files are provided:
-- [client.ini](https://github.com/bahramiem/qnsdns/blob/main/client.ini)
 - [server.ini](https://github.com/bahramiem/qnsdns/blob/main/server.ini)
 
 **First-Run Prompt**:
@@ -90,12 +130,15 @@ curl -x socks5h://127.0.0.1:1080 http://example.com
 
 ## 📊 Dashboard (TUI)
 
-Both the client and server feature a powerful 3-panel ANSI dashboard (use `Number Keys` to switch). The interface features zero-latency input rendering and includes full native Windows Console ANSI support:
+Both the client and server feature a powerful 3-panel ANSI dashboard (use `Number Keys` to switch):
 
-1.  **Stats Panel (`1`)**: Monitor live throughput (KB/s), active SOCKS5 sessions, global query health, and swarm limits.
-2.  **Resolver Table (`2` - Client)**: See the health of every resolver IP loaded via your config, their current AIMD transport window (`cwnd`), measured round-trip time (`RTT`), and MTU. 
-3.  **Clients Scoreboard (`2` - Server)**: Because the server doesn't "query" resolvers, opening panel 2 tracks your live inbound users! View a pristine table showing connected IP addresses, their reported `User ID`s, requested MTU limitations, Packet Loss %, and background Encoding mode.
-4.  **Config View (`3`)**: Toggle features like `jitter` or `encryption` instantly on the fly.
+1.  **Stats Panel (`1`)**: Monitor live throughput (KB/s), active SOCKS5 sessions, and global query health.
+2.  **Resolver Table (`2`)**: Real-time view of every resolver:
+    - **RTT**: Current round-trip time in milliseconds.
+    - **MTU**: The discovered maximum payload size for that specific path.
+    - **Hlth**: Success rate over the last 30 queries (e.g., `28/30`).
+    - **EDNS**: Whether the resolver supports EDNS0 extensions.
+3.  **Config View (`3`)**: Toggle features like `jitter` or `encryption` live on the fly.
 
 ---
 

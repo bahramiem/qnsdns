@@ -43,12 +43,11 @@ int rpool_add(resolver_pool_t *pool, const char *ip) {
     r->state          = RSV_DEAD; /* start in dead; testing promotes it */
     r->cwnd           = pool->cfg->cwnd_init;
     r->cwnd_max       = pool->cfg->cwnd_max;
-    r->upstream_mtu   = 220;  /* conservative default */
-    r->downstream_mtu = 512;
-    r->loss_rate      = 0.0;
-    r->fec_k          = 0;
-    r->rtt_ms         = 999.0;
-    r->rtt_baseline   = 999.0;
+    rpool_on_ack(pool, idx, 999.0); /* Init health window with one 'success' if needed, or leave at 0 */
+    r->mtu_low        = 512;
+    r->mtu_high       = 1401;
+    r->health_window  = 0xFFFFFFFF; /* Assume healthy until proven otherwise */
+    r->health_cursor  = 0;
     r->enc            = ENC_BASE64;
 
     /* add to dead list */
@@ -110,6 +109,10 @@ void rpool_on_ack(resolver_pool_t *pool, int idx, double rtt_ms) {
     uv_mutex_lock(&pool->lock);
     resolver_t *r = &pool->resolvers[idx];
 
+    /* Update sliding window: 1 = success */
+    r->health_window = (r->health_window << 1) | 1;
+    r->health_cursor++;
+
     /* EWMA RTT baseline (alpha=0.125 like TCP) */
     if (r->rtt_baseline >= 999.0)
         r->rtt_baseline = rtt_ms;
@@ -117,7 +120,7 @@ void rpool_on_ack(resolver_pool_t *pool, int idx, double rtt_ms) {
         r->rtt_baseline = 0.875 * r->rtt_baseline + 0.125 * rtt_ms;
     r->rtt_ms = rtt_ms;
 
-    /* AIMD additive increase */
+    /* AIMD additive increase: window += 1/window */
     if (r->cwnd < r->cwnd_max)
         r->cwnd += 1.0 / r->cwnd;
 
@@ -126,10 +129,7 @@ void rpool_on_ack(resolver_pool_t *pool, int idx, double rtt_ms) {
         r->cwnd *= 0.75;
         if (r->cwnd < 1.0) r->cwnd = 1.0;
     }
-
-    /* EWMA loss rate: successful ACK drives it down */
-    r->loss_rate = 0.95 * r->loss_rate + 0.05 * 0.0;
-
+    
     uv_mutex_unlock(&pool->lock);
 }
 
@@ -137,14 +137,25 @@ void rpool_on_loss(resolver_pool_t *pool, int idx) {
     uv_mutex_lock(&pool->lock);
     resolver_t *r = &pool->resolvers[idx];
 
-    /* AIMD multiplicative decrease */
+    /* Update sliding window: 0 = fail */
+    r->health_window = (r->health_window << 1) & 0x3FFFFFFF;
+    r->health_cursor++;
+
+    /* AIMD: multiplicative decrease */
     r->cwnd *= 0.5;
     if (r->cwnd < 1.0) r->cwnd = 1.0;
-
-    /* EWMA loss update */
-    r->loss_rate = 0.95 * r->loss_rate + 0.05 * 1.0;
-
+    
     uv_mutex_unlock(&pool->lock);
+}
+
+int rpool_health_score(resolver_pool_t *pool, int idx) {
+    uint32_t w = pool->resolvers[idx].health_window & 0x3FFFFFFF;
+    int count = 0;
+    while (w) {
+        if (w & 1) count++;
+        w >>= 1;
+    }
+    return count;
 }
 
 void rpool_on_rtt_spike(resolver_pool_t *pool, int idx) {

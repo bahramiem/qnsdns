@@ -206,6 +206,8 @@ typedef struct probe_req {
     size_t          sendlen;
     uint8_t         recvbuf[2048];
     bool            got_reply;
+    bool            is_hijack_test;
+    bool            is_edns_test;
 } probe_req_t;
 
 static void on_probe_close(uv_handle_t *h) {
@@ -216,7 +218,14 @@ static void on_probe_close(uv_handle_t *h) {
 static void on_probe_timeout(uv_timer_t *t) {
     probe_req_t *p = t->data;
     if (!uv_is_closing((uv_handle_t*)&p->udp)) {
+        LOG_DEBUG("Probe timeout from %s (payload %d)\n", 
+                  g_pool.resolvers[p->resolver_idx].ip, (int)p->sendlen);
         rpool_on_loss(&g_pool, p->resolver_idx);
+        
+        /* Binary search: mark this size as a failure */
+        if (p->sendlen > 512)
+            g_pool.resolvers[p->resolver_idx].mtu_high = (uint16_t)p->sendlen;
+
         uv_close((uv_handle_t*)&p->udp, on_probe_close);
         uv_close((uv_handle_t*)&p->timer, on_probe_close);
     }
@@ -232,15 +241,58 @@ static void on_probe_recv(uv_udp_t *h, ssize_t nread,
     probe_req_t *p = h->data;
 
     if (nread > 0) {
-        /* Zombie / Hijack Check: Verify header/payload match */
-        /* (In a real impl, this would be a signature check) */
         p->got_reply = true;
-        /* Fix #18: sub-millisecond RTT via uv_hrtime() */
         double rtt = (double)(uv_hrtime() / 1000000ULL - p->sent_ms);
         if (rtt < 0.0) rtt = 0.0;
+        
+        /* Hijack Detection Logic (from Python scanner) */
+        if (p->is_hijack_test) {
+            dns_decoded_t decoded[DNS_DECODEBUF_4K];
+            size_t decsz = sizeof(decoded);
+            if (dns_decode(decoded, &decsz, (const dns_packet_t*)p->recvbuf, (size_t)nread) == RCODE_OKAY) {
+                dns_query_t *resp = (dns_query_t*)decoded;
+                if (resp->ancount > 0) {
+                    LOG_ERR("HIJACK detected from %s (returned %d answers for NXDOMAIN)\n", 
+                            g_pool.resolvers[p->resolver_idx].ip, (int)resp->ancount);
+                    g_pool.resolvers[p->resolver_idx].hijacked = true;
+                    rpool_set_state(&g_pool, p->resolver_idx, RSV_ZOMBIE);
+                    return;
+                }
+            }
+        }
+        
+        /* EDNS Detection Logic */
+        if (p->is_edns_test) {
+            dns_decoded_t decoded[DNS_DECODEBUF_4K];
+            size_t decsz = sizeof(decoded);
+            if (dns_decode(decoded, &decsz, (const dns_packet_t*)p->recvbuf, (size_t)nread) == RCODE_OKAY) {
+                dns_query_t *resp = (dns_query_t*)decoded;
+                for (int i = 0; i < (int)resp->arcount; i++) {
+                    dns_answer_t *ans = &resp->additional[i];
+                    if (ans->generic.type == RR_OPT) {
+                        g_pool.resolvers[p->resolver_idx].edns0_supported = true;
+                        LOG_DEBUG("EDNS0 supported by %s (suggested payload: %d)\n",
+                                  g_pool.resolvers[p->resolver_idx].ip, (int)ans->opt.udp_payload);
+                    }
+                }
+            }
+        }
+
+        LOG_DEBUG("Probe success from %s: RTT %.1f ms\n", g_pool.resolvers[p->resolver_idx].ip, rtt);
         rpool_on_ack(&g_pool, p->resolver_idx, rtt);
+        
+        /* MTU Tracking */
+        if (p->sendlen > g_pool.resolvers[p->resolver_idx].mtu_low)
+            g_pool.resolvers[p->resolver_idx].mtu_low = (uint16_t)p->sendlen;
     } else {
+        LOG_DEBUG("Probe read error from %s: %s\n", 
+                  g_pool.resolvers[p->resolver_idx].ip, 
+                  nread < 0 ? uv_strerror((int)nread) : "Empty");
         rpool_on_loss(&g_pool, p->resolver_idx);
+        
+        /* MTU Tracking: mark failure if this was a larger probe */
+        if (p->sendlen > 512)
+            g_pool.resolvers[p->resolver_idx].mtu_high = (uint16_t)p->sendlen;
     }
 
     if (!uv_is_closing((uv_handle_t*)&p->udp)) {
@@ -259,6 +311,8 @@ static void on_probe_alloc(uv_handle_t *h, size_t sz, uv_buf_t *buf) {
 static void on_probe_send(uv_udp_send_t *sr, int status) {
     if (status != 0) {
         probe_req_t *p = sr->handle->data;
+        LOG_DEBUG("Probe send fail to %s: %s\n", 
+                  g_pool.resolvers[p->resolver_idx].ip, uv_strerror(status));
         if (!uv_is_closing((uv_handle_t*)&p->udp)) {
             rpool_on_loss(&g_pool, p->resolver_idx);
             uv_close((uv_handle_t*)&p->udp, on_probe_close);
@@ -267,48 +321,98 @@ static void on_probe_send(uv_udp_send_t *sr, int status) {
     }
 }
 
-static void fire_probe_ext(int idx, const uint8_t *payload, size_t paylen, const char *domain) {
+static void fire_probe_ext(int idx, const uint8_t *payload, size_t paylen, const char *domain, bool is_hijack, bool is_edns) {
     probe_req_t *p = calloc(1, sizeof(*p));
     if (!p) return;
 
     p->resolver_idx = idx;
-    p->sent_ms      = uv_hrtime() / 1000000ULL;  /* ms via monotonic clock */
+    p->is_hijack_test = is_hijack;
+    p->is_edns_test   = is_edns;
+    p->sent_ms      = uv_hrtime() / 1000000ULL;
 
     resolver_t *r = &g_pool.resolvers[idx];
     memcpy(&p->dest, &r->addr, sizeof(p->dest));
     p->dest.sin_port = htons(53);
 
-    /* Build a minimal POLL DNS query */
-    chunk_header_t hdr = {0};
-    hdr.version = DNSTUN_VERSION;
-    hdr.flags   = 0x08; /* poll flag */
-    make_session_id(hdr.session_id);
-    hdr.enc_format      = (uint8_t)r->enc;
-    hdr.downstream_mtu  = r->downstream_mtu;
-    hdr.upstream_mtu    = (uint16_t)paylen;
-    strncpy(hdr.user_id, g_cfg.user_id, sizeof(hdr.user_id));
+    dns_query_t qu;
+    memset(&qu, 0, sizeof(qu));
+    qu.id = (uint16_t)rand();
+    qu.flags = 0x0100; /* RD=1 */
+    qu.qdcount = 1;
+    
+    dns_question_t qd;
+    memset(&qd, 0, sizeof(qd));
+    char qname[256];
 
-    p->sendlen = sizeof(p->sendbuf);
-    if (build_dns_query(p->sendbuf, &p->sendlen, &hdr, payload, paylen, domain) != 0) {
-        free(p);
-        return;
+    if (is_hijack) {
+        snprintf(qname, sizeof(qname), "nx-%04x-%04x.com", rand() & 0xFFFF, rand() & 0xFFFF);
+        qd.name = qname;
+        qd.type = RR_A;
+        qu.questions = &qd;
+        p->sendlen = sizeof(p->sendbuf);
+        dns_encode((dns_packet_t*)p->sendbuf, &p->sendlen, (dns_decoded_t*)&qu);
+    } else {
+        /* Tunnel Poll logic with optional EDNS0 */
+        chunk_header_t hdr = {0};
+        hdr.version = DNSTUN_VERSION;
+        hdr.flags   = 0x08; /* poll flag */
+        make_session_id(hdr.session_id);
+        hdr.enc_format      = (uint8_t)r->enc;
+        hdr.downstream_mtu  = r->downstream_mtu;
+        hdr.upstream_mtu    = (uint16_t)paylen;
+        strncpy(hdr.user_id, g_cfg.user_id, sizeof(hdr.user_id));
+
+        p->sendlen = sizeof(p->sendbuf);
+        build_dns_query(p->sendbuf, &p->sendlen, &hdr, payload, paylen, domain);
+
+        if (is_edns) {
+            /* Append OPT record to existing packet */
+            dns_decoded_t dec[DNS_DECODEBUF_4K];
+            size_t decsz = sizeof(dec);
+            if (dns_decode(dec, &decsz, (const dns_packet_t*)p->sendbuf, p->sendlen) == RCODE_OKAY) {
+                 dns_query_t *dq = (dns_query_t*)dec;
+                 dns_answer_t opt;
+                 memset(&opt, 0, sizeof(opt));
+                 opt.generic.type = RR_OPT;
+                 opt.opt.udp_payload = 1232;
+                 opt.opt.version = 0;
+                 dq->additional = &opt;
+                 dq->arcount = 1;
+                 p->sendlen = sizeof(p->sendbuf);
+                 dns_encode((dns_packet_t*)p->sendbuf, &p->sendlen, (dns_decoded_t*)dq);
+            }
+        }
     }
 
-    uv_udp_init(g_loop, &p->udp);
+    if (uv_udp_init(g_loop, &p->udp) != 0) {
+        free(p); return;
+    }
     p->udp.data = p;
     
+    struct sockaddr_in bin_addr;
+    uv_ip4_addr("0.0.0.0", 0, &bin_addr);
+    uv_udp_bind(&p->udp, (const struct sockaddr*)&bin_addr, 0);
+
     uv_timer_init(g_loop, &p->timer);
     p->timer.data = p;
     uv_timer_start(&p->timer, on_probe_timeout, 2000, 0);
 
     uv_udp_recv_start(&p->udp, on_probe_alloc, on_probe_recv);
     uv_buf_t buf = uv_buf_init((char*)p->sendbuf, (unsigned)p->sendlen);
-    uv_udp_send(&p->send_req, &p->udp, &buf, 1,
-                (const struct sockaddr*)&p->dest, on_probe_send);
+    int r_sd = uv_udp_send(&p->send_req, &p->udp, &buf, 1,
+                           (const struct sockaddr*)&p->dest, on_probe_send);
+    if (r_sd != 0) {
+        LOG_DEBUG("Immediate probe send fail: %s\n", uv_strerror(r_sd));
+        if (!uv_is_closing((uv_handle_t*)&p->udp)) {
+            uv_close((uv_handle_t*)&p->udp, on_probe_close);
+            uv_close((uv_handle_t*)&p->timer, on_probe_close);
+        }
+    }
 }
 
 static void fire_probe(int idx, const char *domain) {
-    fire_probe_ext(idx, NULL, 0, domain);
+    bool use_edns = g_pool.resolvers[idx].edns0_supported;
+    fire_probe_ext(idx, NULL, 0, domain, false, use_edns);
 }
 
 /* ────────────────────────────────────────────── */
@@ -357,30 +461,70 @@ static void resolver_init_phase(void) {
 
     /* Step 3: MTU / Rate Discovery */
     const char *domain = (g_cfg.domain_count > 0) ? g_cfg.domains[0] : "example.com";
-    int mtus[] = {512, 1024, 1400};
+    uint16_t mtus[] = { 512, 1024, 1400 };
     uint8_t dummy[1400]; memset(dummy, 'A', 1400);
 
-    LOG_INFO("Measuring MTU & Benchmarking QPS...\n");
+    /* Stage 1: Hijack Detection (NXDOMAIN test) */
+    LOG_INFO("Scanning for DNS Hijacking / Captive Portals...\n");
+    for (int i = 0; i < g_pool.count; i++) {
+        fire_probe_ext(i, NULL, 0, domain, true, false);
+        if (i % 32 == 0) uv_run(g_loop, UV_RUN_NOWAIT);
+    }
+
+    /* Stage 2: EDNS0 Detection */
+    LOG_INFO("Detecting EDNS0 support...\n");
+    for (int i = 0; i < g_pool.count; i++) {
+        fire_probe_ext(i, NULL, 0, domain, false, true);
+        if (i % 32 == 0) uv_run(g_loop, UV_RUN_NOWAIT);
+    }
+
+    /* Stage 3: MTU Benchmarking (Initial) */
+    LOG_INFO("Measuring MTU & Benchmarking RTT...\n");
     for (int m = 0; m < 3; m++) {
         for (int i = 0; i < g_pool.count; i++) {
-            fire_probe_ext(i, dummy, mtus[m], domain);
+            fire_probe_ext(i, dummy, mtus[m], domain, false, false);
             if (i % 16 == 0) uv_run(g_loop, UV_RUN_NOWAIT);
         }
     }
 
-    /* Wait for settlement */
+    /* Wait for settlement of initial stages */
     uv_timer_t wait;
     uv_timer_init(g_loop, &wait);
-    uv_timer_start(&wait, on_init_phase_timeout, 3000, 0);
+    uv_timer_start(&wait, on_init_phase_timeout, 4000, 0);
     uv_run(g_loop, UV_RUN_DEFAULT);
+
+    /* Stage 4: MTU Binary Search Refinement (3 iterations) */
+    LOG_INFO("Refining MTU boundaries (Binary Search)...\n");
+    for (int iter = 0; iter < 3; iter++) {
+        int probes_sent = 0;
+        for (int i = 0; i < g_pool.count; i++) {
+            resolver_t *r = &g_pool.resolvers[i];
+            if (r->state == RSV_ZOMBIE) continue;
+            if (r->mtu_high <= r->mtu_low + 8) continue;
+
+            uint16_t mid = (r->mtu_low + r->mtu_high) / 2;
+            fire_probe_ext(i, dummy, mid, domain, false, false);
+            probes_sent++;
+            if (probes_sent % 32 == 0) uv_run(g_loop, UV_RUN_NOWAIT);
+        }
+        if (probes_sent > 0) {
+            uv_timer_start(&wait, on_init_phase_timeout, 1500, 0);
+            uv_run(g_loop, UV_RUN_DEFAULT);
+        }
+    }
+
     uv_close((uv_handle_t*)&wait, NULL);
     uv_run(g_loop, UV_RUN_NOWAIT);
 
-    /* Promote resolvers that replied (got_reply tracked via AIMD acks) */
+    /* Final Promotion Logic */
     int active = 0;
     for (int i = 0; i < g_pool.count; i++) {
         resolver_t *r = &g_pool.resolvers[i];
-        if (r->rtt_ms < 900.0 && r->state == RSV_DEAD) {
+        /* Promote if we got at least one reply and not hijacked */
+        if (r->health_window > 0 && r->state == RSV_DEAD) {
+            r->upstream_mtu = r->mtu_low;
+            LOG_DEBUG("Promoting %s to ACTIVE (RTT %.1f, MTU %d, EDNS %s)\n", 
+                      r->ip, r->rtt_ms, r->upstream_mtu, r->edns0_supported ? "YES":"no");
             rpool_set_state(&g_pool, i, RSV_ACTIVE);
             active++;
         }
@@ -597,7 +741,6 @@ static void on_dns_recv(uv_udp_t *h,
     int ridx = q->resolver_idx;
 
     if (nread > 0) {
-        /* Measure RTT (fix #14: variable is now correctly named sent_ms) */
         double rtt = (double)(uv_hrtime() / 1000000ULL - q->sent_ms);
         if (rtt < 0.0) rtt = 0.0;
         rpool_on_ack(&g_pool, ridx, rtt);
@@ -645,14 +788,18 @@ static void on_dns_recv(uv_udp_t *h,
                     }
                     g_stats.queries_recv++;
                     g_stats.last_server_rx_ms = uv_hrtime() / 1000000ULL;
+                    LOG_DEBUG("DNS success from %s (decoded)\n", g_pool.resolvers[ridx].ip);
                 }
             }
         } else {
-            /* Bad / zombie response — lose a packet */
+            LOG_DEBUG("DNS decode error from %s\n", g_pool.resolvers[ridx].ip);
             rpool_on_loss(&g_pool, ridx);
             g_stats.queries_lost++;
         }
     } else {
+        LOG_DEBUG("DNS read error from %s: %s\n", 
+                  g_pool.resolvers[ridx].ip, 
+                  nread < 0 ? uv_strerror((int)nread) : "Empty");
         rpool_on_loss(&g_pool, ridx);
         g_stats.queries_lost++;
     }
@@ -697,7 +844,10 @@ static void on_jitter_timer(uv_timer_t *t) {
     uv_buf_t buf = uv_buf_init((char*)q->sendbuf, (unsigned)q->sendlen);
     if (uv_udp_send(&jc->send_req, &q->udp, &buf, 1,
                     (const struct sockaddr*)&q->dest, on_dns_send) != 0) {
-        uv_close((uv_handle_t*)&q->udp, on_dns_query_close);
+        if (!uv_is_closing((uv_handle_t*)&q->udp)) {
+            uv_close((uv_handle_t*)&q->udp, on_dns_query_close);
+            uv_close((uv_handle_t*)&q->timer, on_dns_query_close);
+        }
     } else {
         g_stats.queries_sent++;
     }
@@ -706,9 +856,9 @@ static void on_jitter_timer(uv_timer_t *t) {
 
 /* Fire one DNS query chunk for a session.
    'seq' is the actual sequence number of this FEC symbol. */
-static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
-                                  const uint8_t *payload, size_t paylen,
-                                  int total_symbols)
+static void fire_dns_chunk_symbol_raw(int session_idx, uint16_t seq,
+                                      const uint8_t *payload, size_t paylen,
+                                      int total_symbols)
 {
     int ridx = rpool_next(&g_pool);
     if (ridx < 0) return;
@@ -754,9 +904,20 @@ static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
     memcpy(&q->dest, &r->addr, sizeof(q->dest));
     q->dest.sin_port = htons(53);
 
-    uv_udp_init(g_loop, &q->udp);
+    if (uv_udp_init(g_loop, &q->udp) != 0) {
+        free(q); return;
+    }
     q->udp.data = q;
     q->sent_ms  = uv_hrtime() / 1000000ULL;
+
+    /* Explicit bind */
+    struct sockaddr_in bin_addr;
+    uv_ip4_addr("0.0.0.0", 0, &bin_addr);
+    uv_udp_bind(&q->udp, (const struct sockaddr*)&bin_addr, 0);
+
+    uv_timer_init(g_loop, &q->timer);
+    q->timer.data = q;
+    uv_timer_start(&q->timer, on_dns_timeout, 2000, 0);
 
     uv_udp_recv_start(&q->udp, on_dns_alloc, on_dns_recv);
 
@@ -775,12 +936,32 @@ static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
 
     /* Immediate send (no jitter or allocation failure) */
     uv_buf_t buf = uv_buf_init((char*)q->sendbuf, (unsigned)q->sendlen);
-    if (uv_udp_send(&q->send_req, &q->udp, &buf, 1,
-                    (const struct sockaddr*)&q->dest, on_dns_send) != 0)
-    {
-        uv_close((uv_handle_t*)&q->udp, on_dns_query_close);
+    int r_sd = uv_udp_send(&q->send_req, &q->udp, &buf, 1,
+                           (const struct sockaddr*)&q->dest, on_dns_send);
+    if (r_sd != 0) {
+        LOG_DEBUG("Immediate DNS send fail to %s: %s\n", r->ip, uv_strerror(r_sd));
+        if (!uv_is_closing((uv_handle_t*)&q->udp)) {
+            uv_close((uv_handle_t*)&q->udp, on_dns_query_close);
+            uv_close((uv_handle_t*)&q->timer, on_dns_query_close);
+        }
     } else {
         g_stats.queries_sent++;
+    }
+}
+
+static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
+                                  const uint8_t *payload, size_t paylen,
+                                  int total_symbols)
+{
+    /* Primary send */
+    fire_dns_chunk_symbol_raw(session_idx, seq, payload, paylen, total_symbols);
+
+    /* Handshake Redundancy (fix #28): 
+       Duplicate critical packets (seq 0) to top 3 resolvers to ensure fast connect. */
+    if (seq == 0 && paylen > 0) {
+        LOG_DEBUG("Handshake duplication for seq 0 (3x)\n");
+        fire_dns_chunk_symbol_raw(session_idx, seq, payload, paylen, total_symbols);
+        fire_dns_chunk_symbol_raw(session_idx, seq, payload, paylen, total_symbols);
     }
 }
 

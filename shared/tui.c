@@ -173,9 +173,12 @@ static void render_resolvers(tui_ctx_t *t) {
         double           cwnd;
         double           rtt_ms;
         double           max_qps;
-        int              downstream_mtu;
-        double           loss_rate;
-        uint32_t         fec_k;
+        uint16_t         upstream_mtu;
+        uint16_t         downstream_mtu;
+        bool             edns0_supported;
+        bool             hijacked;
+        uint32_t         health_window;
+        int              health_cursor;
         enc_format_t     enc;
     } snap_t;
 
@@ -191,33 +194,37 @@ static void render_resolvers(tui_ctx_t *t) {
         snaps[shown].cwnd          = r->cwnd;
         snaps[shown].rtt_ms        = r->rtt_ms;
         snaps[shown].max_qps       = r->max_qps;
+        snaps[shown].upstream_mtu  = r->upstream_mtu;
         snaps[shown].downstream_mtu = r->downstream_mtu;
-        snaps[shown].loss_rate     = r->loss_rate;
-        snaps[shown].fec_k         = r->fec_k;
+        snaps[shown].edns0_supported = r->edns0_supported;
+        snaps[shown].hijacked      = r->hijacked;
+        snaps[shown].health_window = r->health_window;
+        snaps[shown].health_cursor = r->health_cursor;
         snaps[shown].enc           = r->enc;
         strncpy(snaps[shown].ip, r->ip, sizeof(snaps[shown].ip) - 1);
         shown++;
     }
     uv_mutex_unlock(&pool->lock);
 
-    printf(ANSI_BOLD ANSI_CYAN " ▌ RESOLVER POOL (%d total) ▌\n" ANSI_RESET, total);
+    printf(ANSI_BOLD ANSI_CYAN " ▌ ACTIVE RESOLVER POOL (%d total) ▌\n" ANSI_RESET, total);
     hr(72, ANSI_CYAN);
-    printf(ANSI_BOLD "%-16s %-8s %5s %6s %5s %4s %5s %4s %s\n" ANSI_RESET,
-           "IP", "State", "cwnd", "RTT ms", "QPS", "MTU", "Loss%", "FEC", "Enc");
+    printf(ANSI_BOLD "%-16s %-10s %5s %5s %5s %4s %-8s\n" ANSI_RESET,
+           "IP Address", "Status", "RTT", "MTU", "Hlth", "EDNS", "Encoding");
     hr(72, ANSI_CYAN);
 
     for (int i = 0; i < shown; i++) {
-        snap_t *s = &snaps[i];
-        printf("%-16s %s %5.0f %6.1f %5.0f %4d %5.1f %4u %s\n",
-               s->ip,
-               state_str(s->state),
-               s->cwnd,
-               s->rtt_ms,
-               s->max_qps,
-               s->downstream_mtu,
-               s->loss_rate * 100.0,
-               s->fec_k,
-               s->enc == ENC_BINARY ? "bin" : "b64");
+        int health = 0;
+        uint32_t w = snaps[i].health_window & 0x3FFFFFFF;
+        while (w) { if (w & 1) health++; w >>= 1; }
+
+        printf("%-16s %-10s %5.0f %5d %2d/30 %4s %-8s\n",
+               snaps[i].ip,
+               state_str(snaps[i].state),
+               snaps[i].rtt_ms,
+               snaps[i].upstream_mtu,
+               health,
+               snaps[i].edns0_supported ? "YES" : "-",
+               snaps[i].enc == ENC_BINARY ? "binary" : "base64");
     }
 
     hr(72, ANSI_CYAN);

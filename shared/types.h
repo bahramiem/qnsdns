@@ -78,7 +78,12 @@ typedef struct resolver {
     /* MTU */
     uint16_t           upstream_mtu;   /* max query payload bytes */
     uint16_t           downstream_mtu; /* max TXT response bytes */
+    uint16_t           mtu_low;        /* binary search current known good */
+    uint16_t           mtu_high;       /* binary search first known fail */
     bool               edns0_supported;
+    bool               hijacked;
+    uint32_t           health_window;  /* sliding window of success/fail (30 bits) */
+    int                health_cursor;
 
     /* RTT */
     double             rtt_ms;         /* last measured round-trip */
