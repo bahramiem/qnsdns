@@ -743,6 +743,27 @@ static int get_active_clients(tui_client_snap_t *out, int max_clients) {
     return count;
 }
 
+/* ────────────────────────────────────────────── */
+/*  TUI Input (TTY)                               */
+/* ────────────────────────────────────────────── */
+static uv_tty_t g_tty;
+
+static void on_tty_alloc(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf) {
+    (void)handle;
+    buf->base = malloc(suggested_size);
+    buf->len = suggested_size;
+}
+
+static void on_tty_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf) {
+    (void)stream;
+    if (nread > 0) {
+        for (ssize_t i=0; i<nread; i++) {
+            tui_handle_key(&g_tui, buf->base[i]);
+        }
+    }
+    if (buf->base) free(buf->base);
+}
+
 int main(int argc, char *argv[]) {
     const char *config_path = "server.ini";
     char domain_buf[512] = {0};
@@ -861,6 +882,11 @@ int main(int argc, char *argv[]) {
     LOG_INFO("  Workers  : %d\n", g_cfg.workers);
     LOG_INFO("  Swarm    : %d known resolvers\n", g_swarm_count);
     LOG_INFO("  Swarm serve: %s\n", g_cfg.swarm_serve ? "yes" : "no");
+
+    /* Bind STDIN */
+    uv_tty_init(g_loop, &g_tty, 0, 1);
+    uv_tty_set_mode(&g_tty, UV_TTY_MODE_RAW);
+    uv_read_start((uv_stream_t*)&g_tty, on_tty_alloc, on_tty_read);
 
     uv_run(g_loop, UV_RUN_DEFAULT);
 

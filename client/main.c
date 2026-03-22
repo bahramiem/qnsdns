@@ -23,8 +23,10 @@
 
 #ifdef _WIN32
 #include <process.h>
+#include <windows.h>
 #else
 #include <unistd.h>
+#include <sys/select.h>
 #endif
 
 #include "uv.h"
@@ -859,6 +861,27 @@ static void on_tui_timer(uv_timer_t *t) {
 }
 
 /* ────────────────────────────────────────────── */
+/*  TUI Input (TTY)                               */
+/* ────────────────────────────────────────────── */
+static uv_tty_t g_tty;
+
+static void on_tty_alloc(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf) {
+    (void)handle;
+    buf->base = malloc(suggested_size);
+    buf->len = suggested_size;
+}
+
+static void on_tty_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf) {
+    (void)stream;
+    if (nread > 0) {
+        for (ssize_t i=0; i<nread; i++) {
+            tui_handle_key(&g_tui, buf->base[i]);
+        }
+    }
+    if (buf->base) free(buf->base);
+}
+
+/* ────────────────────────────────────────────── */
 /*  Entry point                                   */
 /* ────────────────────────────────────────────── */
 int main(int argc, char *argv[]) {
@@ -939,6 +962,58 @@ int main(int argc, char *argv[]) {
 
     /* Init resolver pool, then load saved resolvers from disk */
     rpool_init(&g_pool, &g_cfg);
+
+    FILE *rf_check = fopen(g_resolvers_file, "r");
+    if (!rf_check) {
+        printf("\n  [WARN] Resolver file '%s' not found.\n", g_resolvers_file);
+        printf("  Would you like to auto-create it using the default seed_list?\n");
+        printf("  [Y/n] (Auto-yes in 5s): ");
+        fflush(stdout);
+        
+        char ans[16] = "y\n";
+        int do_create = 1;
+
+#ifdef _WIN32
+        HANDLE hStdin = GetStdHandle(STD_INPUT_HANDLE);
+        if (WaitForSingleObject(hStdin, 5000) == WAIT_OBJECT_0) {
+            if (fgets(ans, sizeof(ans), stdin)) {
+                if (ans[0] != 'y' && ans[0] != 'Y' && ans[0] != '\n') do_create = 0;
+            }
+        } else {
+            printf("\n  Timeout reached. Auto-creating.\n");
+        }
+#else
+        fd_set fds;
+        struct timeval tv;
+        tv.tv_sec = 5;
+        tv.tv_usec = 0;
+        FD_ZERO(&fds);
+        FD_SET(0, &fds);
+        if (select(1, &fds, NULL, NULL, &tv) > 0) {
+            if (fgets(ans, sizeof(ans), stdin)) {
+                if (ans[0] != 'y' && ans[0] != 'Y' && ans[0] != '\n') do_create = 0;
+            }
+        } else {
+            printf("\n  Timeout reached. Auto-creating.\n");
+        }
+#endif
+
+        if (do_create) {
+            FILE *fcreate = fopen(g_resolvers_file, "w");
+            if (fcreate) {
+                for (int m=0; m<g_cfg.seed_count; m++) {
+                    fprintf(fcreate, "%s\n", g_cfg.seed_resolvers[m]);
+                }
+                fclose(fcreate);
+                printf("  Created %s with %d default resolvers.\n\n", g_resolvers_file, g_cfg.seed_count);
+            }
+        } else {
+            printf("  Skipping creation.\n\n");
+        }
+    } else {
+        fclose(rf_check);
+    }
+
     resolvers_load();
 
     /* Parse SOCKS5 bind address */
@@ -991,6 +1066,11 @@ int main(int argc, char *argv[]) {
 
     /* Resolver init phase (probes resolvers, runs loop for ~3s) */
     resolver_init_phase();
+
+    /* Bind STDIN for TUI */
+    uv_tty_init(g_loop, &g_tty, 0, 1);
+    uv_tty_set_mode(&g_tty, UV_TTY_MODE_RAW);
+    uv_read_start((uv_stream_t*)&g_tty, on_tty_alloc, on_tty_read);
 
     /* Run event loop */
     uv_run(g_loop, UV_RUN_DEFAULT);

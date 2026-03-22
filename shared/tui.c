@@ -403,6 +403,7 @@ void tui_handle_key(tui_ctx_t *t, int key) {
 
 void tui_shutdown(tui_ctx_t *t) {
     t->running = 0;
+    uv_tty_reset_mode();
     printf(ANSI_SHOW_CUR ANSI_RESET "\n");
     fflush(stdout);
 }
