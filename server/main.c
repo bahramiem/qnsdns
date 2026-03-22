@@ -759,6 +759,7 @@ static void on_tty_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
     if (nread > 0) {
         for (ssize_t i=0; i<nread; i++) {
             tui_handle_key(&g_tui, buf->base[i]);
+            if (!g_tui.running) uv_stop(g_loop);
         }
     }
     if (buf->base) free(buf->base);
@@ -849,8 +850,8 @@ int main(int argc, char *argv[]) {
     }
 
     /* ── First-run: ask for tunnel domain if not configured ── */
-    if (g_cfg.domain_count == 0) {
-        printf("\n  No tunnel domain configured.\n");
+    if (g_cfg.domain_count == 0 || (g_cfg.domain_count == 1 && strcmp(g_cfg.domains[0], "tun.example.com") == 0)) {
+        printf("\n  No tunnel domain configured (or default tun.example.com is in use).\n");
         printf("  Enter the subdomain this server will handle\n");
         printf("  (e.g. tun.example.com, separate multiple with commas): ");
         fflush(stdout);

@@ -310,6 +310,10 @@ static void cidr_scan_subnet(const char *seed_ip, int prefix) {
 /* ────────────────────────────────────────────── */
 /*  Resolver Init Phase                           */
 /* ────────────────────────────────────────────── */
+static void on_init_phase_timeout(uv_timer_t *t) {
+    uv_stop(t->loop);
+}
+
 static void resolver_init_phase(void) {
     LOG_INFO("=== Resolver Initialization Phase ===\n");
 
@@ -339,7 +343,7 @@ static void resolver_init_phase(void) {
     /* Wait for settlement */
     uv_timer_t wait;
     uv_timer_init(g_loop, &wait);
-    uv_timer_start(&wait, (uv_timer_cb)uv_stop, 3000, 0);
+    uv_timer_start(&wait, on_init_phase_timeout, 3000, 0);
     uv_run(g_loop, UV_RUN_DEFAULT);
     uv_close((uv_handle_t*)&wait, NULL);
     uv_run(g_loop, UV_RUN_NOWAIT);
@@ -877,6 +881,7 @@ static void on_tty_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
     if (nread > 0) {
         for (ssize_t i=0; i<nread; i++) {
             tui_handle_key(&g_tui, buf->base[i]);
+            if (!g_tui.running) uv_stop(g_loop);
         }
     }
     if (buf->base) free(buf->base);
@@ -985,8 +990,8 @@ int main(int argc, char *argv[]) {
 
     /* ── First-run: ask for tunnel domain if not configured ────────────────
        This writes the domain to the INI file so subsequent runs are silent. */
-    if (g_cfg.domain_count == 0) {
-        printf("\n  No tunnel domain configured.\n");
+    if (g_cfg.domain_count == 0 || (g_cfg.domain_count == 1 && strcmp(g_cfg.domains[0], "tun.example.com") == 0)) {
+        printf("\n  No tunnel domain configured (or default tun.example.com is in use).\n");
         printf("  Enter the subdomain delegated to your dnstun-server\n");
         printf("  (e.g. tun.example.com, separate multiple with commas): ");
         fflush(stdout);

@@ -276,9 +276,10 @@ static void on_domain_input_done(tui_ctx_t *t, const char *value) {
         config_set_key(t->cfg, "domains", "list", value);
         if (t->config_path)
             config_save_domains(t->config_path, t->cfg);
-        /* Trigger process restart */
-        t->running = 0;
-        t->restart = 1;
+        
+        /* Note: No restart is needed! The client/server network loop 
+           reads t->cfg->domains arrays dynamically every tick. 
+           Changing it here applies it instantly to all future DNS queries. */
     }
 }
 
