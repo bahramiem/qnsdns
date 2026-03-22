@@ -269,10 +269,10 @@ static void on_probe_recv(uv_udp_t *h, ssize_t nread,
                 dns_query_t *resp = (dns_query_t*)decoded;
                 for (int i = 0; i < (int)resp->arcount; i++) {
                     dns_answer_t *ans = &resp->additional[i];
-                    if (ans->generic.type == RR_OPT) {
+                    if (ans->opt.type == RR_OPT) {
                         g_pool.resolvers[p->resolver_idx].edns0_supported = true;
-                        LOG_DEBUG("EDNS0 supported by %s (suggested payload: %d)\n",
-                                  g_pool.resolvers[p->resolver_idx].ip, (int)ans->opt.udp_payload);
+                        LOG_DEBUG("EDNS0 supported by %s (suggested payload: %zu)\n",
+                                  g_pool.resolvers[p->resolver_idx].ip, ans->opt.udp_payload);
                     }
                 }
             }
@@ -334,23 +334,27 @@ static void fire_probe_ext(int idx, const uint8_t *payload, size_t paylen, const
     memcpy(&p->dest, &r->addr, sizeof(p->dest));
     p->dest.sin_port = htons(53);
 
-    dns_query_t qu;
-    memset(&qu, 0, sizeof(qu));
-    qu.id = (uint16_t)rand();
-    qu.flags = 0x0100; /* RD=1 */
-    qu.qdcount = 1;
-    
-    dns_question_t qd;
-    memset(&qd, 0, sizeof(qd));
-    char qname[256];
-
     if (is_hijack) {
+        /* Build a standard A-record query for a random non-existent name */
+        dns_query_t qu;
+        dns_question_t qd;
+        char qname[256];
+
+        memset(&qu, 0, sizeof(qu));
+        qu.id     = (int)(rand() & 0xFFFF);
+        qu.query  = true;   /* this is a query, not a response */
+        qu.rd     = true;   /* recursion desired */
+        qu.qdcount = 1;
+
+        memset(&qd, 0, sizeof(qd));
         snprintf(qname, sizeof(qname), "nx-%04x-%04x.com", rand() & 0xFFFF, rand() & 0xFFFF);
-        qd.name = qname;
-        qd.type = RR_A;
+        qd.name  = qname;
+        qd.type  = RR_A;
+        qd.class = CLASS_IN;
         qu.questions = &qd;
+
         p->sendlen = sizeof(p->sendbuf);
-        dns_encode((dns_packet_t*)p->sendbuf, &p->sendlen, (dns_decoded_t*)&qu);
+        dns_encode((dns_packet_t*)p->sendbuf, &p->sendlen, &qu);
     } else {
         /* Tunnel Poll logic with optional EDNS0 */
         chunk_header_t hdr = {0};
@@ -366,20 +370,23 @@ static void fire_probe_ext(int idx, const uint8_t *payload, size_t paylen, const
         build_dns_query(p->sendbuf, &p->sendlen, &hdr, payload, paylen, domain);
 
         if (is_edns) {
-            /* Append OPT record to existing packet */
-            dns_decoded_t dec[DNS_DECODEBUF_4K];
-            size_t decsz = sizeof(dec);
-            if (dns_decode(dec, &decsz, (const dns_packet_t*)p->sendbuf, p->sendlen) == RCODE_OKAY) {
-                 dns_query_t *dq = (dns_query_t*)dec;
-                 dns_answer_t opt;
+            /* Append OPT record to existing packet to probe EDNS0 */
+            dns_decoded_t decbuf[DNS_DECODEBUF_4K];
+            size_t decsz = sizeof(decbuf);
+            if (dns_decode(decbuf, &decsz, (const dns_packet_t*)p->sendbuf, p->sendlen) == RCODE_OKAY) {
+                 dns_query_t *dq = (dns_query_t*)decbuf;
+                 dns_edns0opt_t opt;
                  memset(&opt, 0, sizeof(opt));
-                 opt.generic.type = RR_OPT;
-                 opt.opt.udp_payload = 1232;
-                 opt.opt.version = 0;
-                 dq->additional = &opt;
+                 opt.type = RR_OPT;
+                 opt.udp_payload = 1232;
+                 opt.version = 0;
+                 dns_answer_t opt_ans;
+                 memset(&opt_ans, 0, sizeof(opt_ans));
+                 opt_ans.opt = opt;
+                 dq->additional = &opt_ans;
                  dq->arcount = 1;
                  p->sendlen = sizeof(p->sendbuf);
-                 dns_encode((dns_packet_t*)p->sendbuf, &p->sendlen, (dns_decoded_t*)dq);
+                 dns_encode((dns_packet_t*)p->sendbuf, &p->sendlen, dq);
             }
         }
     }
@@ -1164,9 +1171,11 @@ int main(int argc, char *argv[]) {
         }
         if (!config_path) {
             /* Try relative to executable */
-            char exe_path[2048];
+            /* Reserve 32 bytes for the longest possible suffix "/../../.." + "/client.ini" */
+            char exe_path[sizeof(auto_config_path) - 32];
             size_t size = sizeof(exe_path);
             if (uv_exepath(exe_path, &size) == 0) {
+                exe_path[sizeof(exe_path) - 1] = '\0'; /* guarantee NUL */
                 char *eslash = strrchr(exe_path, '/');
 #ifdef _WIN32
                 char *ebslash = strrchr(exe_path, '\\');
@@ -1176,7 +1185,8 @@ int main(int argc, char *argv[]) {
                     *eslash = '\0';
                     const char *rel[] = {"", "/..", "/../..", "/../../.."};
                     for (int i = 0; i < 4; i++) {
-                        snprintf(auto_config_path, sizeof(auto_config_path), "%s%s/client.ini", exe_path, rel[i]);
+                        snprintf(auto_config_path, sizeof(auto_config_path),
+                                 "%s%s/client.ini", exe_path, rel[i]);
                         FILE *tf = fopen(auto_config_path, "r");
                         if (tf) {
                             fclose(tf);

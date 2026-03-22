@@ -809,9 +809,11 @@ int main(int argc, char *argv[]) {
         }
         if (!config_path) {
             /* Try relative to executable */
-            char exe_path[2048];
+            /* Reserve 32 bytes for the longest possible suffix "/../../.." + "/server.ini" */
+            char exe_path[sizeof(auto_config_path) - 32];
             size_t size = sizeof(exe_path);
             if (uv_exepath(exe_path, &size) == 0) {
+                exe_path[sizeof(exe_path) - 1] = '\0'; /* guarantee NUL */
                 char *eslash = strrchr(exe_path, '/');
 #ifdef _WIN32
                 char *ebslash = strrchr(exe_path, '\\');
@@ -821,7 +823,8 @@ int main(int argc, char *argv[]) {
                     *eslash = '\0';
                     const char *rel[] = {"", "/..", "/../..", "/../../.."};
                     for (int i = 0; i < 4; i++) {
-                        snprintf(auto_config_path, sizeof(auto_config_path), "%s%s/server.ini", exe_path, rel[i]);
+                        snprintf(auto_config_path, sizeof(auto_config_path),
+                                 "%s%s/server.ini", exe_path, rel[i]);
                         FILE *tf = fopen(auto_config_path, "r");
                         if (tf) {
                             fclose(tf);
