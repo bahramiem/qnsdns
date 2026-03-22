@@ -554,10 +554,9 @@ void tui_shutdown(tui_ctx_t *t) {
 /* ── tui_log — thread-safe ring-buffer logger ───────────────────────────────*/
 void tui_log(tui_ctx_t *t, tui_log_level_t level, const char *fmt, ...) {
     if (!t) {
-        /* TUI not initialised yet — fall back to stderr */
         va_list ap;
         va_start(ap, fmt);
-        vfprintf(stderr, fmt, ap);
+        vfprintf(level == TUI_LOG_ERR ? stderr : stdout, fmt, ap);
         va_end(ap);
         return;
     }
