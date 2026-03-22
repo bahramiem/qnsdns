@@ -1121,7 +1121,7 @@ static void on_tty_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
 /* ────────────────────────────────────────────── */
 int main(int argc, char *argv[]) {
     const char *config_path = NULL;
-    static char auto_config_path[1024] = {0};
+    static char auto_config_path[2048] = {0};
     char *slash;
 #ifdef _WIN32
     char *bslash;
@@ -1164,7 +1164,7 @@ int main(int argc, char *argv[]) {
         }
         if (!config_path) {
             /* Try relative to executable */
-            char exe_path[1024];
+            char exe_path[2048];
             size_t size = sizeof(exe_path);
             if (uv_exepath(exe_path, &size) == 0) {
                 char *eslash = strrchr(exe_path, '/');
