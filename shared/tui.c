@@ -101,6 +101,34 @@ static void render_stats(tui_ctx_t *t) {
 
 /* ── Panel 1: Resolver table ────────────────────────────────────────────────*/
 static void render_resolvers(tui_ctx_t *t) {
+    if (strcmp(t->stats->mode, "SERVER") == 0) {
+        if (!t->get_clients_cb) {
+            printf(ANSI_BOLD ANSI_CYAN " ▌ ACTIVE CLIENT SESSIONS ▌\n" ANSI_RESET);
+            hr(72, ANSI_CYAN);
+            printf(" (Not initialized)\n");
+            return;
+        }
+        tui_client_snap_t snaps[24];
+        int num = t->get_clients_cb(snaps, 24);
+        printf(ANSI_BOLD ANSI_CYAN " ▌ ACTIVE CLIENT SESSIONS (%d shown) ▌\n" ANSI_RESET, num);
+        hr(72, ANSI_CYAN);
+        printf(ANSI_BOLD "%-16s %5s %5s %5s %5s %8s\n" ANSI_RESET,
+               "Client IP", "MTU", "Loss%", "FEC", "Enc", "Idle(s)");
+        hr(72, ANSI_CYAN);
+        for (int i=0; i<num; i++) {
+            printf("%-16s %5d %5d %5d %5s %8u\n",
+                   snaps[i].ip,
+                   snaps[i].downstream_mtu,
+                   (int)snaps[i].loss_pct,
+                   (int)snaps[i].fec_k,
+                   snaps[i].enc_format == ENC_BINARY ? "bin" : "b64",
+                   snaps[i].idle_sec);
+        }
+        hr(72, ANSI_CYAN);
+        printf(ANSI_BOLD " Press ANY KEY to return to main menu ...\n" ANSI_RESET);
+        return;
+    }
+
     resolver_pool_t *pool = t->pool;
 
     /* Snapshot resolver data while locked, then print without the lock.
@@ -215,6 +243,9 @@ static void on_domain_input_done(tui_ctx_t *t, const char *value) {
         config_set_key(t->cfg, "domains", "list", value);
         if (t->config_path)
             config_save_domains(t->config_path, t->cfg);
+        /* Trigger process restart */
+        t->running = 0;
+        t->restart = 1;
     }
 }
 
@@ -235,10 +266,21 @@ static void on_resolver_input_done(tui_ctx_t *t, const char *value) {
     /* Append to the resolver file so it persists across restarts */
     if (t->config_path) {
         /* Derive resolver file path: same dir as config, fixed name */
-        FILE *rf = fopen("client_resolvers.txt", "a");
+        char rf_path[1024];
+        strncpy(rf_path, t->config_path, sizeof(rf_path)-1);
+        char *slash = strrchr(rf_path, '/');
+#ifdef _WIN32
+        char *bslash = strrchr(rf_path, '\\');
+        if (bslash > slash) slash = bslash;
+#endif
+        if (slash) strncpy(slash + 1, "client_resolvers.txt", sizeof(rf_path) - (slash - rf_path) - 1);
+        else strcpy(rf_path, "client_resolvers.txt");
+
+        FILE *rf = fopen(rf_path, "a");
         if (rf) { fprintf(rf, "%s\n", ip); fclose(rf); }
     }
 }
+
 
 /* ── Public API ─────────────────────────────────────────────────────────────*/
 void tui_init(tui_ctx_t *t, tui_stats_t *stats,
@@ -295,6 +337,15 @@ void tui_handle_key(tui_ctx_t *t, int key) {
     }
 
     /* ── Normal mode ── */
+    if (strcmp(t->stats->mode, "SERVER") == 0 && t->panel == 1) {
+        if (key == 'q') {
+            t->running = 0;
+        } else {
+            t->panel = 0; /* Any other key returns to stats */
+        }
+        return;
+    }
+
     switch (key) {
         case '1': t->panel = 0; break;
         case '2': t->panel = 1; break;

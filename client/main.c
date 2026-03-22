@@ -21,6 +21,12 @@
 #include <time.h>
 #include <math.h>
 
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
+
 #include "uv.h"
 #include "SPCDNS/dns.h"
 #include "SPCDNS/output.h"
@@ -52,7 +58,7 @@ static session_t        g_sessions[DNSTUN_MAX_SESSIONS];
 static int              g_session_count = 0;
 
 /* Persistent resolver list file */
-#define RESOLVERS_FILE "client_resolvers.txt"
+static char g_resolvers_file[1024];
 
 /* ────────────────────────────────────────────── */
 /*  Utility                                       */
@@ -77,7 +83,8 @@ static void make_session_id(uint8_t *id) {
 /*  Resolver file persistence                     */
 /* ────────────────────────────────────────────── */
 static void resolvers_save(void) {
-    FILE *f = fopen(RESOLVERS_FILE, "w");
+    if (!g_resolvers_file[0]) return;
+    FILE *f = fopen(g_resolvers_file, "w");
     if (!f) return;
     uv_mutex_lock(&g_pool.lock);
     for (int i = 0; i < g_pool.count; i++) {
@@ -90,7 +97,8 @@ static void resolvers_save(void) {
 }
 
 static void resolvers_load(void) {
-    FILE *f = fopen(RESOLVERS_FILE, "r");
+    if (!g_resolvers_file[0]) return;
+    FILE *f = fopen(g_resolvers_file, "r");
     if (!f) return;
     char line[64];
     int added = 0;
@@ -112,7 +120,7 @@ static void resolvers_load(void) {
     }
     fclose(f);
     if (added > 0)
-        LOG_INFO("Loaded %d resolvers from %s\n", added, RESOLVERS_FILE);
+        LOG_INFO("Loaded %d resolvers from %s\n", added, g_resolvers_file);
 }
 
 /* ────────────────────────────────────────────── */
@@ -852,13 +860,39 @@ static void on_tui_timer(uv_timer_t *t) {
 /*  Entry point                                   */
 /* ────────────────────────────────────────────── */
 int main(int argc, char *argv[]) {
+    const char *config_path = "client.ini";
+    char *slash;
+#ifdef _WIN32
+    char *bslash;
+#endif
+    char domain_buf[512] = {0};
+    char threads_str[16];
+    char bind_ip[64] = "127.0.0.1";
+    int  bind_port   = 1080;
+    char tmp[64];
+    char *colon;
+    struct sockaddr_in socks5_addr;
+    uv_timer_t chrome_timer;
+
     srand((unsigned)time(NULL));
 
     /* Parse arguments */
-    const char *config_path = "client.ini";
     for (int i = 1; i < argc - 1; i++) {
         if (strcmp(argv[i], "-c") == 0 || strcmp(argv[i], "--config") == 0)
             config_path = argv[i+1];
+    }
+
+    /* Set g_resolvers_file to be safely beside config_path */
+    strncpy(g_resolvers_file, config_path, sizeof(g_resolvers_file)-1);
+    slash = strrchr(g_resolvers_file, '/');
+#ifdef _WIN32
+    bslash = strrchr(g_resolvers_file, '\\');
+    if (bslash > slash) slash = bslash;
+#endif
+    if (slash) {
+        strncpy(slash + 1, "client_resolvers.txt", sizeof(g_resolvers_file) - (slash - g_resolvers_file) - 1);
+    } else {
+        strcpy(g_resolvers_file, "client_resolvers.txt");
     }
 
     /* Load config */
@@ -877,7 +911,6 @@ int main(int argc, char *argv[]) {
         printf("  Enter the subdomain delegated to your dnstun-server\n");
         printf("  (e.g. tun.example.com, separate multiple with commas): ");
         fflush(stdout);
-        char domain_buf[512] = {0};
         if (fgets(domain_buf, sizeof(domain_buf), stdin)) {
             domain_buf[strcspn(domain_buf, "\r\n")] = '\0';
             if (domain_buf[0]) {
@@ -893,7 +926,6 @@ int main(int argc, char *argv[]) {
     }
 
     /* libuv thread pool */
-    char threads_str[16];
     snprintf(threads_str, sizeof(threads_str), "%d", g_cfg.workers);
 #ifdef _WIN32
     _putenv_s("UV_THREADPOOL_SIZE", threads_str);
@@ -908,12 +940,9 @@ int main(int argc, char *argv[]) {
     resolvers_load();
 
     /* Parse SOCKS5 bind address */
-    char bind_ip[64] = "127.0.0.1";
-    int  bind_port   = 1080;
     if (g_cfg.socks5_bind[0]) {
-        char tmp[64];
         strncpy(tmp, g_cfg.socks5_bind, sizeof(tmp)-1);
-        char *colon = strrchr(tmp, ':');
+        colon = strrchr(tmp, ':');
         if (colon) {
             *colon = '\0';
             bind_port = atoi(colon+1);
@@ -922,7 +951,6 @@ int main(int argc, char *argv[]) {
     }
 
     /* Start SOCKS5 server */
-    struct sockaddr_in socks5_addr;
     uv_ip4_addr(bind_ip, bind_port, &socks5_addr);
     uv_tcp_init(g_loop, &g_socks5_server);
     uv_tcp_bind(&g_socks5_server, (const struct sockaddr*)&socks5_addr, 0);
@@ -946,7 +974,6 @@ int main(int argc, char *argv[]) {
        is already accepting connections during the 3-second probe window.
        Any connection arriving before a resolver is promoted will simply
        queue in its session send buffer until the first POLL fires. */
-    uv_timer_t chrome_timer;
     uv_timer_init(g_loop, &chrome_timer);
     uv_timer_start(&chrome_timer, fire_chrome_cover_traffic, 5000, 15000);
 
@@ -969,5 +996,15 @@ int main(int argc, char *argv[]) {
     tui_shutdown(&g_tui);
     resolvers_save();   /* persist final resolver list on clean exit */
     rpool_destroy(&g_pool);
+
+    if (g_tui.restart) {
+        LOG_INFO("Restarting process to apply new domain...\n");
+#ifdef _WIN32
+        _execvp(argv[0], argv);
+#else
+        execvp(argv[0], argv);
+#endif
+    }
     return 0;
 }
+

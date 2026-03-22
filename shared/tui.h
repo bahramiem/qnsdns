@@ -25,6 +25,18 @@ typedef struct {
 } tui_stats_t;
 
 /* ──────────────────────────────────────────────
+   TUI Server Snapshot (mock competencies for server clients)
+────────────────────────────────────────────── */
+typedef struct {
+    char     ip[46];
+    uint16_t downstream_mtu;
+    uint8_t  loss_pct;
+    uint8_t  fec_k;
+    uint8_t  enc_format;
+    uint32_t idle_sec;
+} tui_client_snap_t;
+
+/* ──────────────────────────────────────────────
    TUI context
 ────────────────────────────────────────────── */
 typedef struct tui_ctx {
@@ -32,6 +44,7 @@ typedef struct tui_ctx {
     resolver_pool_t  *pool;
     dnstun_config_t  *cfg;
     volatile int      running;
+    volatile int      restart;
     int               panel;        /* 0=stats, 1=resolvers, 2=config */
     const char       *config_path;  /* path to INI file for saving    */
 
@@ -42,6 +55,9 @@ typedef struct tui_ctx {
     char  input_label[64];
     /* Callback invoked with final string when Enter is pressed */
     void (*input_done_cb)(struct tui_ctx *t, const char *value);
+
+    /* Callback for server to fetch active client sessions */
+    int (*get_clients_cb)(tui_client_snap_t *out, int max_clients);
 } tui_ctx_t;
 
 /* Init and run (called once per second from a timer or a dedicated thread) */

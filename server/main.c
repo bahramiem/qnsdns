@@ -22,6 +22,12 @@
 #include <time.h>
 #include <math.h>
 
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
+
 #include "uv.h"
 #include "SPCDNS/dns.h"
 #include "SPCDNS/output.h"
@@ -702,9 +708,44 @@ static void on_tui_timer(uv_timer_t *t) {
 /* ────────────────────────────────────────────── */
 /*  Entry point                                   */
 /* ────────────────────────────────────────────── */
+/* ────────────────────────────────────────────── */
+/*  TUI callback for active clients               */
+/* ────────────────────────────────────────────── */
+static int get_active_clients(tui_client_snap_t *out, int max_clients) {
+    int count = 0;
+    time_t now = time(NULL);
+    for (int i = 0; i < SRV_MAX_SESSIONS && count < max_clients; i++) {
+        if (g_sessions[i].used) {
+            uv_ip4_name(&g_sessions[i].client_addr, out[count].ip, sizeof(out[count].ip));
+            out[count].downstream_mtu = g_sessions[i].cl_downstream_mtu;
+            out[count].loss_pct       = g_sessions[i].cl_loss_pct;
+            out[count].fec_k          = g_sessions[i].cl_fec_k;
+            out[count].enc_format     = g_sessions[i].cl_enc_format;
+            out[count].idle_sec       = (uint32_t)(now - g_sessions[i].last_active);
+            count++;
+        }
+    }
+    return count;
+}
+
 int main(int argc, char *argv[]) {
-    /* Parse arguments */
     const char *config_path = "server.ini";
+    char domain_buf[512] = {0};
+    char threads_str[16];
+    char sf[1024];
+    char *slash;
+#ifdef _WIN32
+    char *bslash;
+#endif
+    char bind_ip[64]  = "0.0.0.0";
+    int  bind_port    = 53;
+    char tmp[64];
+    char *colon;
+    struct sockaddr_in srv_addr;
+    int r;
+    static resolver_pool_t dummy_pool;
+
+    /* Parse arguments */
     for (int i = 1; i < argc - 1; i++) {
         if (strcmp(argv[i], "-c") == 0 || strcmp(argv[i], "--config") == 0)
             config_path = argv[i+1];
@@ -725,7 +766,6 @@ int main(int argc, char *argv[]) {
         printf("  Enter the subdomain this server will handle\n");
         printf("  (e.g. tun.example.com, separate multiple with commas): ");
         fflush(stdout);
-        char domain_buf[512] = {0};
         if (fgets(domain_buf, sizeof(domain_buf), stdin)) {
             domain_buf[strcspn(domain_buf, "\r\n")] = '\0';
             if (domain_buf[0]) {
@@ -739,7 +779,6 @@ int main(int argc, char *argv[]) {
     }
 
     /* libuv thread pool */
-    char threads_str[16];
     snprintf(threads_str, sizeof(threads_str), "%d", g_cfg.workers);
 #ifdef _WIN32
     _putenv_s("UV_THREADPOOL_SIZE", threads_str);
@@ -750,17 +789,24 @@ int main(int argc, char *argv[]) {
     g_loop = uv_default_loop();
 
     /* Init swarm */
+    /* Set up server swarm file path safely beside config_path */
+    strncpy(sf, config_path, sizeof(sf)-1);
+    slash = strrchr(sf, '/');
+#ifdef _WIN32
+    bslash = strrchr(sf, '\\');
+    if (bslash > slash) slash = bslash;
+#endif
+    if (slash) strncpy(slash + 1, "server_resolvers.txt", sizeof(sf) - (slash - sf) - 1);
+    else strcpy(sf, "server_resolvers.txt");
+
     uv_mutex_init(&g_swarm_lock);
     if (g_cfg.swarm_save_disk)
-        swarm_load("swarm.txt");
+        swarm_load(sf);
 
     /* Parse bind address */
-    char bind_ip[64]  = "0.0.0.0";
-    int  bind_port    = 53;
     if (g_cfg.server_bind[0]) {
-        char tmp[64];
         strncpy(tmp, g_cfg.server_bind, sizeof(tmp)-1);
-        char *colon = strrchr(tmp, ':');
+        colon = strrchr(tmp, ':');
         if (colon) {
             *colon = '\0';
             bind_port = atoi(colon+1);
@@ -769,10 +815,9 @@ int main(int argc, char *argv[]) {
     }
 
     /* Bind UDP port 53 */
-    struct sockaddr_in srv_addr;
     uv_ip4_addr(bind_ip, bind_port, &srv_addr);
     uv_udp_init(g_loop, &g_udp_server);
-    int r = uv_udp_bind(&g_udp_server,
+    r = uv_udp_bind(&g_udp_server,
                         (const struct sockaddr*)&srv_addr,
                         UV_UDP_REUSEADDR);
     if (r != 0) {
@@ -784,13 +829,12 @@ int main(int argc, char *argv[]) {
     uv_udp_recv_start(&g_udp_server, on_server_alloc, on_server_recv);
 
     /* TUI with dummy resolver pool (server shows swarm count) */
-    static resolver_pool_t dummy_pool;
     memset(&dummy_pool, 0, sizeof(dummy_pool));
     uv_mutex_init(&dummy_pool.lock);
     dummy_pool.cfg = &g_cfg;
 
     tui_init(&g_tui, &g_stats, &dummy_pool, &g_cfg, "SERVER", config_path);
-
+    g_tui.get_clients_cb = get_active_clients;
 
     /* Timers */
     uv_timer_init(g_loop, &g_tui_timer);
@@ -808,8 +852,17 @@ int main(int argc, char *argv[]) {
 
     tui_shutdown(&g_tui);
     if (g_cfg.swarm_save_disk)
-        swarm_save("swarm.txt");
+        swarm_save(sf);
 
     uv_mutex_destroy(&g_swarm_lock);
+
+    if (g_tui.restart) {
+        LOG_INFO("Restarting process to apply new domain...\n");
+#ifdef _WIN32
+        _execvp(argv[0], argv);
+#else
+        execvp(argv[0], argv);
+#endif
+    }
     return 0;
 }
