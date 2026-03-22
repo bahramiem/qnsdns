@@ -1410,13 +1410,13 @@ int main(int argc, char *argv[]) {
     uv_timer_init(g_loop, &g_tui_timer);
     uv_timer_start(&g_tui_timer, on_tui_timer, 1000, 1000);
 
-    /* Resolver init phase (probes resolvers, runs loop for ~3s) */
-    resolver_init_phase();
-
-    /* Bind STDIN for TUI */
+    /* Bind STDIN for TUI *before* resolver scanning so it renders immediately */
     uv_tty_init(g_loop, &g_tty, 0, 1);
     uv_tty_set_mode(&g_tty, UV_TTY_MODE_RAW);
     uv_read_start((uv_stream_t*)&g_tty, on_tty_alloc, on_tty_read);
+
+    /* Resolver init phase (probes resolvers, runs loop for ~3s) */
+    resolver_init_phase();
 
     /* Run event loop */
     uv_run(g_loop, UV_RUN_DEFAULT);
