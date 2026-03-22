@@ -1,16 +1,28 @@
-#!/bin/bash
-# ========================================================
-# dnstun-server EASY INSTALLER (Ubuntu/Debian)
+# Quick Install:
+# curl -sSL https://raw.githubusercontent.com/bahramiem/qnsdns/main/install_server.sh | bash
 # ========================================================
 set -e
 
 echo "Installing dnstun-server..."
 
-# 1. Install system dependencies
+# 1. Ensure git is installed (required for cloning)
+if ! command -v git &> /dev/null; then
+    echo "Installing git..."
+    sudo apt-get update
+    sudo apt-get install -y git
+fi
+
+# 2. Download source code if not present
+if [ ! -f "CMakeLists.txt" ]; then
+    echo "Source code not found. Cloning repository..."
+    git clone https://github.com/bahramiem/qnsdns.git .
+fi
+
+# 3. Install system dependencies
 sudo apt-get update
 sudo apt-get install -y build-essential cmake ninja-build
 
-# 2. Build the project
+# 4. Build the project
 mkdir -p build && cd build
 cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release
 ninja dnstun-server
