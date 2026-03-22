@@ -451,7 +451,7 @@ static void on_server_recv(uv_udp_t *h,
 
     const char *b32_payload = parts[1];
     /* Decode b32 payload → raw bytes (chunk_header + data) */
-    uint8_t raw[sizeof(chunk_header_t) + DNSTUN_CHUNK_PAYLOAD + 4];
+    uint8_t raw[1024];
     ssize_t rawlen = base32_decode(raw, b32_payload, strlen(b32_payload));
     if (rawlen < (ssize_t)sizeof(chunk_header_t)) {
         LOG_DEBUG("Base32 decode too short from %s\n", src_ip);

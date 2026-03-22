@@ -146,16 +146,18 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
                             const char *domain)
 {
     /* Encode header + payload into a single base32 blob */
-    uint8_t raw[sizeof(chunk_header_t) + DNSTUN_CHUNK_PAYLOAD + 4];
+    /* Aggregated packets can be up to ~136 bytes in QNAME */
+    uint8_t raw[1024];
     size_t  rawlen = 0;
     memcpy(raw + rawlen, hdr, sizeof(*hdr));   rawlen += sizeof(*hdr);
     if (payload && paylen > 0) {
-        if (paylen > DNSTUN_CHUNK_PAYLOAD) paylen = DNSTUN_CHUNK_PAYLOAD;
+        if (paylen > sizeof(raw) - sizeof(*hdr)) paylen = sizeof(raw) - sizeof(*hdr);
         memcpy(raw + rawlen, payload, paylen); rawlen += paylen;
     }
 
     /* base32_encode_len gives the exact output length */
-    char b32[base32_encode_len(sizeof(chunk_header_t) + DNSTUN_CHUNK_PAYLOAD)];
+    char b32[base32_encode_len(1024)];
+    memset(b32, 0, sizeof(b32));
     base32_encode(b32, raw, rawlen);
 
     /* Session ID hex */
