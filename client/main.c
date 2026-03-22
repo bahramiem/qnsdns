@@ -55,6 +55,25 @@ static int              g_session_count = 0;
 #define RESOLVERS_FILE "client_resolvers.txt"
 
 /* ────────────────────────────────────────────── */
+/*  Utility                                       */
+/* ────────────────────────────────────────────── */
+static int log_level(void) { return g_cfg.log_level; }
+
+#define LOG_INFO(...)  do { if (log_level() >= 1) { fprintf(stdout, "[INFO]  " __VA_ARGS__); } } while(0)
+#define LOG_DEBUG(...) do { if (log_level() >= 2) { fprintf(stdout, "[DEBUG] " __VA_ARGS__); } } while(0)
+#define LOG_ERR(...)   fprintf(stderr, "[ERROR] " __VA_ARGS__)
+
+static uint16_t rand_u16(void) {
+    return (uint16_t)(rand() & 0xFFFF);
+}
+
+/* Generate a cryptographically random session ID (fix #23: use libsodium,
+   not rand(), to prevent session hijacking by predictable IDs). */
+static void make_session_id(uint8_t *id) {
+    randombytes_buf(id, DNSTUN_SESSION_ID_LEN);
+}
+
+/* ────────────────────────────────────────────── */
 /*  Resolver file persistence                     */
 /* ────────────────────────────────────────────── */
 static void resolvers_save(void) {
@@ -94,25 +113,6 @@ static void resolvers_load(void) {
     fclose(f);
     if (added > 0)
         LOG_INFO("Loaded %d resolvers from %s\n", added, RESOLVERS_FILE);
-}
-
-/* ────────────────────────────────────────────── */
-/*  Utility                                       */
-/* ────────────────────────────────────────────── */
-static int log_level(void) { return g_cfg.log_level; }
-
-#define LOG_INFO(...)  do { if (log_level() >= 1) { fprintf(stdout, "[INFO]  " __VA_ARGS__); } } while(0)
-#define LOG_DEBUG(...) do { if (log_level() >= 2) { fprintf(stdout, "[DEBUG] " __VA_ARGS__); } } while(0)
-#define LOG_ERR(...)   fprintf(stderr, "[ERROR] " __VA_ARGS__)
-
-static uint16_t rand_u16(void) {
-    return (uint16_t)(rand() & 0xFFFF);
-}
-
-/* Generate a cryptographically random session ID (fix #23: use libsodium,
-   not rand(), to prevent session hijacking by predictable IDs). */
-static void make_session_id(uint8_t *id) {
-    randombytes_buf(id, DNSTUN_SESSION_ID_LEN);
 }
 
 /* ────────────────────────────────────────────── */

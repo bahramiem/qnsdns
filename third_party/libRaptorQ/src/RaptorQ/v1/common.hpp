@@ -71,12 +71,14 @@
 #define RQ_HDR_INLINE
 #endif
 
-
+#ifndef _MSC_VER
 #pragma clang diagnostic push
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-variable"
 #pragma GCC diagnostic ignored "-Wunused-macros"
 #pragma clang diagnostic ignored "-Wunused-variable"
+#endif
+
 #ifdef RQ_VERSION
     static char RaptorQ_version[] = RQ_VERSION;
 #else
@@ -84,8 +86,11 @@
     static char RaptorQ_version[] = "1.0.0-rc2";
 #endif
 #define RQ_UNUSED(x)    ((void)x)
+
+#ifndef _MSC_VER
 #pragma GCC diagnostic pop
 #pragma clang diagnostic pop
+#endif
 
 #include "RaptorQ/v1/wrapper/C_common.h"
 
