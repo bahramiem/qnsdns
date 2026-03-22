@@ -221,11 +221,20 @@ static void on_upstream_write(uv_write_t *w, int status) {
 }
 
 static void on_upstream_alloc(uv_handle_t *h, size_t sz, uv_buf_t *buf) {
+    /* Fix #3: use per-session heap buffer instead of shared static buffer.
+       Each srv_session has its own upstream_buf (grown with realloc). We
+       allocate a fresh 8 KB block here; on_upstream_read appends into the
+       session's persistent buffer and frees this temporary one. */
     (void)sz;
-    static uint8_t upstream_recv_buf[65536];
-    buf->base = (char*)upstream_recv_buf;
-    buf->len  = sizeof(upstream_recv_buf);
-    (void)h;
+    int *sidx_ptr = h->data;
+    int sidx = sidx_ptr ? *sidx_ptr : -1;
+    if (sidx < 0 || !g_sessions[sidx].used) {
+        buf->base = NULL;
+        buf->len  = 0;
+        return;
+    }
+    buf->base = (char*)malloc(8192);
+    buf->len  = buf->base ? 8192 : 0;
 }
 
 static void on_upstream_read(uv_stream_t *s, ssize_t nread,
@@ -233,16 +242,16 @@ static void on_upstream_read(uv_stream_t *s, ssize_t nread,
 {
     int *sidx_ptr = s->data;
     int sidx = sidx_ptr ? *sidx_ptr : -1;
-    if (sidx < 0) return;
+    if (sidx < 0) { free(buf->base); return; }
     srv_session_t *sess = &g_sessions[sidx];
 
     if (nread <= 0) {
+        free(buf->base);
         session_close(sidx);
         return;
     }
 
-    /* Buffer the upstream data; it will be chunked into DNS replies
-       on the next DNS query from the client (POLL or data query) */
+    /* Append received bytes into the session's persistent buffer */
     size_t need = sess->upstream_len + (size_t)nread;
     if (need > sess->upstream_cap) {
         sess->upstream_buf = realloc(sess->upstream_buf, need + 8192);
@@ -250,6 +259,7 @@ static void on_upstream_read(uv_stream_t *s, ssize_t nread,
     }
     memcpy(sess->upstream_buf + sess->upstream_len, buf->base, (size_t)nread);
     sess->upstream_len += (size_t)nread;
+    free(buf->base);
 
     g_stats.rx_total += (size_t)nread;
     g_stats.rx_bytes_sec += (size_t)nread;
@@ -428,20 +438,23 @@ static void on_server_recv(uv_udp_t *h,
         return;
     }
 
-    chunk_header_t *hdr = (chunk_header_t*)raw;
+    /* Fix #22: copy raw bytes into a local struct to avoid unaligned pointer
+       cast (undefined behaviour on strictly-aligned architectures like ARM). */
+    chunk_header_t hdr;
+    memcpy(&hdr, raw, sizeof(hdr));
     const uint8_t  *payload = raw + sizeof(chunk_header_t);
     size_t          payload_len = (size_t)(rawlen - (ssize_t)sizeof(chunk_header_t));
 
-    bool is_poll = (hdr->flags & 0x08) != 0;
+    bool is_poll = (hdr.flags & 0x08) != 0;
     bool is_sync = false;
 
     /* SYNC command: payload starts with "SYNC" (ASCII) */
     if (payload_len >= 4 && memcmp(payload, "SYNC", 4) == 0) is_sync = true;
 
     /* Session lookup / allocate */
-    int sidx = session_find(hdr->session_id);
+    int sidx = session_find(hdr.session_id);
     if (sidx < 0) {
-        sidx = session_alloc(hdr->session_id);
+        sidx = session_alloc(hdr.session_id);
         if (sidx < 0) {
             LOG_ERR("Session table full\n");
             return;
@@ -451,35 +464,35 @@ static void on_server_recv(uv_udp_t *h,
     srv_session_t *sess = &g_sessions[sidx];
     sess->last_active       = time(NULL);
     sess->client_addr       = *src;
-    sess->cl_downstream_mtu = hdr->downstream_mtu ? hdr->downstream_mtu : 512;
-    sess->cl_enc_format     = hdr->enc_format;
-    sess->cl_loss_pct       = hdr->loss_pct;
+    sess->cl_downstream_mtu = hdr.downstream_mtu ? hdr.downstream_mtu : 512;
+    sess->cl_enc_format     = hdr.enc_format;
+    sess->cl_loss_pct       = hdr.loss_pct;
     /* Adaptive FEC: use the client's reported loss to add redundancy */
     uint8_t fec_k = 0;
-    if (hdr->loss_pct > 0) {
-        double loss = hdr->loss_pct / 100.0;
+    if (hdr.loss_pct > 0) {
+        double loss = hdr.loss_pct / 100.0;
         fec_k = (uint8_t)ceil(1.0 * loss / (1.0 - loss));
         if (fec_k > 64) fec_k = 64;
     }
     sess->cl_fec_k = fec_k;
 
-    /* ── Handle FEC Burst Reassembly ────────────────────────────── */
-    if (hdr->chunk_total > 0) {
+    /* ── Handle FEC Burst Reassembly ──────────────────────────────────── */
+    if (hdr.chunk_total > 0) {
         /* New burst or continuation? */
-        if (sess->burst_count_needed == 0 || hdr->seq < sess->burst_seq_start) {
+        if (sess->burst_count_needed == 0 || hdr.seq < sess->burst_seq_start) {
             /* Cleanup old */
             if (sess->burst_symbols) {
                 for (int i = 0; i < sess->burst_count_needed; i++) free(sess->burst_symbols[i]);
                 free(sess->burst_symbols);
             }
-            sess->burst_seq_start     = hdr->seq;
-            sess->burst_count_needed  = hdr->chunk_total;
+            sess->burst_seq_start     = hdr.seq;
+            sess->burst_count_needed  = hdr.chunk_total;
             sess->burst_received      = 0;
-            sess->burst_symbols       = calloc(hdr->chunk_total, sizeof(uint8_t*));
+            sess->burst_symbols       = calloc(hdr.chunk_total, sizeof(uint8_t*));
             sess->burst_symbol_len    = payload_len;
         }
 
-        int offset = hdr->seq - sess->burst_seq_start;
+        int offset = hdr.seq - sess->burst_seq_start;
         if (offset >= 0 && offset < sess->burst_count_needed && !sess->burst_symbols[offset]) {
             sess->burst_symbols[offset] = malloc(payload_len);
             memcpy(sess->burst_symbols[offset], payload, payload_len);
@@ -509,7 +522,7 @@ static void on_server_recv(uv_udp_t *h,
                 codec_result_t dret = {0};
 
                 /* 1. DECRYPT (Optional) */
-                if (hdr->flags & 0x01) {
+                if (hdr.flags & 0x01) {
                     dret = codec_decrypt(fdec.data, fdec.len, g_cfg.psk);
                     if (!dret.error) {
                         dec_in = dret.data;
@@ -521,11 +534,13 @@ static void on_server_recv(uv_udp_t *h,
                 }
 
                 /* 2. DECOMPRESS */
-                codec_result_t zdec = codec_decompress(dec_in, dec_len, hdr->original_size);
+                codec_result_t zdec = codec_decompress(dec_in, dec_len, hdr.original_size);
                 if (!zdec.error) {
                     /* SUCCESS: Forward reassembled, decrypted, decompressed packet */
                     if (!sess->tcp_connected) {
-                        /* SOCKS5 CONNECT parsing */
+                        /* Fix #11: SOCKS5 CONNECT is parsed ONLY from the fully
+                           decompressed + decrypted data.  The duplicate raw-payload
+                           parse path below is removed to avoid inconsistency. */
                         const uint8_t *p = zdec.data;
                         size_t l = zdec.len;
                         if (l >= 10 && p[0] == 0x05 && p[1] == 0x01) {
@@ -538,7 +553,8 @@ static void on_server_recv(uv_udp_t *h,
                                 target_port = (uint16_t)((p[8]<<8)|p[9]);
                             } else if (atype == 0x03) { /* Domain */
                                 uint8_t dlen = p[4];
-                                if (dlen < 255 && dlen + 5 < l) {
+                                /* Fix #5: bounds check before reading domain bytes */
+                                if ((size_t)(5 + dlen + 2) <= l && dlen < 255) {
                                     memcpy(target_host, p + 5, dlen);
                                     target_host[dlen] = '\0';
                                     target_port = (uint16_t)((p[5+dlen]<<8)|p[6+dlen]);
@@ -584,7 +600,6 @@ static void on_server_recv(uv_udp_t *h,
 
     /* ── Handle SWARM Sync (if enabled) ─────────────────────────── */
     if (is_sync) {
-        /* Build a compact comma-separated IP list and reply in chunks */
         char swarm_text[65536] = {0};
         size_t slen = 0;
         uv_mutex_lock(&g_swarm_lock);
@@ -607,56 +622,11 @@ static void on_server_recv(uv_udp_t *h,
         return;
     }
 
-    /* ── Forward payload to upstream ─────────────────────────────── */
-    if (!is_poll && payload_len > 0) {
-        if (!sess->tcp_connected) {
-            /* Need to parse SOCKS5 CONNECT from payload first */
-            /* Simplified: first payload is SOCKS5 request */
-            if (payload_len >= 10 && payload[0] == 0x05 && payload[1] == 0x01) {
-                char target_host[256] = {0};
-                uint16_t target_port  = 0;
-                uint8_t atype = payload[3];
-
-                if (atype == 0x01) { /* IPv4 */
-                    snprintf(target_host, sizeof(target_host),
-                             "%d.%d.%d.%d",
-                             payload[4], payload[5],
-                             payload[6], payload[7]);
-                    target_port = (uint16_t)((payload[8]<<8)|payload[9]);
-                } else if (atype == 0x03) { /* Domain */
-                    uint8_t dlen = payload[4];
-                    memcpy(target_host, payload+5, dlen);
-                    target_host[dlen] = '\0';
-                    target_port = (uint16_t)((payload[5+dlen]<<8)|payload[6+dlen]);
-                }
-
-                if (target_host[0] && target_port > 0) {
-                    LOG_INFO("Server CONNECT %s:%d (session %d)\n",
-                             target_host, target_port, sidx);
-
-                    struct sockaddr_in up_addr;
-                    uv_ip4_addr(target_host, target_port, &up_addr);
-
-                    connect_req_t *cr = calloc(1, sizeof(*cr));
-                    cr->session_idx = sidx;
-                    /* Copy the actual application payload (after SOCKS5 header) */
-                    size_t hdr_sz = (atype == 0x01) ? 10 : (6 + payload[4]);
-                    if (payload_len > hdr_sz) {
-                        cr->payload_len = payload_len - hdr_sz;
-                        cr->payload = malloc(cr->payload_len);
-                        memcpy(cr->payload, payload + hdr_sz, cr->payload_len);
-                    }
-
-                    uv_tcp_init(g_loop, &sess->upstream_tcp);
-                    uv_tcp_connect(&cr->connect, &sess->upstream_tcp,
-                                   (const struct sockaddr*)&up_addr,
-                                   on_upstream_connect);
-                }
-            }
-        } else {
-            /* Already connected — forward payload */
-            upstream_write_and_read(sidx, payload, payload_len);
-        }
+    /* ── Forward payload to upstream (non-FEC path) ──────────────── */
+    /* Fix #11: Only forward to already-connected sessions. SOCKS5 CONNECT
+       must arrive via the FEC+decompress path to be decoded correctly. */
+    if (!is_poll && payload_len > 0 && sess->tcp_connected) {
+        upstream_write_and_read(sidx, payload, payload_len);
     }
 
     /* ── Build reply — stuff any pending upstream data ───────────── */

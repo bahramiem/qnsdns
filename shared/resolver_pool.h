@@ -21,6 +21,7 @@ typedef struct {
     int          dead_count;
 
     uv_mutex_t   lock;
+    int          rr_cursor;     /* round-robin next-index (owned by pool) */
 
     const dnstun_config_t *cfg;
 } resolver_pool_t;

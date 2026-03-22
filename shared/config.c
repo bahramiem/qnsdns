@@ -222,6 +222,7 @@ int config_load(dnstun_config_t *cfg, const char *path) {
         value = trim(value);
 
         if (config_set_key(cfg, section, key, value) != 0) {
+            errors++;
             if (cfg->log_level >= 2)
                 fprintf(stderr, "[config] unknown key [%s] %s at line %d\n",
                         section, key, lineno);

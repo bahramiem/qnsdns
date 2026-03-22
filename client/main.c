@@ -64,10 +64,10 @@ static uint16_t rand_u16(void) {
     return (uint16_t)(rand() & 0xFFFF);
 }
 
-/* Generate a random session ID */
+/* Generate a cryptographically random session ID (fix #23: use libsodium,
+   not rand(), to prevent session hijacking by predictable IDs). */
 static void make_session_id(uint8_t *id) {
-    for (int i = 0; i < DNSTUN_SESSION_ID_LEN; i++)
-        id[i] = (uint8_t)(rand() & 0xFF);
+    randombytes_buf(id, DNSTUN_SESSION_ID_LEN);
 }
 
 /* ────────────────────────────────────────────── */
@@ -89,7 +89,8 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
         memcpy(raw + rawlen, payload, paylen); rawlen += paylen;
     }
 
-    char b32[512];
+    /* base32_encode_len gives the exact output length */
+    char b32[base32_encode_len(sizeof(chunk_header_t) + DNSTUN_CHUNK_PAYLOAD)];
     base32_encode(b32, raw, rawlen);
 
     /* Session ID hex */
@@ -101,9 +102,11 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
     char seq_hex[8];
     snprintf(seq_hex, sizeof(seq_hex), "%04x", hdr->seq);
 
-    /* Build QNAME: <seq>.<b32>.<sid>.tun.<domain> */
+    /* Build QNAME: <seq>.<b32>.<sid>.tun.<domain>
+       Fix #4: use full b32 string (not %.100s) so the server receives
+       the complete payload without silent truncation. */
     char qname[DNSTUN_MAX_QNAME_LEN + 1];
-    snprintf(qname, sizeof(qname), "%s.%.100s.%s.tun.%s",
+    snprintf(qname, sizeof(qname), "%s.%s.%s.tun.%s",
              seq_hex, b32, sid_hex, domain);
 
     /* Encode into DNS TXT query packet */
@@ -141,7 +144,7 @@ typedef struct probe_req {
     uv_udp_send_t   send_req;
     struct sockaddr_in dest;
     int             resolver_idx;
-    time_t          sent_ms;  /* ms timestamp */
+    uint64_t        sent_ms;  /* ms timestamp via uv_hrtime() / 1e6 (fix #18) */
     uint8_t         sendbuf[512];
     size_t          sendlen;
     uint8_t         recvbuf[2048];
@@ -162,7 +165,9 @@ static void on_probe_recv(uv_udp_t *h, ssize_t nread,
         /* Zombie / Hijack Check: Verify header/payload match */
         /* (In a real impl, this would be a signature check) */
         p->got_reply = true;
-        double rtt = (double)(time(NULL) * 1000 - p->sent_ms);
+        /* Fix #18: sub-millisecond RTT via uv_hrtime() */
+        double rtt = (double)(uv_hrtime() / 1000000ULL - p->sent_ms);
+        if (rtt < 0.0) rtt = 0.0;
         rpool_on_ack(&g_pool, p->resolver_idx, rtt);
     } else {
         rpool_on_loss(&g_pool, p->resolver_idx);
@@ -188,7 +193,7 @@ static void fire_probe_ext(int idx, const uint8_t *payload, size_t paylen, const
     if (!p) return;
 
     p->resolver_idx = idx;
-    p->sent_ms      = time(NULL) * 1000;
+    p->sent_ms      = uv_hrtime() / 1000000ULL;  /* ms via monotonic clock */
 
     resolver_t *r = &g_pool.resolvers[idx];
     memcpy(&p->dest, &r->addr, sizeof(p->dest));
@@ -319,14 +324,15 @@ static void on_socks5_close(uv_handle_t *h) {
 }
 
 static void on_socks5_write_done(uv_write_t *w, int status) {
-    free(w->data); /* the uv_write_t itself */
+    /* Fix #8: free(w) directly; the allocation is sizeof(*w)+len contiguous. */
     (void)status;
+    free(w);
 }
 
 static void socks5_send(socks5_client_t *c, const uint8_t *data, size_t len) {
     uv_write_t *w = malloc(sizeof(*w) + len);
     if (!w) return;
-    w->data = w; /* self-reference for freeing */
+    /* Payload lives immediately after the write request in the same alloc. */
     uint8_t *copy = (uint8_t*)(w + 1);
     memcpy(copy, data, len);
     uv_buf_t buf = uv_buf_init((char*)copy, (unsigned)len);
@@ -379,6 +385,9 @@ static void socks5_handle_data(socks5_client_t *c,
             sess->target_port = (uint16_t)((data[8]<<8)|data[9]);
         } else if (atype == 0x03) { /* Domain */
             uint8_t dlen = data[4];
+            /* Fix #5: bounds check before accessing data[5..5+dlen+1] */
+            if ((size_t)(5 + dlen + 2) > len) return;
+            if (dlen >= sizeof(sess->target_host)) return;
             memcpy(sess->target_host, data+5, dlen);
             sess->target_host[dlen] = '\0';
             sess->target_port = (uint16_t)((data[5+dlen]<<8)|data[6+dlen]);
@@ -465,7 +474,7 @@ typedef struct dns_query_ctx {
     int              resolver_idx;
     int              session_idx;
     uint16_t         seq;
-    uint64_t         sent_us;
+    uint64_t         sent_ms;  /* renamed from sent_us: actually ms (fix #14) */
     uint8_t          sendbuf[DNS_BUFFER_UDP];
     size_t           sendlen;
     uint8_t          recvbuf[DNS_BUFFER_UDP];
@@ -484,8 +493,9 @@ static void on_dns_recv(uv_udp_t *h,
     int ridx = q->resolver_idx;
 
     if (nread > 0) {
-        /* Measure RTT */
-        double rtt = (double)(uv_hrtime() / 1000000 - q->sent_us);
+        /* Measure RTT (fix #14: variable is now correctly named sent_ms) */
+        double rtt = (double)(uv_hrtime() / 1000000ULL - q->sent_ms);
+        if (rtt < 0.0) rtt = 0.0;
         rpool_on_ack(&g_pool, ridx, rtt);
 
         /* Decode DNS response */
@@ -563,6 +573,28 @@ static void on_dns_alloc(uv_handle_t *h, size_t sz, uv_buf_t *buf) {
     buf->len  = sizeof(q->recvbuf);
 }
 
+/* ────────────────────────────────────────────── */
+/*  Jitter timer — deferred UDP send for anti-DPI */
+/* ────────────────────────────────────────────── */
+typedef struct {
+    uv_timer_t       timer;
+    uv_udp_send_t    send_req;
+    dns_query_ctx_t *q;
+} jitter_ctx_t;
+
+static void on_jitter_timer(uv_timer_t *t) {
+    jitter_ctx_t *jc = t->data;
+    dns_query_ctx_t *q = jc->q;
+    uv_buf_t buf = uv_buf_init((char*)q->sendbuf, (unsigned)q->sendlen);
+    if (uv_udp_send(&jc->send_req, &q->udp, &buf, 1,
+                    (const struct sockaddr*)&q->dest, on_dns_send) != 0) {
+        uv_close((uv_handle_t*)&q->udp, on_dns_query_close);
+    } else {
+        g_stats.queries_sent++;
+    }
+    uv_close((uv_handle_t*)t, (uv_close_cb)free);
+}
+
 /* Fire one DNS query chunk for a session.
    'seq' is the actual sequence number of this FEC symbol. */
 static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
@@ -614,21 +646,25 @@ static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
 
     uv_udp_init(g_loop, &q->udp);
     q->udp.data = q;
-    q->sent_us  = uv_hrtime() / 1000000;
-
-    /* Anti-DPI Jitter (Optional) */
-    uint64_t delay_ms = 0;
-    if (g_cfg.jitter) {
-        delay_ms = (uint64_t)(rand() % 50); /* 0-50ms jitter */
-    }
+    q->sent_ms  = uv_hrtime() / 1000000ULL;
 
     uv_udp_recv_start(&q->udp, on_dns_alloc, on_dns_recv);
-    uv_buf_t buf = uv_buf_init((char*)q->sendbuf, (unsigned)q->sendlen);
-    
-    if (delay_ms > 0) {
-        /* (In a real implementation, we'd use a one-shot timer to delay the send) */
+
+    /* Anti-DPI Jitter (fix #10): defer the UDP send by 0-50 ms. */
+    if (g_cfg.jitter) {
+        uint64_t delay_ms = (uint64_t)(rand() % 50);
+        jitter_ctx_t *jc = malloc(sizeof(*jc));
+        if (jc) {
+            jc->q = q;
+            uv_timer_init(g_loop, &jc->timer);
+            jc->timer.data = jc;
+            uv_timer_start(&jc->timer, on_jitter_timer, delay_ms, 0);
+            return; /* send will happen in the timer callback */
+        }
     }
 
+    /* Immediate send (no jitter or allocation failure) */
+    uv_buf_t buf = uv_buf_init((char*)q->sendbuf, (unsigned)q->sendlen);
     if (uv_udp_send(&q->send_req, &q->udp, &buf, 1,
                     (const struct sockaddr*)&q->dest, on_dns_send) != 0)
     {
@@ -828,11 +864,13 @@ int main(int argc, char *argv[]) {
     LOG_INFO("  Workers : %d\n", g_cfg.workers);
     LOG_INFO("  Domain  : %s\n",
              g_cfg.domain_count > 0 ? g_cfg.domains[0] : "(none set)");
+    LOG_INFO("Tunnel ready. Configure proxy: socks5h://%s:%d\n",
+             bind_ip, bind_port);
 
-    /* Resolver init phase */
-    resolver_init_phase();
-
-    /* Timers */
+    /* Fix #15: Start timers BEFORE resolver_init_phase so that SOCKS5
+       is already accepting connections during the 3-second probe window.
+       Any connection arriving before a resolver is promoted will simply
+       queue in its session send buffer until the first POLL fires. */
     uv_timer_t chrome_timer;
     uv_timer_init(g_loop, &chrome_timer);
     uv_timer_start(&chrome_timer, fire_chrome_cover_traffic, 5000, 15000);
@@ -847,8 +885,8 @@ int main(int argc, char *argv[]) {
     uv_timer_init(g_loop, &g_tui_timer);
     uv_timer_start(&g_tui_timer, on_tui_timer, 1000, 1000);
 
-    LOG_INFO("Tunnel ready. Configure proxy: socks5h://%s:%d\n",
-             bind_ip, bind_port);
+    /* Resolver init phase (probes resolvers, runs loop for ~3s) */
+    resolver_init_phase();
 
     /* Run event loop */
     uv_run(g_loop, UV_RUN_DEFAULT);

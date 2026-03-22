@@ -30,7 +30,7 @@ size_t base32_encode(char *out, const uint8_t *in, size_t inlen) {
     return o;
 }
 
-ssize_t base32_decode(uint8_t *out, const char *in, size_t inlen) {
+ptrdiff_t base32_decode(uint8_t *out, const char *in, size_t inlen) {
     size_t  o    = 0;
     uint64_t buf = 0;
     int bits = 0;
@@ -46,5 +46,5 @@ ssize_t base32_decode(uint8_t *out, const char *in, size_t inlen) {
             out[o++] = (uint8_t)((buf >> bits) & 0xFF);
         }
     }
-    return (ssize_t)o;
+    return (ptrdiff_t)o;
 }

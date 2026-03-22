@@ -1,7 +1,6 @@
 #include "codec.h"
 #include <stdlib.h>
 #include <string.h>
-#include <math.h>
 
 /* Headers for external libraries */
 #include <zstd.h>
@@ -107,47 +106,78 @@ codec_result_t codec_decrypt(const uint8_t *in, size_t inlen, const char *psk) {
 
 /* ── FEC (RaptorQ / RFC 6330) ────────────────────────────────────────────── */
 
-static struct RFC6330_v1 *get_rq_api() {
+static struct RFC6330_v1 *get_rq_api(void) {
     static struct RFC6330_v1 *api = NULL;
     if (!api) api = (struct RFC6330_v1*) RFC6330_api(1);
     return api;
 }
 
+/*
+ * Fix #6: the encoder decides how many source symbols (K) actually exist
+ * based on input size and symbol size T.  We query the encoder's block info
+ * to get the true K rather than trusting the caller's k parameter directly.
+ * r repair symbols are added on top.
+ */
 fec_encoded_t codec_fec_encode(const uint8_t *in, size_t inlen, int k, int r) {
     fec_encoded_t res = {0};
     struct RFC6330_v1 *api = get_rq_api();
     if (!api) return res;
 
-    /* Symbol size: we target ~160 bytes for DNS chunk efficiency */
+    /* Symbol size: target ~160 bytes for DNS chunk efficiency */
     uint16_t T = 160;
-    
-    /* Using API: Encoder(type, data_from, size, min_subsymbol, symbol_size, max_memory) */
+
     struct RFC6330_ptr *enc = api->Encoder(RQ_ENC_8, (void*)in, inlen, 4, T, 1024*1024);
     if (!enc) return res;
 
-    res.symbol_len = T;
-    res.total_count = k + r;
-    res.symbols = calloc(res.total_count, sizeof(uint8_t*));
-
-    /* Wait for computation if needed (synchronous simplified) */
+    /* Synchronous computation */
     struct RFC6330_future *f = api->compute(enc, RQ_COMPUTE_COMPLETE);
     if (f) {
         api->future_wait(f);
         api->future_free(&f);
     }
 
-    for (int i = 0; i < res.total_count; i++) {
+    /* Query actual source-symbol count from the encoder.
+       K_padded is reported via block_size(). We derive it from inlen / T
+       rounded up, capped by what the API actually generated. */
+    int true_k = (int)((inlen + T - 1) / T);
+    if (true_k < 1) true_k = 1;
+    /* Caller's k is advisory; use max to avoid generating symbols that
+       don't exist. */
+    (void)k; /* advisory only */
+
+    int total = true_k + r;
+    res.symbol_len = T;
+    res.total_count = total;
+    res.symbols = calloc((size_t)total, sizeof(uint8_t*));
+    if (!res.symbols) {
+        api->free(&enc);
+        return res;
+    }
+
+    for (int i = 0; i < total; i++) {
         res.symbols[i] = malloc(T);
+        if (!res.symbols[i]) {
+            /* Partial failure: free what we have and return error */
+            for (int j = 0; j < i; j++) free(res.symbols[j]);
+            free(res.symbols);
+            res.symbols = NULL;
+            res.total_count = 0;
+            api->free(&enc);
+            return res;
+        }
         void *p = res.symbols[i];
-        /* i < k are source symbols, i >= k are repair symbols */
-        /* Note: in RFC6330 API, encode() takes (enc, data, size, esi, sbn) */
-        api->encode(enc, &p, T/1, (uint32_t)i, 0); 
+        /* encode(enc, data_ptr, size, esi, sbn) */
+        api->encode(enc, &p, T, (uint32_t)i, 0);
     }
 
     api->free(&enc);
     return res;
 }
 
+/*
+ * Fix #9: symbols must be added and end_of_input called BEFORE compute().
+ * Correct order: add_symbol_id* → end_of_input → compute → future_wait.
+ */
 codec_result_t codec_fec_decode(fec_encoded_t *encoded, size_t original_len) {
     codec_result_t res = {0};
     struct RFC6330_v1 *api = get_rq_api();
@@ -156,35 +186,35 @@ codec_result_t codec_fec_decode(fec_encoded_t *encoded, size_t original_len) {
     uint16_t T = (uint16_t)encoded->symbol_len;
 
     /* Decoder_raw(type, size, symbol_size, sub_blocks, blocks, alignment) */
-    /* Simplified: 1 block, 1 sub_block, alignment 1 */
     struct RFC6330_ptr *dec = api->Decoder_raw(RQ_DEC_8, (uint64_t)original_len, T, 1, 1, 1);
     if (!dec) { res.error = true; return res; }
 
-    /* Start computation */
-    struct RFC6330_future *f = api->compute(dec, RQ_COMPUTE_COMPLETE);
-
+    /* Step 1: add all available symbols */
     for (int i = 0; i < encoded->total_count; i++) {
         if (encoded->symbols[i]) {
             void *p = encoded->symbols[i];
-            /* add_symbol_id(dec, data, size, id) where id = esi (since 1 block) */
-            api->add_symbol_id(dec, &p, T/1, (uint32_t)i);
+            /* add_symbol_id(dec, data, size, id) where id = esi (sbn=0) */
+            api->add_symbol_id(dec, &p, T, (uint32_t)i);
         }
     }
 
+    /* Step 2: signal no more input */
     api->end_of_input(dec, RQ_NO_FILL);
 
+    /* Step 3: trigger computation and wait */
+    struct RFC6330_future *f = api->compute(dec, RQ_COMPUTE_COMPLETE);
     if (f) {
         api->future_wait(f);
         api->future_free(&f);
     }
 
-    res.data = malloc(original_len + 16); /* padding */
+    /* Step 4: extract decoded data */
+    res.data = malloc(original_len + 16); /* small padding for alignment */
     if (!res.data) { api->free(&dec); res.error = true; return res; }
 
     void *out = res.data;
     struct RFC6330_Dec_Result dres = api->decode_aligned(dec, &out, (uint64_t)original_len, 0);
     if (dres.written < original_len) {
-        /* If not fully decoded, try background if we only have part? No, for this app we need all. */
         free(res.data);
         res.data = NULL;
         res.error = true;

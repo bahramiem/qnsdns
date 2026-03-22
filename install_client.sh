@@ -1,43 +1,48 @@
-# Quick Install:
+#!/usr/bin/env bash
+# Quick Install (run from an empty directory):
 # curl -sSL https://raw.githubusercontent.com/bahramiem/qnsdns/main/install_client.sh | bash
 # ========================================================
-set -e
+set -euo pipefail
 
-echo "Installing dnstun-client..."
+echo "==> Installing dnstun-client..."
 
-# Force clear build directory to purge any old Git configuration for dependencies.
-rm -rf build 
-
-# 1. Ensure git is installed (required for cloning)
-if ! command -v git &> /dev/null; then
-    echo "Installing git..."
-    sudo apt-get update
-    sudo apt-get install -y git
+# ── 1. OS check ────────────────────────────────────────────────────────────
+if [[ "$OSTYPE" != "linux-gnu"* ]]; then
+    echo "ERROR: This script only supports Linux (Debian/Ubuntu)." >&2
+    exit 1
 fi
 
-# 2. Download source code if not present
+# ── 2. Install system dependencies ─────────────────────────────────────────
+echo "==> Installing system packages..."
+sudo apt-get update -qq
+sudo apt-get install -y git build-essential cmake ninja-build liblz4-dev
+
+# ── 3. Clone source code if not already present ────────────────────────────
+REPO_DIR="qnsdns"
 if [ ! -f "CMakeLists.txt" ]; then
-    echo "Source code not found. Initializing repository..."
-    git clone --depth 1 https://github.com/bahramiem/qnsdns.git qnsdns
-    cd qnsdns
+    if [ ! -d "$REPO_DIR" ]; then
+        echo "==> Cloning repository..."
+        git clone --depth 1 https://github.com/bahramiem/qnsdns.git "$REPO_DIR"
+    fi
+    cd "$REPO_DIR"
 fi
 
-# 3. Install system dependencies (Linux)
-if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-    sudo apt-get update
-    sudo apt-get install -y build-essential cmake ninja-build liblz4-dev
+# ── 4. Build ────────────────────────────────────────────────────────────────
+echo "==> Building dnstun-client..."
+# Only wipe build dir if it is stale (CMakeCache.txt missing)
+if [ ! -f "build/CMakeCache.txt" ]; then
+    rm -rf build
 fi
-
-# 3. Build the project
 mkdir -p build && cd build
 cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release
 ninja dnstun-client
 cd ..
 
-# 3. Create default config if missing
+# ── 5. Create default config if missing ────────────────────────────────────
 if [ ! -f "client.ini" ]; then
-    echo "Creating default client.ini..."
-    cat <<EOF > client.ini
+    echo "==> Creating default client.ini..."
+    # PSK placeholder — replace with the value from your server.ini
+    cat > client.ini <<'EOF'
 [core]
 socks5_bind              = 127.0.0.1:1080
 workers                  = 4
@@ -47,7 +52,7 @@ log_level                = info
 [resolvers]
 seed_list                = 8.8.8.8, 1.1.1.1, 9.9.9.9
 cidr_scan                = false
-swarm_sync               = true
+swarm_sync               = false
 
 [tuning]
 poll_interval_ms         = 100
@@ -61,9 +66,22 @@ dns_flux                 = false
 
 [encryption]
 enabled                  = false
-psk                      = changeme
+psk                      = REPLACE_WITH_SERVER_PSK
 EOF
+    echo ""
+    echo "    IMPORTANT: edit client.ini and set:"
+    echo "      [domains] list      = your.server.domain"
+    echo "      [encryption] psk    = (copy from server.ini)"
 fi
 
-echo "Done! Start with: ./build/client/dnstun-client"
-echo "Configure your browser to use SOCKS5 proxy: 127.0.0.1:1080"
+# ── Done ────────────────────────────────────────────────────────────────────
+BINARY="$(pwd)/build/client/dnstun-client"
+echo ""
+echo "==> Done!"
+echo "    Binary : $BINARY"
+echo "    Config : $(pwd)/client.ini"
+echo ""
+echo "    Run:"
+echo "      $BINARY -c $(pwd)/client.ini"
+echo ""
+echo "    Configure proxy: socks5h://127.0.0.1:1080"

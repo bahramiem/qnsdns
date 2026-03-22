@@ -77,30 +77,62 @@ static void render_stats(tui_ctx_t *t) {
 /* ── Panel 1: Resolver table ────────────────────────────────────────────────*/
 static void render_resolvers(tui_ctx_t *t) {
     resolver_pool_t *pool = t->pool;
-    printf(ANSI_BOLD ANSI_CYAN " ▌ RESOLVER POOL (%d total) ▌\n" ANSI_RESET,
-           pool->count);
+
+    /* Snapshot resolver data while locked, then print without the lock.
+       This prevents printf from stalling the event loop while holding
+       the mutex (fix #17). */
+    typedef struct {
+        char             ip[46];
+        resolver_state_t state;
+        double           cwnd;
+        double           rtt_ms;
+        double           max_qps;
+        int              downstream_mtu;
+        double           loss_rate;
+        uint32_t         fec_k;
+        enc_format_t     enc;
+    } snap_t;
+
+    snap_t snaps[24];
+    int shown = 0;
+    int total = 0;
+
+    uv_mutex_lock(&pool->lock);
+    total = pool->count;
+    for (int i = 0; i < pool->count && shown < 24; i++) {
+        resolver_t *r = &pool->resolvers[i];
+        snaps[shown].state         = r->state;
+        snaps[shown].cwnd          = r->cwnd;
+        snaps[shown].rtt_ms        = r->rtt_ms;
+        snaps[shown].max_qps       = r->max_qps;
+        snaps[shown].downstream_mtu = r->downstream_mtu;
+        snaps[shown].loss_rate     = r->loss_rate;
+        snaps[shown].fec_k         = r->fec_k;
+        snaps[shown].enc           = r->enc;
+        strncpy(snaps[shown].ip, r->ip, sizeof(snaps[shown].ip) - 1);
+        shown++;
+    }
+    uv_mutex_unlock(&pool->lock);
+
+    printf(ANSI_BOLD ANSI_CYAN " ▌ RESOLVER POOL (%d total) ▌\n" ANSI_RESET, total);
     hr(72, ANSI_CYAN);
     printf(ANSI_BOLD "%-16s %-8s %5s %6s %5s %4s %5s %4s %s\n" ANSI_RESET,
            "IP", "State", "cwnd", "RTT ms", "QPS", "MTU", "Loss%", "FEC", "Enc");
     hr(72, ANSI_CYAN);
 
-    int shown = 0;
-    uv_mutex_lock(&pool->lock);
-    for (int i = 0; i < pool->count && shown < 24; i++) {
-        resolver_t *r = &pool->resolvers[i];
+    for (int i = 0; i < shown; i++) {
+        snap_t *s = &snaps[i];
         printf("%-16s %s %5.0f %6.1f %5.0f %4d %5.1f %4u %s\n",
-               r->ip,
-               state_str(r->state),
-               r->cwnd,
-               r->rtt_ms,
-               r->max_qps,
-               r->downstream_mtu,
-               r->loss_rate * 100.0,
-               r->fec_k,
-               r->enc == ENC_BINARY ? "bin" : "b64");
-        shown++;
+               s->ip,
+               state_str(s->state),
+               s->cwnd,
+               s->rtt_ms,
+               s->max_qps,
+               s->downstream_mtu,
+               s->loss_rate * 100.0,
+               s->fec_k,
+               s->enc == ENC_BINARY ? "bin" : "b64");
     }
-    uv_mutex_unlock(&pool->lock);
 
     hr(72, ANSI_CYAN);
     printf(ANSI_BOLD " [1] Stats   [2] Resolvers   [3] Config   [q] Quit\n" ANSI_RESET);

@@ -9,6 +9,7 @@
 int rpool_init(resolver_pool_t *pool, const dnstun_config_t *cfg) {
     memset(pool, 0, sizeof(*pool));
     pool->cfg = cfg;
+    pool->rr_cursor = 0;
     uv_mutex_init(&pool->lock);
     return 0;
 }
@@ -57,28 +58,26 @@ int rpool_add(resolver_pool_t *pool, const char *ip) {
     return idx;
 }
 
-/* ── State transitions ──────────────────────────────────────────────────────*/
+/* ── State transitions ──────────────────────────────────────────────────────
+ * Fix #12: remove from ALL lists before adding to the target list.         */
 void rpool_set_state(resolver_pool_t *pool, int idx, resolver_state_t s) {
     uv_mutex_lock(&pool->lock);
 
     resolver_t *r = &pool->resolvers[idx];
-    resolver_state_t old = r->state;
     r->state = s;
 
-    /* Remove from old lists */
-    if (old == RSV_ACTIVE || old == RSV_TESTING) {
-        for (int i = 0; i < pool->active_count; i++) {
-            if (pool->active[i] == idx) {
-                pool->active[i] = pool->active[--pool->active_count];
-                break;
-            }
+    /* Remove from active list (if present) */
+    for (int i = 0; i < pool->active_count; i++) {
+        if (pool->active[i] == idx) {
+            pool->active[i] = pool->active[--pool->active_count];
+            break;
         }
-    } else {
-        for (int i = 0; i < pool->dead_count; i++) {
-            if (pool->dead[i] == idx) {
-                pool->dead[i] = pool->dead[--pool->dead_count];
-                break;
-            }
+    }
+    /* Remove from dead list (if present) */
+    for (int i = 0; i < pool->dead_count; i++) {
+        if (pool->dead[i] == idx) {
+            pool->dead[i] = pool->dead[--pool->dead_count];
+            break;
         }
     }
 
@@ -92,16 +91,15 @@ void rpool_set_state(resolver_pool_t *pool, int idx, resolver_state_t s) {
     uv_mutex_unlock(&pool->lock);
 }
 
-/* ── Round-Robin next active ────────────────────────────────────────────────*/
-static int s_rr_cursor = 0;
-
+/* ── Round-Robin next active ────────────────────────────────────────────────
+ * Fix #7: cursor is now a field of pool, not a global.                     */
 int rpool_next(resolver_pool_t *pool) {
     uv_mutex_lock(&pool->lock);
     int result = -1;
     if (pool->active_count > 0) {
-        s_rr_cursor = s_rr_cursor % pool->active_count;
-        result = pool->active[s_rr_cursor];
-        s_rr_cursor = (s_rr_cursor + 1) % pool->active_count;
+        pool->rr_cursor = pool->rr_cursor % pool->active_count;
+        result = pool->active[pool->rr_cursor];
+        pool->rr_cursor = (pool->rr_cursor + 1) % pool->active_count;
     }
     uv_mutex_unlock(&pool->lock);
     return result;
@@ -169,31 +167,46 @@ uint32_t rpool_fec_k(resolver_pool_t *pool, int idx, int raw_symbols) {
     return (uint32_t)ceil((double)raw_symbols * loss / (1.0 - loss));
 }
 
-/* ── Penalty Box ────────────────────────────────────────────────────────────*/
+/* ── Penalty Box ────────────────────────────────────────────────────────────
+ * Fix #1: was calling rpool_set_state (which acquires lock) while holding
+ * the lock → deadlock on non-recursive mutexes.  Now we compute everything
+ * while locked, release, then call rpool_set_state separately.            */
 void rpool_penalise(resolver_pool_t *pool, int idx) {
     uv_mutex_lock(&pool->lock);
     resolver_t *r = &pool->resolvers[idx];
     double cd = r->cooldown_ms > 0.0 ? r->cooldown_ms : 60000.0;
     r->penalty_until = time(NULL) + (time_t)(cd / 1000.0);
     uv_mutex_unlock(&pool->lock);
+
+    /* rpool_set_state acquires the lock itself — safe now that we released */
     rpool_set_state(pool, idx, RSV_PENALTY);
 }
 
+/* ── Release Penalties ──────────────────────────────────────────────────────
+ * Fix #2: collect expired-penalty indices while locked (single pass, O(N)),
+ * then release the lock and call rpool_set_state for each one.            */
 void rpool_release_penalties(resolver_pool_t *pool) {
     time_t now = time(NULL);
+
+    /* Collect expired indices without holding the lock across set_state */
+    int to_release[DNSTUN_MAX_RESOLVERS];
+    int n = 0;
+
     uv_mutex_lock(&pool->lock);
     for (int i = 0; i < pool->dead_count; i++) {
         int idx = pool->dead[i];
         if (pool->resolvers[idx].state == RSV_PENALTY &&
             pool->resolvers[idx].penalty_until <= now)
         {
-            uv_mutex_unlock(&pool->lock);
-            rpool_set_state(pool, idx, RSV_ACTIVE); /* re-admit */
-            uv_mutex_lock(&pool->lock);
-            i = 0; /* restart scan after list modified */
+            to_release[n++] = idx;
         }
     }
     uv_mutex_unlock(&pool->lock);
+
+    /* Promote each collected resolver (rpool_set_state re-acquires lock) */
+    for (int i = 0; i < n; i++) {
+        rpool_set_state(pool, to_release[i], RSV_ACTIVE);
+    }
 }
 
 /* ── Background Recovery — choose dead resolvers to probe ───────────────────*/
