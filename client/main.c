@@ -540,7 +540,7 @@ static void resolver_init_phase(void) {
     for (int i = 0; i < g_pool.count; i++) {
         resolver_t *r = &g_pool.resolvers[i];
         /* Promote if we got at least one reply and not hijacked */
-        if (r->health_window > 0 && r->state == RSV_DEAD) {
+        if (r->rtt_ms < 900.0 && r->state == RSV_DEAD) {
             r->upstream_mtu = r->mtu_low;
             LOG_DEBUG("Promoting %s to ACTIVE (RTT %.1f, MTU %d, EDNS %s)\n", 
                       r->ip, r->rtt_ms, r->upstream_mtu, r->edns0_supported ? "YES":"no");
