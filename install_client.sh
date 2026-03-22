@@ -27,7 +27,8 @@ if [[ "$OSTYPE" == "linux-gnu"* ]]; then
     sudo apt-get install -y build-essential cmake ninja-build
 fi
 
-# 4. Build the project
+# 3. Build the project
+rm -rf build # Clear old cache to ensure new URLs are used
 mkdir -p build && cd build
 cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release
 ninja dnstun-client

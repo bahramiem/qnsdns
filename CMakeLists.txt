@@ -26,8 +26,8 @@ FetchContent_Declare(
 # For now, I'll use a placeholder or FetchContent a known stable one.
 FetchContent_Declare(
   raptorq
-  GIT_REPOSITORY https://github.com/c-m-m/libRaptorQ.git
-  GIT_TAG        v1.1.0
+  GIT_REPOSITORY https://github.com/LucaFulchir/libRaptorQ.git
+  GIT_TAG        master
 )
 FetchContent_MakeAvailable(libuv zstd sodium raptorq)
 
