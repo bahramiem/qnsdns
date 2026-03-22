@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.16)
 project(dnstun LANGUAGES C)
 
+# Bypassing Git entirely to prevent authentication prompts during dependency fetching.
+set(CMAKE_DISABLE_FIND_PACKAGE_Git TRUE)
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
@@ -12,18 +15,18 @@ FetchContent_Declare(
 )
 FetchContent_Declare(
   zstd
-  URL            https://github.com/facebook/zstd/releases/download/v1.5.6/zstd-1.5.6.tar.gz
+  URL            https://github.com/facebook/zstd/archive/794ea1b0afca0f020f4e57b6732332231fb23c70.tar.gz
   SOURCE_SUBDIR  build/cmake
 )
 FetchContent_Declare(
   sodium
-  URL            https://github.com/jedisct1/libsodium/releases/download/1.0.19-RELEASE/libsodium-1.0.19.tar.gz
+  URL            https://download.libsodium.org/libsodium/releases/libsodium-1.0.19-stable.tar.gz
 )
 # Note: libRaptorQ can be complex to FetchContent; using a simpler RFC 6330 header-only or basic C impl if possible.
 # For now, I'll use a placeholder or FetchContent a known stable one.
 FetchContent_Declare(
   raptorq
-  URL            https://github.com/LucaFulchir/libRaptorQ/archive/refs/heads/master.tar.gz
+  URL            https://github.com/LucaFulchir/libRaptorQ/archive/a394b22af6e8fc742ce88eacf9af5343ecded9d7.tar.gz
 )
 FetchContent_MakeAvailable(libuv zstd sodium raptorq)
 
