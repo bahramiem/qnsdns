@@ -13,18 +13,17 @@ if(UNIX AND NOT APPLE)
     pkg_check_modules(UV REQUIRED libuv)
     pkg_check_modules(ZSTD REQUIRED libzstd)
     pkg_check_modules(SODIUM REQUIRED libsodium)
-    # liblz4 is still useful for our own code, but libRaptorQ must use its
-    # OWN bundled LZ4 to avoid streaming-API linker errors with system lz4.
-
     set(UV_LIBRARIES ${UV_LIBRARIES})
     set(ZSTD_LIBRARIES ${ZSTD_LIBRARIES})
     set(SODIUM_LIBRARIES ${SODIUM_LIBRARIES})
 
-    # libRaptorQ (Vendored) — force bundled LZ4 so streaming symbols are present
+    # libRaptorQ (Vendored)
+    # USE_LZ4=OFF: libRaptorQ only uses LZ4 for optional precomputed-table caching;
+    # disabling it removes all LZ4 streaming-symbol link errors cleanly.
     set(LTO OFF CACHE BOOL "" FORCE)
     set(PROFILING OFF CACHE BOOL "" FORCE)
-    set(USE_LZ4 ON CACHE BOOL "" FORCE)
-    set(RQ_LZ4_USE_OWN ON CACHE BOOL "" FORCE)  # bundled LZ4 inside libRaptorQ
+    set(USE_LZ4 OFF CACHE BOOL "" FORCE)
+    set(RQ_LZ4_USE_OWN OFF CACHE BOOL "" FORCE)
     add_subdirectory(third_party/libRaptorQ EXCLUDE_FROM_ALL)
     set(RAPTORQ_LIBRARIES RaptorQ_Static)
 
@@ -33,7 +32,6 @@ if(UNIX AND NOT APPLE)
         ${ZSTD_INCLUDE_DIRS}
         ${SODIUM_INCLUDE_DIRS}
         third_party/libRaptorQ/src
-        third_party/libRaptorQ/external/lz4/lib
     )
 else()
     # ── Vendored Dependencies ─────────────────────────────────────────────
@@ -54,21 +52,21 @@ else()
         find_package(PkgConfig QUIET)
         pkg_check_modules(SODIUM libsodium)
     endif()
-    # libRaptorQ
+    # libRaptorQ — LZ4 disabled (only used for optional caching, not FEC core)
     set(LTO OFF CACHE BOOL "" FORCE)
     set(PROFILING OFF CACHE BOOL "" FORCE)
-    set(LZ4_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/lz4")
+    set(USE_LZ4 OFF CACHE BOOL "" FORCE)
+    set(RQ_LZ4_USE_OWN OFF CACHE BOOL "" FORCE)
     set(EIGEN3_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libRaptorQ/external/eigen3")
     add_subdirectory(third_party/libRaptorQ EXCLUDE_FROM_ALL)
 
     set(UV_LIBRARIES uv_a)
     set(ZSTD_LIBRARIES libzstd_static)
     set(RAPTORQ_LIBRARIES RaptorQ_Static)
-    
-    set(EXTRA_INCLUDES 
+
+    set(EXTRA_INCLUDES
         third_party/libuv/include
         third_party/zstd/lib
-        third_party/lz4/lib
         third_party/libsodium/src/libsodium/include
         third_party/libsodium/src/libsodium/include/sodium
         third_party/libRaptorQ/src
