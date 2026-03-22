@@ -12,28 +12,28 @@ if(UNIX AND NOT APPLE)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(UV REQUIRED libuv)
     pkg_check_modules(ZSTD REQUIRED libzstd)
-    pkg_check_modules(LZ4 REQUIRED liblz4)
     pkg_check_modules(SODIUM REQUIRED libsodium)
-    # libraptorq-dev is missing on Jammy, so we use vendored one.
-    
+    # liblz4 is still useful for our own code, but libRaptorQ must use its
+    # OWN bundled LZ4 to avoid streaming-API linker errors with system lz4.
+
     set(UV_LIBRARIES ${UV_LIBRARIES})
     set(ZSTD_LIBRARIES ${ZSTD_LIBRARIES})
     set(SODIUM_LIBRARIES ${SODIUM_LIBRARIES})
-    
-    # libRaptorQ (Vendored)
+
+    # libRaptorQ (Vendored) — force bundled LZ4 so streaming symbols are present
     set(LTO OFF CACHE BOOL "" FORCE)
     set(PROFILING OFF CACHE BOOL "" FORCE)
     set(USE_LZ4 ON CACHE BOOL "" FORCE)
-    set(RQ_LZ4_USE_OWN OFF CACHE BOOL "" FORCE) # Use system LZ4
+    set(RQ_LZ4_USE_OWN ON CACHE BOOL "" FORCE)  # bundled LZ4 inside libRaptorQ
     add_subdirectory(third_party/libRaptorQ EXCLUDE_FROM_ALL)
     set(RAPTORQ_LIBRARIES RaptorQ_Static)
 
-    set(EXTRA_INCLUDES 
-        ${UV_INCLUDE_DIRS} 
-        ${ZSTD_INCLUDE_DIRS} 
-        ${LZ4_INCLUDE_DIRS} 
+    set(EXTRA_INCLUDES
+        ${UV_INCLUDE_DIRS}
+        ${ZSTD_INCLUDE_DIRS}
         ${SODIUM_INCLUDE_DIRS}
         third_party/libRaptorQ/src
+        third_party/libRaptorQ/external/lz4/lib
     )
 else()
     # ── Vendored Dependencies ─────────────────────────────────────────────
@@ -101,7 +101,7 @@ add_executable(dnstun-client
     ${SHARED_SOURCES}
 )
 target_include_directories(dnstun-client PRIVATE . shared SPCDNS ${EXTRA_INCLUDES})
-target_link_libraries(dnstun-client ${UV_LIBRARIES} ${ZSTD_LIBRARIES} ${SODIUM_LIBRARIES} ${RAPTORQ_LIBRARIES} m stdc++)
+target_link_libraries(dnstun-client ${UV_LIBRARIES} ${ZSTD_LIBRARIES} ${SODIUM_LIBRARIES} ${RAPTORQ_LIBRARIES} m stdc++ ${LZ4_LIBRARIES})
 set_target_properties(dnstun-client PROPERTIES LINKER_LANGUAGE CXX)
 
 if(WIN32)
@@ -115,7 +115,7 @@ add_executable(dnstun-server
     ${SHARED_SOURCES}
 )
 target_include_directories(dnstun-server PRIVATE . shared SPCDNS ${EXTRA_INCLUDES})
-target_link_libraries(dnstun-server ${UV_LIBRARIES} ${ZSTD_LIBRARIES} ${SODIUM_LIBRARIES} ${RAPTORQ_LIBRARIES} m stdc++)
+target_link_libraries(dnstun-server ${UV_LIBRARIES} ${ZSTD_LIBRARIES} ${SODIUM_LIBRARIES} ${RAPTORQ_LIBRARIES} m stdc++ ${LZ4_LIBRARIES})
 set_target_properties(dnstun-server PROPERTIES LINKER_LANGUAGE CXX)
 
 if(WIN32)

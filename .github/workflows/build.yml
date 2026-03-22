@@ -23,7 +23,7 @@ jobs:
       if: runner.os == 'Linux'
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential cmake ninja-build libuv1-dev libzstd-dev liblz4-dev libsodium-dev
+        sudo apt-get install -y build-essential cmake ninja-build libuv1-dev libzstd-dev libsodium-dev
 
     - name: Configure CMake
       run: |
