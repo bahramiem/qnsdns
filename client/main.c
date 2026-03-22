@@ -196,6 +196,8 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
 /* ────────────────────────────────────────────── */
 typedef struct probe_req {
     uv_udp_t        udp;
+    uv_timer_t      timer;
+    int             closes;
     uv_udp_send_t   send_req;
     struct sockaddr_in dest;
     int             resolver_idx;
@@ -206,14 +208,27 @@ typedef struct probe_req {
     bool            got_reply;
 } probe_req_t;
 
-static void on_probe_close(uv_handle_t *h) { free(h->data); }
+static void on_probe_close(uv_handle_t *h) {
+    probe_req_t *p = h->data;
+    if (++p->closes == 2) free(p);
+}
+
+static void on_probe_timeout(uv_timer_t *t) {
+    probe_req_t *p = t->data;
+    if (!uv_is_closing((uv_handle_t*)&p->udp)) {
+        rpool_on_loss(&g_pool, p->resolver_idx);
+        uv_close((uv_handle_t*)&p->udp, on_probe_close);
+        uv_close((uv_handle_t*)&p->timer, on_probe_close);
+    }
+}
 
 static void on_probe_recv(uv_udp_t *h, ssize_t nread,
                           const uv_buf_t *buf,
                           const struct sockaddr *addr,
                           unsigned flags)
 {
-    (void)buf; (void)addr; (void)flags;
+    if (nread == 0 && addr == NULL) return; /* spurious wake-up, ignore */
+    (void)buf; (void)flags;
     probe_req_t *p = h->data;
 
     if (nread > 0) {
@@ -228,8 +243,10 @@ static void on_probe_recv(uv_udp_t *h, ssize_t nread,
         rpool_on_loss(&g_pool, p->resolver_idx);
     }
 
-    if (!uv_is_closing((uv_handle_t*)h))
-        uv_close((uv_handle_t*)h, on_probe_close);
+    if (!uv_is_closing((uv_handle_t*)&p->udp)) {
+        uv_close((uv_handle_t*)&p->udp, on_probe_close);
+        uv_close((uv_handle_t*)&p->timer, on_probe_close);
+    }
 }
 
 static void on_probe_alloc(uv_handle_t *h, size_t sz, uv_buf_t *buf) {
@@ -240,7 +257,14 @@ static void on_probe_alloc(uv_handle_t *h, size_t sz, uv_buf_t *buf) {
 }
 
 static void on_probe_send(uv_udp_send_t *sr, int status) {
-    (void)sr; (void)status;
+    if (status != 0) {
+        probe_req_t *p = sr->handle->data;
+        if (!uv_is_closing((uv_handle_t*)&p->udp)) {
+            rpool_on_loss(&g_pool, p->resolver_idx);
+            uv_close((uv_handle_t*)&p->udp, on_probe_close);
+            uv_close((uv_handle_t*)&p->timer, on_probe_close);
+        }
+    }
 }
 
 static void fire_probe_ext(int idx, const uint8_t *payload, size_t paylen, const char *domain) {
@@ -272,6 +296,10 @@ static void fire_probe_ext(int idx, const uint8_t *payload, size_t paylen, const
 
     uv_udp_init(g_loop, &p->udp);
     p->udp.data = p;
+    
+    uv_timer_init(g_loop, &p->timer);
+    p->timer.data = p;
+    uv_timer_start(&p->timer, on_probe_timeout, 2000, 0);
 
     uv_udp_recv_start(&p->udp, on_probe_alloc, on_probe_recv);
     uv_buf_t buf = uv_buf_init((char*)p->sendbuf, (unsigned)p->sendlen);
@@ -529,6 +557,8 @@ static void on_socks5_connection(uv_stream_t *server, int status) {
 /* ────────────────────────────────────────────── */
 typedef struct dns_query_ctx {
     uv_udp_t         udp;
+    uv_timer_t       timer;
+    int              closes;
     uv_udp_send_t    send_req;
     struct sockaddr_in dest;
     int              resolver_idx;
@@ -540,7 +570,20 @@ typedef struct dns_query_ctx {
     uint8_t          recvbuf[DNS_BUFFER_UDP];
 } dns_query_ctx_t;
 
-static void on_dns_query_close(uv_handle_t *h) { free(h->data); }
+static void on_dns_query_close(uv_handle_t *h) {
+    dns_query_ctx_t *q = h->data;
+    if (++q->closes == 2) free(q);
+}
+
+static void on_dns_timeout(uv_timer_t *t) {
+    dns_query_ctx_t *q = t->data;
+    if (!uv_is_closing((uv_handle_t*)&q->udp)) {
+        rpool_on_loss(&g_pool, q->resolver_idx);
+        g_stats.queries_lost++;
+        uv_close((uv_handle_t*)&q->udp, on_dns_query_close);
+        uv_close((uv_handle_t*)&q->timer, on_dns_query_close);
+    }
+}
 
 static void on_dns_recv(uv_udp_t *h,
                         ssize_t nread,
@@ -548,7 +591,8 @@ static void on_dns_recv(uv_udp_t *h,
                         const struct sockaddr *addr,
                         unsigned flags)
 {
-    (void)addr; (void)flags;
+    if (nread == 0 && addr == NULL) return; /* spurious wake-up, ignore */
+    (void)flags;
     dns_query_ctx_t *q = h->data;
     int ridx = q->resolver_idx;
 
@@ -613,17 +657,21 @@ static void on_dns_recv(uv_udp_t *h,
         g_stats.queries_lost++;
     }
 
-    if (!uv_is_closing((uv_handle_t*)h))
-        uv_close((uv_handle_t*)h, on_dns_query_close);
+    if (!uv_is_closing((uv_handle_t*)&q->udp)) {
+        uv_close((uv_handle_t*)&q->udp, on_dns_query_close);
+        uv_close((uv_handle_t*)&q->timer, on_dns_query_close);
+    }
 }
 
 static void on_dns_send(uv_udp_send_t *sr, int status) {
     if (status != 0) {
         dns_query_ctx_t *q = sr->handle->data;
-        rpool_on_loss(&g_pool, q->resolver_idx);
-        g_stats.queries_lost++;
-        if (!uv_is_closing((uv_handle_t*)sr->handle))
-            uv_close((uv_handle_t*)sr->handle, on_dns_query_close);
+        if (!uv_is_closing((uv_handle_t*)&q->udp)) {
+            rpool_on_loss(&g_pool, q->resolver_idx);
+            g_stats.queries_lost++;
+            uv_close((uv_handle_t*)&q->udp, on_dns_query_close);
+            uv_close((uv_handle_t*)&q->timer, on_dns_query_close);
+        }
     }
 }
 
