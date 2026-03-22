@@ -1186,6 +1186,11 @@ int main(int argc, char *argv[]) {
     uv_timer_t chrome_timer;
 
     srand((unsigned)time(NULL));
+    
+    if (sodium_init() < 0) {
+        fprintf(stderr, "libsodium initialization failed.\n");
+        return 1;
+    }
 
     /* Parse arguments */
     for (int i = 1; i < argc; i++) {
