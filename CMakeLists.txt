@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(dnstun LANGUAGES C)
+project(dnstun LANGUAGES C CXX)
 
 # Bypassing Git entirely to prevent authentication prompts during dependency fetching.
 set(CMAKE_DISABLE_FIND_PACKAGE_Git TRUE)
