@@ -10,7 +10,6 @@ jobs:
   build:
     name: Build on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    # libRaptorQ + Eigen is slow to compile; give it plenty of time
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -22,6 +21,7 @@ jobs:
       with:
         submodules: recursive
 
+    # ── Linux ──────────────────────────────────────────────────────────────
     - name: Install Dependencies (Ubuntu)
       if: runner.os == 'Linux'
       run: |
@@ -29,8 +29,15 @@ jobs:
         sudo apt-get install -y build-essential cmake ninja-build \
           libuv1-dev libzstd-dev libsodium-dev
 
-    # Cache the build directory so recompiling Eigen/libRaptorQ is skipped
-    # on subsequent pushes that only touch our own code.
+    # ── Windows ────────────────────────────────────────────────────────────
+    - name: Install Dependencies (Windows via vcpkg)
+      if: runner.os == 'Windows'
+      run: |
+        vcpkg install libuv libsodium zstd --triplet x64-windows-static
+      env:
+        VCPKG_DEFAULT_TRIPLET: x64-windows-static
+
+    # ── Cache (speeds up Eigen/libRaptorQ recompile) ───────────────────────
     - name: Cache build directory
       uses: actions/cache@v4
       with:
@@ -39,15 +46,23 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-cmake-
 
-    - name: Configure CMake
-      run: |
-        cmake -B build -DCMAKE_BUILD_TYPE=Release
+    # ── Configure ──────────────────────────────────────────────────────────
+    - name: Configure CMake (Linux)
+      if: runner.os == 'Linux'
+      run: cmake -B build -DCMAKE_BUILD_TYPE=Release
 
-    - name: Build (parallel)
-      # Use all available cores; GitHub runners have 2 on Linux and 2 on Windows
+    - name: Configure CMake (Windows)
+      if: runner.os == 'Windows'
       run: |
-        cmake --build build --config Release --parallel
+        cmake -B build -DCMAKE_BUILD_TYPE=Release `
+          -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+          -DVCPKG_TARGET_TRIPLET=x64-windows-static
 
+    # ── Build ──────────────────────────────────────────────────────────────
+    - name: Build
+      run: cmake --build build --config Release --parallel
+
+    # ── Artifacts ──────────────────────────────────────────────────────────
     - name: Upload Artifacts (Linux)
       if: runner.os == 'Linux'
       uses: actions/upload-artifact@v4
