@@ -76,6 +76,7 @@ typedef struct srv_session {
     uint8_t   cl_enc_format;
     uint8_t   cl_loss_pct;
     uint8_t   cl_fec_k;
+    char      user_id[16];
 
     /* Burst buffering for FEC */
     uint16_t  burst_seq_start;
@@ -473,6 +474,10 @@ static void on_server_recv(uv_udp_t *h,
     sess->cl_downstream_mtu = hdr.downstream_mtu ? hdr.downstream_mtu : 512;
     sess->cl_enc_format     = hdr.enc_format;
     sess->cl_loss_pct       = hdr.loss_pct;
+    sess->cl_fec_k          = hdr.fec_k;
+    strncpy(sess->user_id, hdr.user_id, sizeof(sess->user_id)-1);
+    sess->user_id[sizeof(sess->user_id)-1] = '\0';
+
     /* Adaptive FEC: use the client's reported loss to add redundancy */
     uint8_t fec_k = 0;
     if (hdr.loss_pct > 0) {
@@ -722,6 +727,8 @@ static int get_active_clients(tui_client_snap_t *out, int max_clients) {
             out[count].fec_k          = g_sessions[i].cl_fec_k;
             out[count].enc_format     = g_sessions[i].cl_enc_format;
             out[count].idle_sec       = (uint32_t)(now - g_sessions[i].last_active);
+            strncpy(out[count].user_id, g_sessions[i].user_id, sizeof(out[count].user_id)-1);
+            out[count].user_id[sizeof(out[count].user_id)-1] = '\0';
             count++;
         }
     }

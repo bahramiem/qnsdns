@@ -120,6 +120,7 @@ typedef struct {
     uint8_t  enc_format;     /* enc_format_t */
     uint8_t  loss_pct;       /* loss rate 0-100 */
     uint8_t  fec_k;          /* FEC redundancy count */
+    char     user_id[12];    /* User ID */
     uint8_t  reserved;
 } chunk_header_t;
 #pragma pack(pop)

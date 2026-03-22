@@ -30,6 +30,7 @@ void config_defaults(dnstun_config_t *cfg, bool is_server) {
     cfg->workers              = 4;
     cfg->threads              = 2;
     cfg->log_level            = 1; /* info */
+    strcpy(cfg->user_id, "default");
 
     /* resolvers */
     cfg->cidr_scan            = false;
@@ -85,6 +86,10 @@ int config_set_key(dnstun_config_t *cfg,
             else if (strcmp(value,"info")==0)   cfg->log_level = 1;
             else if (strcmp(value,"debug")==0)  cfg->log_level = 2;
             else cfg->log_level = atoi(value);
+        }
+        else if (strcmp(key,"user_id")==0) {
+            strncpy(cfg->user_id, value, sizeof(cfg->user_id)-1);
+            cfg->user_id[sizeof(cfg->user_id)-1] = '\0';
         }
     }
     /* [resolvers] */

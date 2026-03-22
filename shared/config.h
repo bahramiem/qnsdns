@@ -19,6 +19,7 @@ typedef struct dnstun_config {
     int      threads;           /* codec/FEC worker threads   */
     int      log_level;         /* 0=silent 1=info 2=debug    */
     bool     is_server;         /* true when running as server */
+    char     user_id[16];       /* identifies this node in the swarm */
 
     /* [resolvers] / [server_sync] */
     char     seed_resolvers[DNSTUN_MAX_RESOLVERS][46]; /* IPv4/v6 strings */

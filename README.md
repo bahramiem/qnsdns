@@ -44,8 +44,16 @@ Fully documented sample INI files are provided:
 - [client.ini](https://github.com/bahramiem/qnsdns/blob/main/client.ini)
 - [server.ini](https://github.com/bahramiem/qnsdns/blob/main/server.ini)
 
+**First-Run Prompt**:
+If you don't configure a tunnel domain in the INI file, both binaries will interactively prompt you for the delegated tunnel zone on your first launch and automatically save it into the INI file for future runs.
+
+**User Identification**:
+You can define a `user_id = your_name` variable in the `[core]` section of both configurations. The highly optimized 32-byte DNS tunnel chunk payloads will autonomously embed this identity during the first connection chunks without inflating packet overhead, allowing the Server node to identify precisely who is communicating.
+
 > [!TIP]
-> You can edit these values **live** while the client is running using the TUI configuration panel (press `c`).
+> You can edit configuration values **live** while the client is running using the TUI configuration panel (press `3`).
+> Press **`m`** on the config panel to edit your domains via an inline text bar; this cleanly restarts the background networking engines to apply it instantly. 
+> Press **`r`** on the Resolver panel (press `2`) to enter a new IPv4/IPv6 resolver and dynamically append it to your `client_resolvers.txt`.
 
 ---
 
@@ -74,11 +82,12 @@ curl -x socks5h://127.0.0.1:1080 http://example.com
 
 ## 📊 Dashboard (TUI)
 
-Both the client and server feature a powerful 3-panel ANSI dashboard:
+Both the client and server feature a powerful 3-panel ANSI dashboard (use `Number Keys` to switch):
 
-1.  **Stats Panel**: Monitor live throughput (KB/s), active SOCKS5 sessions, and global query health.
-2.  **Resolver Table**: See the health of every resolver IP, its current AIMD window (`cwnd`), RTT, and MTU.
-3.  **Config View**: Toggle features like `jitter` or `encryption` instantly.
+1.  **Stats Panel (`1`)**: Monitor live throughput (KB/s), active SOCKS5 sessions, global query health, and swarm limits.
+2.  **Resolver Table (`2` - Client)**: See the health of every resolver IP loaded via your config, their current AIMD transport window (`cwnd`), measured round-trip time (`RTT`), and MTU. 
+3.  **Clients Scoreboard (`2` - Server)**: Because the server doesn't "query" resolvers, opening panel 2 tracks your live inbound users! View a pristine table showing connected IP addresses, their reported `User ID`s, requested MTU limitations, Packet Loss %, and background Encoding mode.
+4.  **Config View (`3`)**: Toggle features like `jitter` or `encryption` instantly on the fly.
 
 ---
 

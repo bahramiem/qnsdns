@@ -260,6 +260,7 @@ static void fire_probe_ext(int idx, const uint8_t *payload, size_t paylen, const
     hdr.enc_format      = (uint8_t)r->enc;
     hdr.downstream_mtu  = r->downstream_mtu;
     hdr.upstream_mtu    = (uint16_t)paylen;
+    strncpy(hdr.user_id, g_cfg.user_id, sizeof(hdr.user_id));
 
     p->sendlen = sizeof(p->sendbuf);
     if (build_dns_query(p->sendbuf, &p->sendlen, &hdr, payload, paylen, domain) != 0) {
@@ -683,6 +684,7 @@ static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
     hdr.enc_format     = (uint8_t)r->enc;
     hdr.loss_pct       = (uint8_t)(r->loss_rate * 100.0);
     hdr.fec_k          = (uint8_t)r->fec_k;
+    strncpy(hdr.user_id, g_cfg.user_id, sizeof(hdr.user_id));
 
     int didx = rpool_flux_domain(&g_cfg);
     const char *domain = (g_cfg.domain_count > 0)

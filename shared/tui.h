@@ -29,6 +29,7 @@ typedef struct {
 ────────────────────────────────────────────── */
 typedef struct {
     char     ip[46];
+    char     user_id[16];
     uint16_t downstream_mtu;
     uint8_t  loss_pct;
     uint8_t  fec_k;

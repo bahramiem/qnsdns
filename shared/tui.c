@@ -112,12 +112,13 @@ static void render_resolvers(tui_ctx_t *t) {
         int num = t->get_clients_cb(snaps, 24);
         printf(ANSI_BOLD ANSI_CYAN " ▌ ACTIVE CLIENT SESSIONS (%d shown) ▌\n" ANSI_RESET, num);
         hr(72, ANSI_CYAN);
-        printf(ANSI_BOLD "%-16s %5s %5s %5s %5s %8s\n" ANSI_RESET,
-               "Client IP", "MTU", "Loss%", "FEC", "Enc", "Idle(s)");
+        printf(ANSI_BOLD "%-16s %-12s %5s %5s %5s %5s %8s\n" ANSI_RESET,
+               "Client IP", "User ID", "MTU", "Loss%", "FEC", "Enc", "Idle(s)");
         hr(72, ANSI_CYAN);
         for (int i=0; i<num; i++) {
-            printf("%-16s %5d %5d %5d %5s %8u\n",
+            printf("%-16s %-12s %5d %5d %5d %5s %8u\n",
                    snaps[i].ip,
+                   snaps[i].user_id[0] ? snaps[i].user_id : "-",
                    snaps[i].downstream_mtu,
                    (int)snaps[i].loss_pct,
                    (int)snaps[i].fec_k,
