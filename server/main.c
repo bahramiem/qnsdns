@@ -502,6 +502,9 @@ static void on_server_recv(uv_udp_t *h,
 
     /* ── Handle FEC Burst Reassembly ──────────────────────────────────── */
     if (hdr.chunk_total > 0) {
+        uint8_t pcount = hdr.pack_count == 0 ? 1 : hdr.pack_count;
+        size_t  slen   = payload_len / pcount;
+
         /* New burst or continuation? */
         if (sess->burst_count_needed == 0 || hdr.seq < sess->burst_seq_start) {
             /* Cleanup old */
@@ -513,14 +516,16 @@ static void on_server_recv(uv_udp_t *h,
             sess->burst_count_needed  = hdr.chunk_total;
             sess->burst_received      = 0;
             sess->burst_symbols       = calloc(hdr.chunk_total, sizeof(uint8_t*));
-            sess->burst_symbol_len    = payload_len;
+            sess->burst_symbol_len    = slen;
         }
 
-        int offset = hdr.seq - sess->burst_seq_start;
-        if (offset >= 0 && offset < sess->burst_count_needed && !sess->burst_symbols[offset]) {
-            sess->burst_symbols[offset] = malloc(payload_len);
-            memcpy(sess->burst_symbols[offset], payload, payload_len);
-            sess->burst_received++;
+        for (int p = 0; p < pcount; p++) {
+            int offset = (hdr.seq + p) - sess->burst_seq_start;
+            if (offset >= 0 && offset < sess->burst_count_needed && !sess->burst_symbols[offset]) {
+                sess->burst_symbols[offset] = malloc(slen);
+                memcpy(sess->burst_symbols[offset], payload + (p * slen), slen);
+                sess->burst_received++;
+            }
         }
 
         /* Enough symbols to decode? (Simplified: wait for K symbols or more) */

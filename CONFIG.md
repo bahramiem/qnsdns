@@ -24,6 +24,7 @@ This document provides a deep dive into every configuration parameter available 
     - `100`: Balanced (default).
     - `500`: Stealthy, low query count.
 - **`fec_window`**: Number of packets before FEC parity is calculated. Larger windows handle burst loss better but add slight delay.
+- **`fec_repair_rate`**: Fixed percentage of overhead repair symbols to generate (e.g., `25` = 25%). If `0`, adaptive loss-based FEC is used.
 - **`cwnd_init`**: Starting queries-in-flight per resolver.
 - **`cwnd_max`**: Maximum queries-in-flight. Crucial for speed; 512 is usually safe for public DNS like Cloudflare.
 

@@ -43,6 +43,7 @@ void config_defaults(dnstun_config_t *cfg, bool is_server) {
     /* tuning */
     cfg->poll_interval_ms     = 100;
     cfg->fec_window           = 32;
+    cfg->fec_repair_rate      = 0;
     cfg->cwnd_init            = 16.0;
     cfg->cwnd_max             = 512.0;
     cfg->idle_timeout_sec     = 120;
@@ -116,6 +117,7 @@ int config_set_key(dnstun_config_t *cfg,
     else if (strcmp(section,"tuning")==0) {
         if      (strcmp(key,"poll_interval_ms")==0) cfg->poll_interval_ms = atoi(value);
         else if (strcmp(key,"fec_window")==0)       cfg->fec_window       = atoi(value);
+        else if (strcmp(key,"fec_repair_rate")==0)  cfg->fec_repair_rate  = atoi(value);
         else if (strcmp(key,"cwnd_init")==0)        cfg->cwnd_init        = atof(value);
         else if (strcmp(key,"cwnd_max")==0)         cfg->cwnd_max         = atof(value);
         else if (strcmp(key,"idle_timeout_sec")==0) cfg->idle_timeout_sec = atoi(value);
@@ -259,6 +261,7 @@ void config_dump(const dnstun_config_t *cfg) {
     printf("[tuning]\n");
     printf("  poll_interval_ms  = %d\n", cfg->poll_interval_ms);
     printf("  fec_window        = %d\n", cfg->fec_window);
+    printf("  fec_repair_rate   = %d\n", cfg->fec_repair_rate);
     printf("  cwnd_init         = %.0f\n", cfg->cwnd_init);
     printf("  cwnd_max          = %.0f\n", cfg->cwnd_max);
 

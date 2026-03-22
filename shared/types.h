@@ -23,7 +23,7 @@
 #define DNSTUN_MAX_DOMAINS       32
 #define DNSTUN_MAX_LABEL_LEN     63
 #define DNSTUN_MAX_QNAME_LEN     253
-#define DNSTUN_CHUNK_PAYLOAD     160   /* max base32 payload bytes per DNS label block */
+#define DNSTUN_CHUNK_PAYLOAD     32   /* base symbol size for rateless aggregation */
 #define DNSTUN_SESSION_ID_LEN    4
 #define DNSTUN_VERSION           1
 
@@ -126,7 +126,7 @@ typedef struct {
     uint8_t  loss_pct;       /* loss rate 0-100 */
     uint8_t  fec_k;          /* FEC redundancy count */
     char     user_id[12];    /* User ID */
-    uint8_t  reserved;
+    uint8_t  pack_count;     /* aggregated symbols in this chunk (0 = 1) */
 } chunk_header_t;
 #pragma pack(pop)
 

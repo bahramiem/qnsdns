@@ -30,6 +30,7 @@
 #endif
 
 #include "uv.h"
+#include <sodium.h>
 #include "SPCDNS/dns.h"
 #include "SPCDNS/output.h"
 
@@ -874,7 +875,7 @@ static void on_jitter_timer(uv_timer_t *t) {
    'seq' is the actual sequence number of this FEC symbol. */
 static void fire_dns_chunk_symbol_raw(int session_idx, uint16_t seq,
                                       const uint8_t *payload, size_t paylen,
-                                      int total_symbols)
+                                      int total_symbols, int pack_count)
 {
     int ridx = rpool_next(&g_pool);
     if (ridx < 0) return;
@@ -895,6 +896,7 @@ static void fire_dns_chunk_symbol_raw(int session_idx, uint16_t seq,
     hdr.flags          = (g_cfg.encryption ? 0x01 : 0x00) | 0x02; /* Real-world: always compressed */
     if (paylen == 0) hdr.flags |= 0x08; /* poll flag */
     if (total_symbols > 0) hdr.flags |= 0x04; /* fec flag */
+    hdr.pack_count     = (uint8_t)pack_count;
 
     memcpy(hdr.session_id, sess->id, DNSTUN_SESSION_ID_LEN);
     hdr.seq            = seq;
@@ -967,17 +969,17 @@ static void fire_dns_chunk_symbol_raw(int session_idx, uint16_t seq,
 
 static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
                                   const uint8_t *payload, size_t paylen,
-                                  int total_symbols)
+                                  int total_symbols, int pack_count)
 {
     /* Primary send */
-    fire_dns_chunk_symbol_raw(session_idx, seq, payload, paylen, total_symbols);
+    fire_dns_chunk_symbol_raw(session_idx, seq, payload, paylen, total_symbols, pack_count);
 
     /* Handshake Redundancy (fix #28): 
        Duplicate critical packets (seq 0) to top 3 resolvers to ensure fast connect. */
     if (seq == 0 && paylen > 0) {
         LOG_DEBUG("Handshake duplication for seq 0 (3x)\n");
-        fire_dns_chunk_symbol_raw(session_idx, seq, payload, paylen, total_symbols);
-        fire_dns_chunk_symbol_raw(session_idx, seq, payload, paylen, total_symbols);
+        fire_dns_chunk_symbol_raw(session_idx, seq, payload, paylen, total_symbols, pack_count);
+        fire_dns_chunk_symbol_raw(session_idx, seq, payload, paylen, total_symbols, pack_count);
     }
 }
 
@@ -1010,16 +1012,46 @@ static void on_poll_timer(uv_timer_t *t) {
 
             /* 3. FEC ENCODE */
             /* We split the block into source symbols (K) and repair symbols (R).
-               K is derived based on the observed loss rate. */
+               K is derived based on the observed loss rate, or fixed rate if set. */
             int k = (int)ceil((double)enc_len / (double)DNSTUN_CHUNK_PAYLOAD);
             if (k == 0) k = 1;
-            int r = rpool_fec_k(&g_pool, 0, k); /* Use first resolver's state for simplicity in this tick */
+            int r;
+            if (g_cfg.fec_repair_rate > 0) {
+                /* Fixed manually configured overhead % */
+                r = (int)ceil((double)k * ((double)g_cfg.fec_repair_rate / 100.0));
+            } else {
+                /* Adaptive based on loss */
+                r = rpool_fec_k(&g_pool, 0, k);
+            }
             
             fec_encoded_t fec = codec_fec_encode(enc_in, enc_len, k, r);
             if (fec.total_count > 0) {
-                /* 4. SEND SYMBOLS */
-                for (int s = 0; s < fec.total_count; s++) {
-                    fire_dns_chunk_symbol(i, sess->tx_next++, fec.symbols[s], fec.symbol_len, fec.total_count);
+                /* 4. SEND SYMBOLS (with Aggregation) */
+                int s = 0;
+                while (s < fec.total_count) {
+                    /* Determine optimal packing based on MTU constraints */
+                    /* We assume max QNAME overhead is ~34 bytes. Max QNAME len = 253.
+                       So max raw bytes is ~135. We cap pack size to fit safely. */
+                    int max_raw = 135; 
+                    int max_payload = max_raw - sizeof(chunk_header_t);
+                    int pack = max_payload / fec.symbol_len;
+                    if (pack < 1) pack = 1;
+                    
+                    int remain = fec.total_count - s;
+                    if (pack > remain) pack = remain;
+                    if (pack > 255) pack = 255; /* pack_count fits in uint8_t */
+
+                    uint8_t agg_buf[512];
+                    size_t  agg_len = 0;
+                    for (int p = 0; p < pack; p++) {
+                        memcpy(agg_buf + agg_len, fec.symbols[s + p], fec.symbol_len);
+                        agg_len += fec.symbol_len;
+                    }
+
+                    fire_dns_chunk_symbol(i, sess->tx_next, agg_buf, agg_len, fec.total_count, pack);
+                    
+                    sess->tx_next += pack;
+                    s += pack;
                 }
             }
 
@@ -1029,14 +1061,14 @@ static void on_poll_timer(uv_timer_t *t) {
             sess->send_len = 0;
         } else {
             /* No upload — send empty POLL to pull downstream data */
-            fire_dns_chunk_symbol(i, sess->tx_next++, NULL, 0, 0);
+            fire_dns_chunk_symbol(i, sess->tx_next++, NULL, 0, 0, 0);
 
             /* 5. CHAFFING (Decoy) */
             if (g_cfg.chaffing && (rand() % 10 == 0)) {
                 /* Send a random-length decoy query once in a while */
                 uint8_t chaff[32];
                 for (int c=0; c<32; c++) chaff[c] = (uint8_t)(rand() & 0xFF);
-                fire_dns_chunk_symbol(i, 0xFFFF, chaff, 16 + (rand() % 16), 0);
+                fire_dns_chunk_symbol(i, 0xFFFF, chaff, 16 + (rand() % 16), 0, 0);
             }
         }
     }

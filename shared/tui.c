@@ -306,6 +306,7 @@ static void render_config(tui_ctx_t *t) {
     printf(" k) transport         = " ANSI_CYAN "%s" ANSI_RESET "\n",
            (c->transport < 3) ? transports[c->transport] : "?");
     printf(" l) log_level         = " ANSI_CYAN "%d" ANSI_RESET "\n", c->log_level);
+    printf(" n) fec_repair_rate   = " ANSI_CYAN "%d" ANSI_RESET "%% (0=auto)\n", c->fec_repair_rate);
 
     /* Domain editing */
     printf(" m) domains           = " ANSI_CYAN);
@@ -465,11 +466,9 @@ void tui_handle_key(tui_ctx_t *t, int key) {
 
         /* Log panel navigation */
         case 'A': /* Up arrow (ANSI \033[A → we get 'A' after ESC [ ) */
-        case 'k':  /* vim-style */
             if (t->panel == 2) { t->log_scroll++; }
             break;
         case 'B': /* Down arrow */
-        case 'j':  /* vim-style */
             if (t->panel == 2 && t->log_scroll > 0) { t->log_scroll--; }
             break;
         case 5: /* Ctrl-E: scroll down one */
