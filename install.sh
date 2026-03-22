@@ -13,7 +13,8 @@ echo "  1) dnstun-server (for the remote VPS/server)"
 echo "  2) dnstun-client (for your local machine/router)"
 echo "  3) Cancel"
 echo ""
-read -p "Enter choice [1-3]: " choice
+# When piping script via 'curl | bash', stdin is closed. We must read from /dev/tty.
+read -p "Enter choice [1-3]: " choice < /dev/tty
 
 if [ "$choice" == "1" ]; then
     INSTALL_TYPE="server"

@@ -11,6 +11,8 @@ jobs:
     name: Build on Linux
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    permissions:
+      contents: write
 
     steps:
     - uses: actions/checkout@v4
@@ -49,3 +51,17 @@ jobs:
         path: |
           build/dnstun-client
           build/dnstun-server
+
+    # ── Auto Release (Continuous) ──────────────────────────────────────────
+    - name: Auto Release to GitHub
+      if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+      uses: ncipollo/release-action@v1
+      with:
+        tag: "latest"
+        name: "Latest Build"
+        body: "Automated deployment of the latest commit on the main branch."
+        artifacts: "build/dnstun-client,build/dnstun-server"
+        allowUpdates: true
+        replacesArtifacts: true
+        draft: false
+        makeLatest: true
