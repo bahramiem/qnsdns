@@ -300,11 +300,11 @@ static int build_txt_reply(uint8_t *outbuf, size_t *outlen,
 
     dns_answer_t ans = {0};
     ans.name     = qname;
-    ans.type     = RR_TXT;
-    ans.class    = CLASS_IN;
-    ans.ttl      = 0;
-    ans.rdlength = (uint16_t)data_len;
-    ans.rdata    = data;
+    ans.txt.type   = RR_TXT;
+    ans.txt.class  = CLASS_IN;
+    ans.txt.ttl    = 0;
+    ans.txt.len    = (uint16_t)data_len;
+    ans.txt.text   = (char const *)data;
 
     dns_query_t resp = {0};
     resp.id        = query_id;

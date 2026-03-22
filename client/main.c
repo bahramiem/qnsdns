@@ -499,10 +499,10 @@ static void on_dns_recv(uv_udp_t *h,
             /* Walk answer section for TXT records */
             for (int i = 0; i < (int)resp->ancount; i++) {
                 dns_answer_t *ans = &resp->answers[i];
-                if (ans->type == RR_TXT && ans->rdlength > 0) {
+                if (ans->type == RR_TXT && ans->txt.len > 0) {
                     /* Check if this is a SYNC response (comma-separated IPs) */
-                    if (ans->rdlength > 7 && strchr((const char*)ans->rdata, ',')) {
-                        char *ips = strndup((const char*)ans->rdata, ans->rdlength);
+                    if (ans->txt.len > 7 && strchr(ans->txt.text, ',')) {
+                        char *ips = strndup(ans->txt.text, ans->txt.len);
                         char *tok = strtok(ips, ",");
                         while (tok) {
                             rpool_add(&g_pool, tok);
@@ -517,16 +517,16 @@ static void on_dns_recv(uv_udp_t *h,
                             && !g_sessions[sidx].closed)
                         {
                             session_t *s = &g_sessions[sidx];
-                            size_t need = s->recv_len + ans->rdlength;
+                            size_t need = s->recv_len + ans->txt.len;
                             if (need > s->recv_cap) {
                                 s->recv_buf = realloc(s->recv_buf, need + 4096);
                                 s->recv_cap = need + 4096;
                             }
                             memcpy(s->recv_buf + s->recv_len,
-                                   ans->rdata, ans->rdlength);
-                            s->recv_len += ans->rdlength;
-                            g_stats.rx_total += ans->rdlength;
-                            g_stats.rx_bytes_sec += ans->rdlength;
+                                   ans->txt.text, ans->txt.len);
+                            s->recv_len += ans->txt.len;
+                            g_stats.rx_total += ans->txt.len;
+                            g_stats.rx_bytes_sec += ans->txt.len;
                         }
                     }
                     g_stats.queries_recv++;
@@ -618,7 +618,7 @@ static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
 
     /* Anti-DPI Jitter (Optional) */
     uint64_t delay_ms = 0;
-    if (g_cfg.obf_jitter) {
+    if (g_cfg.jitter) {
         delay_ms = (uint64_t)(rand() % 50); /* 0-50ms jitter */
     }
 
@@ -689,7 +689,7 @@ static void on_poll_timer(uv_timer_t *t) {
             fire_dns_chunk_symbol(i, sess->tx_next++, NULL, 0, 0);
 
             /* 5. CHAFFING (Decoy) */
-            if (g_cfg.obf_chaffing && (rand() % 10 == 0)) {
+            if (g_cfg.chaffing && (rand() % 10 == 0)) {
                 /* Send a random-length decoy query once in a while */
                 uint8_t chaff[32];
                 for (int c=0; c<32; c++) chaff[c] = (uint8_t)(rand() & 0xFF);
@@ -704,7 +704,7 @@ static void on_poll_timer(uv_timer_t *t) {
 /* ────────────────────────────────────────────── */
 static void fire_chrome_cover_traffic(uv_timer_t *t) {
     (void)t;
-    if (!g_cfg.obf_chrome_cover) return;
+    if (!g_cfg.chrome_cover) return;
 
     /* Mimic Chrome: A + AAAA queries for top domains */
     const char *sites[] = {"google.com", "youtube.com", "fonts.gstatic.com", "ssl.gstatic.com"};
