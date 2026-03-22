@@ -14,8 +14,11 @@ fi
 
 # 2. Download source code if not present
 if [ ! -f "CMakeLists.txt" ]; then
-    echo "Source code not found. Cloning repository..."
-    git clone https://github.com/bahramiem/qnsdns.git .
+    echo "Source code not found. Initializing repository..."
+    git init .
+    git remote add origin https://github.com/bahramiem/qnsdns.git || git remote set-url origin https://github.com/bahramiem/qnsdns.git
+    git fetch
+    git reset --hard origin/main
 fi
 
 # 3. Install system dependencies
