@@ -404,6 +404,7 @@ void tui_init(tui_ctx_t *t, tui_stats_t *stats,
 #endif
 
     printf(ANSI_HIDE_CUR);
+    fflush(stdout);
 }
 
 void tui_render(tui_ctx_t *t) {

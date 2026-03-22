@@ -467,6 +467,18 @@ static void on_init_phase_timeout(uv_timer_t *t) {
 
 static void resolver_init_phase(void) {
     LOG_INFO("=== Resolver Initialization Phase ===\n");
+    tui_render(&g_tui);
+
+    if (g_pool.count == 0) {
+        LOG_ERR("No resolvers loaded! Please check client_resolvers.txt or client.ini seed_list.\n");
+        tui_render(&g_tui);
+        /* Give user 2 seconds to see the error before exiting */
+        uv_timer_t exit_timer;
+        uv_timer_init(g_loop, &exit_timer);
+        uv_timer_start(&exit_timer, on_init_phase_timeout, 2000, 0);
+        uv_run(g_loop, UV_RUN_DEFAULT);
+        exit(1);
+    }
 
     /* Step 1: Add seed resolvers */
     for (int i = 0; i < g_cfg.seed_count; i++)
@@ -487,24 +499,36 @@ static void resolver_init_phase(void) {
     LOG_INFO("Scanning for DNS Hijacking / Captive Portals...\n");
     for (int i = 0; i < g_pool.count; i++) {
         fire_probe_ext(i, NULL, 0, domain, true, false);
-        if (i % 32 == 0) uv_run(g_loop, UV_RUN_NOWAIT);
+        if (i % 32 == 0) {
+            uv_run(g_loop, UV_RUN_NOWAIT);
+            tui_render(&g_tui);
+        }
     }
+    tui_render(&g_tui);
 
     /* Stage 2: EDNS0 Detection */
     LOG_INFO("Detecting EDNS0 support...\n");
     for (int i = 0; i < g_pool.count; i++) {
         fire_probe_ext(i, NULL, 0, domain, false, true);
-        if (i % 32 == 0) uv_run(g_loop, UV_RUN_NOWAIT);
+        if (i % 32 == 0) {
+            uv_run(g_loop, UV_RUN_NOWAIT);
+            tui_render(&g_tui);
+        }
     }
+    tui_render(&g_tui);
 
     /* Stage 3: MTU Benchmarking (Initial) */
     LOG_INFO("Measuring MTU & Benchmarking RTT...\n");
     for (int m = 0; m < 3; m++) {
         for (int i = 0; i < g_pool.count; i++) {
             fire_probe_ext(i, dummy, mtus[m], domain, false, false);
-            if (i % 16 == 0) uv_run(g_loop, UV_RUN_NOWAIT);
+            if (i % 16 == 0) {
+                uv_run(g_loop, UV_RUN_NOWAIT);
+                tui_render(&g_tui);
+            }
         }
     }
+    tui_render(&g_tui);
 
     /* Wait for settlement of initial stages */
     uv_timer_t wait;
@@ -1384,6 +1408,7 @@ int main(int argc, char *argv[]) {
 
     /* TUI */
     tui_init(&g_tui, &g_stats, &g_pool, &g_cfg, "CLIENT", config_path);
+    tui_render(&g_tui); /* Initial render to clear screen and show frame */
 
     LOG_INFO("dnstun-client starting\n");
     LOG_INFO("  SOCKS5  : %s:%d\n", bind_ip, bind_port);
@@ -1411,9 +1436,12 @@ int main(int argc, char *argv[]) {
     uv_timer_start(&g_tui_timer, on_tui_timer, 1000, 1000);
 
     /* Bind STDIN for TUI *before* resolver scanning so it renders immediately */
-    uv_tty_init(g_loop, &g_tty, 0, 1);
-    uv_tty_set_mode(&g_tty, UV_TTY_MODE_RAW);
-    uv_read_start((uv_stream_t*)&g_tty, on_tty_alloc, on_tty_read);
+    if (uv_tty_init(g_loop, &g_tty, 0, 1) == 0) {
+        uv_tty_set_mode(&g_tty, UV_TTY_MODE_RAW);
+        uv_read_start((uv_stream_t*)&g_tty, on_tty_alloc, on_tty_read);
+    } else {
+        LOG_WARN("Cannot initialize TTY for input. Running in headless mode.\n");
+    }
 
     /* Resolver init phase (probes resolvers, runs loop for ~3s) */
     resolver_init_phase();
