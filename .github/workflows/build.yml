@@ -41,16 +41,19 @@ jobs:
 
     # ── Build ──────────────────────────────────────────────────────────────
     - name: Build
-      run: cmake --build build --config Release --parallel
+      run: |
+        cmake --build build --config Release --parallel
+        mv build/dnstun-client build/dnstun-client-linux-amd64
+        mv build/dnstun-server build/dnstun-server-linux-amd64
 
     # ── Artifacts ──────────────────────────────────────────────────────────
     - name: Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: dnstun-linux
+        name: dnstun-linux-amd64
         path: |
-          build/dnstun-client
-          build/dnstun-server
+          build/dnstun-client-linux-amd64
+          build/dnstun-server-linux-amd64
 
     # ── Auto Release (Continuous) ──────────────────────────────────────────
     - name: Auto Release to GitHub
@@ -59,8 +62,8 @@ jobs:
       with:
         tag: "latest"
         name: "Latest Build"
-        body: "Automated deployment of the latest commit on the main branch."
-        artifacts: "build/dnstun-client,build/dnstun-server"
+        body: "Automated deployment of the latest commit on the main branch for Linux AMD64."
+        artifacts: "build/dnstun-client-linux-amd64,build/dnstun-server-linux-amd64"
         allowUpdates: true
         replacesArtifacts: true
         draft: false

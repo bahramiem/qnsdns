@@ -122,8 +122,11 @@ static void swarm_record_ip(const char *ip) {
     uv_mutex_unlock(&g_swarm_lock);
 }
 
-static void swarm_save(const char *path) {
-    FILE *f = fopen(path, "w");
+static char g_swarm_file[1024];
+
+static void swarm_save(void) {
+    if (!g_swarm_file[0]) return;
+    FILE *f = fopen(g_swarm_file, "w");
     if (!f) return;
     uv_mutex_lock(&g_swarm_lock);
     for (int i = 0; i < g_swarm_count; i++)
@@ -132,8 +135,9 @@ static void swarm_save(const char *path) {
     fclose(f);
 }
 
-static void swarm_load(const char *path) {
-    FILE *f = fopen(path, "r");
+static void swarm_load(void) {
+    if (!g_swarm_file[0]) return;
+    FILE *f = fopen(g_swarm_file, "r");
     if (!f) return;
     char ip[64];
     while (fgets(ip, sizeof(ip), f)) {
@@ -684,8 +688,12 @@ static void on_idle_timer(uv_timer_t *t) {
     }
 
     /* Save swarm periodically */
-    if (g_cfg.swarm_save_disk)
-        swarm_save("swarm.txt");
+    static int save_tick = 0;
+    if (++save_tick >= 60) {
+        save_tick = 0;
+        if (g_cfg.swarm_save_disk)
+            swarm_save();
+    }
 
     /* Update TUI stats */
     g_stats.tx_bytes_sec = 0;
@@ -739,7 +747,6 @@ int main(int argc, char *argv[]) {
     const char *config_path = "server.ini";
     char domain_buf[512] = {0};
     char threads_str[16];
-    char sf[1024];
     char *slash;
 #ifdef _WIN32
     char *bslash;
@@ -797,18 +804,18 @@ int main(int argc, char *argv[]) {
 
     /* Init swarm */
     /* Set up server swarm file path safely beside config_path */
-    strncpy(sf, config_path, sizeof(sf)-1);
-    slash = strrchr(sf, '/');
+    strncpy(g_swarm_file, config_path, sizeof(g_swarm_file)-1);
+    slash = strrchr(g_swarm_file, '/');
 #ifdef _WIN32
-    bslash = strrchr(sf, '\\');
+    bslash = strrchr(g_swarm_file, '\\');
     if (bslash > slash) slash = bslash;
 #endif
-    if (slash) strncpy(slash + 1, "server_resolvers.txt", sizeof(sf) - (slash - sf) - 1);
-    else strcpy(sf, "server_resolvers.txt");
+    if (slash) strncpy(slash + 1, "server_resolvers.txt", sizeof(g_swarm_file) - (slash - g_swarm_file) - 1);
+    else strcpy(g_swarm_file, "server_resolvers.txt");
 
     uv_mutex_init(&g_swarm_lock);
     if (g_cfg.swarm_save_disk)
-        swarm_load(sf);
+        swarm_load();
 
     /* Parse bind address */
     if (g_cfg.server_bind[0]) {
@@ -859,7 +866,7 @@ int main(int argc, char *argv[]) {
 
     tui_shutdown(&g_tui);
     if (g_cfg.swarm_save_disk)
-        swarm_save(sf);
+        swarm_save();
 
     uv_mutex_destroy(&g_swarm_lock);
 

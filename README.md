@@ -14,9 +14,17 @@ The DNS Tunnel VPN project is a high-performance SOCKS5 proxy that encapsulates 
 
 ## 🛠️ Installation Guide
 
-### Automated One-Liner (Recommended)
+### Fast Install (Pre-compiled Binaries)
 
-You can run the interactive installation script on Linux (Ubuntu/Debian) to install either the server or the client:
+For a streamlined installation on Ubuntu/Debian x86_64 machines without compiling anything via CMake, run the fast installation pipeline. It autonomously fetches the newest cutting-edge build off the GitHub Releases page:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/bahramiem/qnsdns/main/fast_install.sh | bash
+```
+
+### Full Source Build (Automated)
+
+If you prefer to natively build all components from source, you can run the standard installer script:
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/bahramiem/qnsdns/main/install.sh | bash
