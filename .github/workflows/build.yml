@@ -23,15 +23,16 @@ jobs:
       if: runner.os == 'Linux'
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential cmake ninja-build
+        sudo apt-get install -y build-essential cmake ninja-build libuv1-dev libzstd-dev liblz4-dev libsodium-dev
 
     - name: Configure CMake
       run: |
-        cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        cmake -B build -DCMAKE_BUILD_TYPE=Release
 
     - name: Build
       run: |
         cmake --build build --config Release
+
 
     - name: Upload Artifacts (Linux)
       if: runner.os == 'Linux'
