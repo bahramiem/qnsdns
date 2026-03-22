@@ -299,7 +299,7 @@ static int build_txt_reply(uint8_t *outbuf, size_t *outlen,
     q.class = CLASS_IN;
 
     dns_answer_t ans = {0};
-    ans.name     = qname;
+    ans.txt.name = qname;
     ans.txt.type   = RR_TXT;
     ans.txt.class  = CLASS_IN;
     ans.txt.ttl    = 0;
@@ -309,7 +309,6 @@ static int build_txt_reply(uint8_t *outbuf, size_t *outlen,
     dns_query_t resp = {0};
     resp.id        = query_id;
     resp.query     = false;
-    resp.qr        = true;
     resp.rd        = true;
     resp.ra        = true;
     resp.qdcount   = 1;
@@ -583,8 +582,8 @@ static void on_server_recv(uv_udp_t *h,
         /* Handle empty poll normally to trigger downstream data push */
     }
 
-    /* ── Forward payload to upstream (if no FEC or fallback) ────────── */
-    /* ... (Existing logic below handles non-FEC or legacy) ... */
+    /* ── Handle SWARM Sync (if enabled) ─────────────────────────── */
+    if (is_sync) {
         /* Build a compact comma-separated IP list and reply in chunks */
         char swarm_text[65536] = {0};
         size_t slen = 0;

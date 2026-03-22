@@ -5,6 +5,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/types.h>
 
 /* Returns number of bytes written to out, or -1 on error.
    out must be at least base32_encode_len(inlen) bytes. */

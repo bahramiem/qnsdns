@@ -7,47 +7,73 @@ set(CMAKE_DISABLE_FIND_PACKAGE_Git TRUE)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
-# ── libuv ────────────────────────────────────────────────────────────────────
-include(FetchContent)
-# ── Dependencies ─────────────────────────────────────────────────────────────
+if(UNIX AND NOT APPLE)
+    # ── Linux System Dependencies ──────────────────────────────────────────
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(UV REQUIRED libuv)
+    pkg_check_modules(ZSTD REQUIRED libzstd)
+    pkg_check_modules(LZ4 REQUIRED liblz4)
+    pkg_check_modules(SODIUM REQUIRED libsodium)
+    # libraptorq-dev is missing on Jammy, so we use vendored one.
+    
+    set(UV_LIBRARIES ${UV_LIBRARIES})
+    set(ZSTD_LIBRARIES ${ZSTD_LIBRARIES})
+    set(SODIUM_LIBRARIES ${SODIUM_LIBRARIES})
+    
+    # libRaptorQ (Vendored)
+    set(LTO OFF CACHE BOOL "" FORCE)
+    set(PROFILING OFF CACHE BOOL "" FORCE)
+    set(USE_LZ4 ON CACHE BOOL "" FORCE)
+    set(RQ_LZ4_USE_OWN OFF CACHE BOOL "" FORCE) # Use system LZ4
+    add_subdirectory(third_party/libRaptorQ EXCLUDE_FROM_ALL)
+    set(RAPTORQ_LIBRARIES RaptorQ_Static)
 
-# libuv
-add_subdirectory(third_party/libuv EXCLUDE_FROM_ALL)
-
-# zstd
-set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
-set(ZSTD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-add_subdirectory(third_party/zstd/build/cmake EXCLUDE_FROM_ALL)
-
-# lz4
-set(LZ4_BUILD_CLI OFF CACHE BOOL "" FORCE)
-add_subdirectory(third_party/lz4/build/cmake EXCLUDE_FROM_ALL)
-
-# sodium (Using a simple wrapper or assuming it has a CMakeLists.txt)
-# If libsodium has no CMakeLists.txt, we'll need to add one or use a system-installed version.
-# For now, let's try to add it if it exists.
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libsodium/CMakeLists.txt")
-    add_subdirectory(third_party/libsodium EXCLUDE_FROM_ALL)
+    set(EXTRA_INCLUDES 
+        ${UV_INCLUDE_DIRS} 
+        ${ZSTD_INCLUDE_DIRS} 
+        ${LZ4_INCLUDE_DIRS} 
+        ${SODIUM_INCLUDE_DIRS}
+        third_party/libRaptorQ/src
+    )
 else()
-    # Fallback to system libsodium or add a custom wrapper here
-    find_package(PkgConfig QUIET)
-    pkg_check_modules(SODIUM libsodium)
+    # ── Vendored Dependencies ─────────────────────────────────────────────
+    # libuv
+    add_subdirectory(third_party/libuv EXCLUDE_FROM_ALL)
+    # zstd
+    set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+    set(ZSTD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    add_subdirectory(third_party/zstd/build/cmake EXCLUDE_FROM_ALL)
+    # lz4
+    set(LZ4_BUILD_CLI OFF CACHE BOOL "" FORCE)
+    add_subdirectory(third_party/lz4/build/cmake EXCLUDE_FROM_ALL)
+    # sodium 
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libsodium/CMakeLists.txt")
+        add_subdirectory(third_party/libsodium EXCLUDE_FROM_ALL)
+        set(SODIUM_LIBRARIES sodium)
+    else()
+        find_package(PkgConfig QUIET)
+        pkg_check_modules(SODIUM libsodium)
+    endif()
+    # libRaptorQ
+    set(LTO OFF CACHE BOOL "" FORCE)
+    set(PROFILING OFF CACHE BOOL "" FORCE)
+    set(LZ4_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/lz4")
+    set(EIGEN3_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libRaptorQ/external/eigen3")
+    add_subdirectory(third_party/libRaptorQ EXCLUDE_FROM_ALL)
+
+    set(UV_LIBRARIES uv_a)
+    set(ZSTD_LIBRARIES libzstd_static)
+    set(RAPTORQ_LIBRARIES RaptorQ_Static)
+    
+    set(EXTRA_INCLUDES 
+        third_party/libuv/include
+        third_party/zstd/lib
+        third_party/lz4/lib
+        third_party/libsodium/src/libsodium/include
+        third_party/libsodium/src/libsodium/include/sodium
+        third_party/libRaptorQ/src
+    )
 endif()
-
-# libRaptorQ
-# Setup RaptorQ (disable LTO and PROFILING for stability during initial setup)
-set(LTO OFF CACHE BOOL "" FORCE)
-set(PROFILING OFF CACHE BOOL "" FORCE)
-set(LZ4_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/lz4")
-set(EIGEN3_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libRaptorQ/external/eigen3")
-add_subdirectory(third_party/libRaptorQ EXCLUDE_FROM_ALL)
-
-# Link targets
-# Link targets
-set(UV_LIBRARIES uv_a)
-set(ZSTD_LIBRARIES libzstd_static)
-set(SODIUM_LIBRARIES sodium)
-set(RAPTORQ_LIBRARIES RaptorQ_Static)
 
 # ── Shared SPCDNS codec sources ───────────────────────────────────────────────
 set(SPCDNS_SOURCES
@@ -65,14 +91,19 @@ set(SHARED_SOURCES
     shared/codec.c
 )
 
+# ── Core Settings ─────────────────────────────────────────────────────────────
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
 # ── Client ────────────────────────────────────────────────────────────────────
 add_executable(dnstun-client
     client/main.c
     ${SPCDNS_SOURCES}
     ${SHARED_SOURCES}
 )
-target_include_directories(dnstun-client PRIVATE . shared SPCDNS)
-target_link_libraries(dnstun-client ${UV_LIBRARIES} ${ZSTD_LIBRARIES} ${SODIUM_LIBRARIES} ${RAPTORQ_LIBRARIES})
+target_include_directories(dnstun-client PRIVATE . shared SPCDNS ${EXTRA_INCLUDES})
+target_link_libraries(dnstun-client ${UV_LIBRARIES} ${ZSTD_LIBRARIES} ${SODIUM_LIBRARIES} ${RAPTORQ_LIBRARIES} m stdc++)
+set_target_properties(dnstun-client PROPERTIES LINKER_LANGUAGE CXX)
+
 if(WIN32)
     target_link_libraries(dnstun-client ws2_32 iphlpapi userenv)
 endif()
@@ -83,8 +114,10 @@ add_executable(dnstun-server
     ${SPCDNS_SOURCES}
     ${SHARED_SOURCES}
 )
-target_include_directories(dnstun-server PRIVATE . shared SPCDNS)
-target_link_libraries(dnstun-server ${UV_LIBRARIES} ${ZSTD_LIBRARIES} ${SODIUM_LIBRARIES} ${RAPTORQ_LIBRARIES})
+target_include_directories(dnstun-server PRIVATE . shared SPCDNS ${EXTRA_INCLUDES})
+target_link_libraries(dnstun-server ${UV_LIBRARIES} ${ZSTD_LIBRARIES} ${SODIUM_LIBRARIES} ${RAPTORQ_LIBRARIES} m stdc++)
+set_target_properties(dnstun-server PROPERTIES LINKER_LANGUAGE CXX)
+
 if(WIN32)
     target_link_libraries(dnstun-server ws2_32 iphlpapi userenv)
 endif()

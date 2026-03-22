@@ -1,25 +1,30 @@
-
-#ifndef sodium_export_H
-#define sodium_export_H
+#ifndef SODIUM_EXPORT_H
+#define SODIUM_EXPORT_H
 
 #ifndef SODIUM_EXPORT
 #  if defined(_WIN32)
-#    ifdef BUILDING_SODIUM
+#    ifdef SODIUM_DLL_EXPORT
 #      define SODIUM_EXPORT __declspec(dllexport)
 #    else
 #      define SODIUM_EXPORT __declspec(dllimport)
 #    endif
 #  else
-#    if defined(__GNUC__) && __GNUC__ >= 4
-#      define SODIUM_EXPORT __attribute__ ((visibility ("default")))
-#    else
-#      define SODIUM_EXPORT
-#    endif
+#    define SODIUM_EXPORT
 #  endif
 #endif
 
-#ifndef SODIUM_EXPORT_STATIC
-#  define SODIUM_EXPORT_STATIC SODIUM_EXPORT
+#ifndef SODIUM_EXPORT_WEAK
+#  define SODIUM_EXPORT_WEAK SODIUM_EXPORT
+#endif
+
+#ifndef CRYPTO_ALIGN
+#  if defined(__GNUC__) || defined(__clang__)
+#    define CRYPTO_ALIGN(x) __attribute__((aligned(x)))
+#  elif defined(_MSC_VER)
+#    define CRYPTO_ALIGN(x) __declspec(align(x))
+#  else
+#    define CRYPTO_ALIGN(x)
+#  endif
 #endif
 
 #endif

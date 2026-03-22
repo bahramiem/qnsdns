@@ -124,7 +124,7 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
     if (rc != RCODE_OKAY) return -1;
     
     /* EDNS0: Add OPT RR if needed (simplified: always try 4096 if enabled) */
-    if (g_cfg.transport_mode == 0) { /* UDP only */
+    if (g_cfg.transport == 0) { /* UDP only */
         /* Raw addition of OPT RR to the end of packet is complex in SPCDNS; 
            in a real impl, we'd use dns_packet_add_opt() */
     }
@@ -499,7 +499,7 @@ static void on_dns_recv(uv_udp_t *h,
             /* Walk answer section for TXT records */
             for (int i = 0; i < (int)resp->ancount; i++) {
                 dns_answer_t *ans = &resp->answers[i];
-                if (ans->type == RR_TXT && ans->txt.len > 0) {
+                if (ans->generic.type == RR_TXT && ans->txt.len > 0) {
                     /* Check if this is a SYNC response (comma-separated IPs) */
                     if (ans->txt.len > 7 && strchr(ans->txt.text, ',')) {
                         char *ips = strndup(ans->txt.text, ans->txt.len);
