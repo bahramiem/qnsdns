@@ -132,6 +132,45 @@ static void resolvers_load(void) {
 /*  QNAME format:                                 */
 /*    <seq_hex>.<b32_payload>.<sid_hex>.tun.<dom> */
 /* ────────────────────────────────────────────── */
+/* Inline dotify function from slipstream - inserts dots every 57 chars */
+static size_t inline_dotify(char *buf, size_t buflen, size_t len) {
+    if (len == 0) {
+        if (buflen > 0) buf[0] = '\0';
+        return 0;
+    }
+
+    size_t dots = len / 57;
+    size_t new_len = len + dots;
+
+    if (new_len + 1 > buflen) {
+        return (size_t)-1;
+    }
+
+    buf[new_len] = '\0';
+
+    char *src = buf + len - 1;
+    char *dst = buf + new_len - 1;
+
+    size_t next_dot = len - (len % 57);
+    if (next_dot == len) next_dot = len - 57;
+
+    size_t current_pos = len;
+
+    while (current_pos > 0) {
+        if (current_pos == next_dot && dots > 0) {
+            *dst-- = '.';
+            next_dot -= 57;
+            current_pos--;
+            dots--;
+            continue;
+        }
+        *dst-- = *src--;
+        current_pos--;
+    }
+
+    return new_len;
+}
+
 static int build_dns_query(uint8_t *outbuf, size_t *outlen,
                             const chunk_header_t *hdr,
                             const uint8_t *payload, size_t paylen,
@@ -146,132 +185,60 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
         memcpy(raw + rawlen, payload, paylen); rawlen += paylen;
     }
 
-    /* base32_encode_len gives the exact output length */
-    char b32[base32_encode_len(sizeof(chunk_header_t) + DNSTUN_CHUNK_PAYLOAD)];
-    base32_encode(b32, raw, rawlen);
+    /* Base32 encode the raw data (UPPERCASE for DNS compatibility) */
+    char b32_raw[256];
+    size_t b32_len = base32_encode((uint8_t*)b32_raw, raw, rawlen);
 
-    /* Session ID hex */
+    /* Use slipstream's inline_dotify to split into labels every 57 chars */
+    char b32_dotted[320];
+    memcpy(b32_dotted, b32_raw, b32_len);
+    size_t dotted_len = inline_dotify(b32_dotted, sizeof(b32_dotted), b32_len);
+
+    /* Build QNAME like slipstream: <b32_dotted>.<domain> */
+    /* But we need to add seq and sid for session tracking */
+    char seq_hex[8];
+    snprintf(seq_hex, sizeof(seq_hex), "%04x", hdr->seq);
+
     char sid_hex[DNSTUN_SESSION_ID_LEN * 2 + 1];
     for (int i = 0; i < DNSTUN_SESSION_ID_LEN; i++)
         snprintf(sid_hex + i*2, 3, "%02x", hdr->session_id[i]);
 
-    /* Sequence hex */
-    char seq_hex[8];
-    snprintf(seq_hex, sizeof(seq_hex), "%04x", hdr->seq);
-
-    /* Build QNAME: <seq>.<b32>.<sid>.tun.<domain>
-       Fix #4: use full b32 string (not %.100s) so the server receives
-       the complete payload without silent truncation.
-       Fix #31: Split b32 into multiple labels to stay under the 63-char DNS limit.
-       Fix: Use 57 bytes per label (not 60) to match slipstream and stay safely under 63. */
-    char b32_dotted[base32_encode_len(sizeof(chunk_header_t) + DNSTUN_CHUNK_PAYLOAD) + 16];
-    int bidx = 0;
-    int b32_len = (int)strlen(b32);
-    for (int i = 0; i < b32_len; i++) {
-        b32_dotted[bidx++] = b32[i];
-        /* Insert dot every 57 chars to keep labels under 63 bytes (slipstream uses 57) */
-        if ((i + 1) % 57 == 0 && (i + 1) < b32_len) {
-            b32_dotted[bidx++] = '.';
-        }
-    }
-    b32_dotted[bidx] = '\0';
-
-    char qname[DNSTUN_MAX_QNAME_LEN + 1];
-    int qname_written = snprintf(qname, sizeof(qname), "%s.%s.%s.tun.%s",
+    /* QNAME format: <seq>.<b32>.<sid>.tun.<domain> */
+    char qname[512];
+    int qname_len = snprintf(qname, sizeof(qname), "%s.%s.%s.tun.%s",
              seq_hex, b32_dotted, sid_hex, domain);
-    LOG_DEBUG("QNAME construction: written=%d, sizeof=%zu\n", qname_written, sizeof(qname));
-    LOG_DEBUG("  seq_hex=%s (len=%zu)\n", seq_hex, strlen(seq_hex));
-    LOG_DEBUG("  b32_dotted=%s (len=%zu)\n", b32_dotted, strlen(b32_dotted));
-    LOG_DEBUG("  sid_hex=%s (len=%zu)\n", sid_hex, strlen(sid_hex));
-    LOG_DEBUG("  domain=%s (len=%zu)\n", domain, strlen(domain));
-    /* DEBUG: Check domain for spaces or invalid chars */
-    fprintf(stderr, "[DEBUG] domain hex: ");
-    for (size_t i = 0; i < strlen(domain); i++) {
-        fprintf(stderr, "%02x ", (unsigned char)domain[i]);
-    }
-    fprintf(stderr, "\n");
-    for (size_t i = 0; i < strlen(domain); i++) {
-        if (domain[i] == ' ' || domain[i] == '\t' || domain[i] == '\n' || domain[i] == '\r') {
-            LOG_ERR("DOMAIN CONTAINS WHITESPACE at pos %zu: char=0x%02x\n", i, (unsigned char)domain[i]);
-        }
-    }
 
-    size_t qname_len = strlen(qname);
-    LOG_DEBUG("build_dns_query: QNAME=%s (len=%zu)\n", qname, qname_len);
+    LOG_DEBUG("QNAME=%s (len=%d)\n", qname, qname_len);
 
-    /* DEBUG: Full QNAME hex dump to see actual bytes */
-    fprintf(stderr, "[DEBUG] QNAME hex (%zu bytes): ", qname_len);
-    for (size_t i = 0; i < qname_len; i++) {
-        fprintf(stderr, "%02x ", (unsigned char)qname[i]);
-    }
-    fprintf(stderr, "\n");
-
-    /* DEBUG: Check each label length (max 63 bytes per DNS spec) */
-    size_t label_len = 0;
-    size_t max_label = 0;
-    int label_count = 0;
-    for (size_t i = 0; i <= qname_len; i++) {
-        if (qname[i] == '.' || qname[i] == '\0') {
-            label_count++;
-            if (label_len > max_label) max_label = label_len;
-            if (label_len > 63) {
-                LOG_ERR("LABEL %d TOO LONG at pos %zu: len=%zu (max 63)\n", label_count, i - label_len, label_len);
-            }
-            if (label_len == 0 && i > 0 && qname[i-1] != '.') {
-                LOG_ERR("EMPTY LABEL at position %zu\n", i);
-            }
-            label_len = 0;
-        } else {
-            label_len++;
-        }
-    }
-    LOG_DEBUG("Labels: %d, Longest: %zu bytes, Total: %zu bytes\n", label_count, max_label, qname_len);
-    if (qname_len > 253) {
-        LOG_ERR("QNAME TOO LONG: %zu bytes (max 253)\n", qname_len);
-    }
-
-    /* Encode into DNS TXT query packet */
+    /* Build DNS query structure like slipstream */
     dns_question_t question = {0};
-    question.name  = qname;
-    question.type  = RR_TXT;
+    question.name = qname;
+    question.type = RR_TXT;
     question.class = CLASS_IN;
 
+    /* EDNS0 OPT record like slipstream */
+    dns_answer_t edns = {0};
+    edns.generic.name = (char*)".";
+    edns.generic.type = RR_OPT;
+    edns.generic.class = 1232;  /* UDP payload size */
+    edns.generic.ttl = 0;
+
     dns_query_t query = {0};
-    query.id        = rand_u16();
-    query.query     = true;
-    query.rd        = true;
-    query.qdcount   = 1;
+    query.id = rand_u16();
+    query.query = true;
+    query.opcode = OP_QUERY;
+    query.rd = true;
+    query.rcode = RCODE_OKAY;
+    query.qdcount = 1;
     query.questions = &question;
+    query.arcount = 1;
+    query.additional = &edns;
 
     size_t sz = *outlen;
-    LOG_DEBUG("dns_encode: outbuf size=%zu, qname=%s\n", sz, qname);
-
-    /* DEBUG: Test with a simple known-good QNAME */
-    dns_question_t test_q = {0};
-    test_q.name = "test.example.com";
-    test_q.type = RR_TXT;
-    test_q.class = CLASS_IN;
-    dns_query_t test_query = {0};
-    test_query.id = 0x1234;
-    test_query.query = true;
-    test_query.rd = true;
-    test_query.qdcount = 1;
-    test_query.questions = &test_q;
-    uint8_t test_buf[512];
-    size_t test_sz = sizeof(test_buf);
-    dns_rcode_t test_rc = dns_encode((dns_packet_t*)test_buf, &test_sz, &test_query);
-    LOG_DEBUG("Test QNAME 'test.example.com': rcode=%d\n", test_rc);
-
     dns_rcode_t rc = dns_encode((dns_packet_t*)outbuf, &sz, &query);
     if (rc != RCODE_OKAY) {
-        LOG_ERR("dns_encode failed: rcode=%d for QNAME=%s (bufsize=%zu)\n", rc, qname, *outlen);
+        LOG_ERR("dns_encode failed: rcode=%d for QNAME=%s\n", rc, qname);
         return -1;
-    }
-    
-    /* EDNS0: Add OPT RR if needed (simplified: always try 4096 if enabled) */
-    if (g_cfg.transport == 0) { /* UDP only */
-        /* Raw addition of OPT RR to the end of packet is complex in SPCDNS; 
-           in a real impl, we'd use dns_packet_add_opt() */
     }
 
     *outlen = sz;
