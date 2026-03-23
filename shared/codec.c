@@ -100,14 +100,12 @@ static void buffer_pool_init_impl(void) {
     }
     
     g_pool.init_done = 1;
-    return 0;
 }
 
 /* Acquire a buffer from the pool (returns NULL if pool empty) */
 static uint8_t* buffer_pool_acquire(size_t size) {
     /* Thread-safe one-time initialization */
     uv_once(&g_pool_init_once, buffer_pool_init_impl);
-    (void)g_pool.init_done; /* suppress unused warning */
     
     size_t bucket_size = get_bucket_size(size);
     buffer_node_t **pool = get_pool_for_size(size);
@@ -461,5 +459,5 @@ void codec_free_result(codec_result_t *res) {
 /* Shutdown the buffer pool and free all pre-allocated buffers.
    Call this at program exit to clean up. */
 void codec_pool_shutdown(void) {
-    buffer_pool_destroy();
+    buffer_pool_destroy_impl();
 }

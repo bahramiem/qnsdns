@@ -1782,23 +1782,31 @@ static void on_dns_recv(uv_udp_t *h,
                         if (ans->txt.len == 0 || (ans->txt.len == 1 && ans->txt.text[0] == '\0')) {
                             LOG_DEBUG("Session %d: skipping empty/ack packet\n", q->session_idx);
                         } else {
+                            /* Decode base64 response from server (server sends base64 by default) */
+                            uint8_t decoded[4096];
+                            ptrdiff_t decoded_len = base64_decode(decoded, ans->txt.text, ans->txt.len);
+                            if (decoded_len < 0) {
+                                LOG_DEBUG("Session %d: base64 decode failed\n", q->session_idx);
+                                continue;
+                            }
+                            
                             /* Deliver payload to session recv buffer */
                             int sidx = q->session_idx;
                             if (sidx >= 0 && sidx < DNSTUN_MAX_SESSIONS
                                 && !g_sessions[sidx].closed)
                             {
                                 session_t *s = &g_sessions[sidx];
-                                size_t need = s->recv_len + ans->txt.len;
+                                size_t need = s->recv_len + (size_t)decoded_len;
                                 if (need > s->recv_cap) {
                                     /* Enforce maximum buffer size to prevent memory exhaustion */
                                     if (s->recv_len >= MAX_SESSION_BUFFER) {
                                         LOG_ERR("Session %d: recv buffer limit reached (%zu bytes), dropping old data\n",
                                                 sidx, s->recv_len);
                                         /* Drop oldest data to make room */
-                                        memmove(s->recv_buf, s->recv_buf + ans->txt.len, 
-                                                s->recv_len - ans->txt.len);
-                                        s->recv_len -= ans->txt.len;
-                                        need = s->recv_len + ans->txt.len;
+                                        memmove(s->recv_buf, s->recv_buf + (size_t)decoded_len, 
+                                                s->recv_len - (size_t)decoded_len);
+                                        s->recv_len -= (size_t)decoded_len;
+                                        need = s->recv_len + (size_t)decoded_len;
                                     }
                                     size_t new_cap = need + 4096;
                                     /* Cap at MAX_SESSION_BUFFER to prevent unbounded growth */
@@ -1812,15 +1820,15 @@ static void on_dns_recv(uv_udp_t *h,
                                     s->recv_cap = new_cap;
                                 }
                                 memcpy(s->recv_buf + s->recv_len,
-                                       ans->txt.text, ans->txt.len);
-                                s->recv_len += ans->txt.len;
-                                g_stats.rx_total += ans->txt.len;
-                                g_stats.rx_bytes_sec += ans->txt.len;
+                                       decoded, (size_t)decoded_len);
+                                s->recv_len += (size_t)decoded_len;
+                                g_stats.rx_total += (size_t)decoded_len;
+                                g_stats.rx_bytes_sec += (size_t)decoded_len;
                                 
                                 /* Debug: log first 64 bytes of received data */
-                                LOG_DEBUG("Session %d received %zu bytes, first 64: '%.64s'\n",
-                                          sidx, ans->txt.len,
-                                          (char*)s->recv_buf + s->recv_len - ans->txt.len);
+                                LOG_DEBUG("Session %d received %zd bytes (from %d base64), first 64: '%.64s'\n",
+                                          sidx, decoded_len, ans->txt.len,
+                                          (char*)s->recv_buf + s->recv_len - (size_t)decoded_len);
                                 
                                 /* Flush received data to SOCKS5 client */
                                 if (s->client_ptr) {

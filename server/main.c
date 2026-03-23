@@ -319,12 +319,31 @@ static void on_upstream_connect(uv_connect_t *req, int status) {
 /* ────────────────────────────────────────────── */
 /*  Build DNS TXT Reply                           */
 /* ────────────────────────────────────────────── */
+
+/* Encode data using configured downstream encoding (base64 by default) */
+static size_t encode_downstream_data(char *out, const uint8_t *in, size_t inlen) {
+    /* Use base64 encoding by default for better compatibility with intermediate resolvers.
+     * Raw binary data often gets dropped or mangled by DNS infrastructure. */
+    if (g_cfg.downstream_encoding == 1) {
+        /* Hex encoding (for debugging) */
+        return hex_encode(out, in, inlen);
+    }
+    /* Default: base64 encoding for better DNS compatibility */
+    return base64_encode(out, in, inlen);
+}
+
 static int build_txt_reply(uint8_t *outbuf, size_t *outlen,
                            uint16_t query_id, const char *qname,
                            const uint8_t *data, size_t data_len,
                            uint16_t mtu)
 {
     if (data_len > mtu) data_len = mtu;
+
+    /* Encode data for TXT record - use base64 for DNS compatibility */
+    char encoded[4096];
+    size_t encoded_len = encode_downstream_data(encoded, data, data_len);
+    if (encoded_len >= sizeof(encoded)) encoded_len = sizeof(encoded) - 1;
+    encoded[encoded_len] = '\0';
 
     dns_question_t q = {0};
     q.name  = qname;
@@ -336,8 +355,8 @@ static int build_txt_reply(uint8_t *outbuf, size_t *outlen,
     ans.txt.type   = RR_TXT;
     ans.txt.class  = CLASS_IN;
     ans.txt.ttl    = 0;
-    ans.txt.len    = (uint16_t)data_len;
-    ans.txt.text   = (char const *)data;
+    ans.txt.len    = (uint16_t)encoded_len;
+    ans.txt.text   = encoded;
 
     dns_query_t resp = {0};
     resp.id        = query_id;
@@ -461,26 +480,24 @@ static void on_server_recv(uv_udp_t *h,
         if (strcasecmp(parts[i], "tun") == 0) { tun_idx = i; break; }
     }
 
-    /* New consolidated format: <b32_payload>.<sid_hex>.tun.<domain>
-     * The b32 payload is a single label containing all base32-encoded data.
-     * Collect all labels before .tun. marker, starting from index 0. */
-    if (tun_idx < 2) { /* Need at least b32_payload and sid */
+    /* New compact format: <b32_payload>.tun.<domain>
+     * The session_id is embedded in the chunk header flags byte, NOT in QNAME.
+     * Format: parts[0..tun_idx-1] = base32 payload, parts[tun_idx] = "tun"
+     */
+    if (tun_idx < 1) { /* Need at least b32_payload and tun */
         /* This is likely a resolver test probe (MTU test, NXDOMAIN test, etc.)
          * from the client. These don't have the .tun. marker. Silently ignore. */
         LOG_DEBUG("Ignoring non-tunnel probe from %s: %s (tun_idx=%d, part_count=%d)\n",
                 src_ip, qname, tun_idx, part_count);
         return;
     }
-    LOG_DEBUG("Parsed QNAME: tun_idx=%d, sid_idx=%d, part_count=%d\n",
-              tun_idx, tun_idx-1, part_count);
+    LOG_DEBUG("Parsed QNAME: tun_idx=%d, part_count=%d\n", tun_idx, part_count);
 
-    int sid_idx = tun_idx - 1;
-    const char *sid_hex = parts[sid_idx];
-
-    /* Reassemble b32 payload from parts[0] to parts[sid_idx-1]
-     * (all labels before the session ID and .tun. marker) */
+    /* Reassemble b32 payload from all parts before .tun. marker
+     * (now single consolidated label after client inline_dotify) */
     char b32_payload[512] = {0};
-    for (int i = 0; i < sid_idx; i++) {
+    for (int i = 0; i < tun_idx; i++) {
+        if (i > 0) strncat(b32_payload, ".", sizeof(b32_payload) - strlen(b32_payload) - 1);
         strncat(b32_payload, parts[i], sizeof(b32_payload) - strlen(b32_payload) - 1);
     }
     /* Decode b32 payload → raw bytes (chunk_header + data) */
