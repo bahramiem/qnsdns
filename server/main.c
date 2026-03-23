@@ -442,10 +442,12 @@ static void on_server_recv(uv_udp_t *h,
         tok = strtok(NULL, ".");
     }
 
-    /* Find "tun" marker to identify structure */
+    /* Find "tun" marker to identify structure
+     * Use case-insensitive comparison because DNS is case-insensitive
+     * and some resolvers use 0x20 case randomization */
     int tun_idx = -1;
     for (int i = 0; i < part_count; i++) {
-        if (strcmp(parts[i], "tun") == 0) { tun_idx = i; break; }
+        if (strcasecmp(parts[i], "tun") == 0) { tun_idx = i; break; }
     }
 
     if (tun_idx < 3) { /* Need at least seq, payload_1, sid */
