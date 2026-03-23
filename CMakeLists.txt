@@ -44,62 +44,34 @@ if(UNIX AND NOT APPLE)
     set(PLATFORM_LINK_LIBS m stdc++)
 
 elseif(WIN32)
-    # ── Windows: try vcpkg first, then fallback to vendored fallback ─────────
-    # Packages needed: libuv libsodium zstd (install via vcpkg OR use third_party)
-    
-    find_package(libuv CONFIG QUIET)
-    if(libuv_FOUND)
-        set(UV_LIBRARIES $<IF:$<TARGET_EXISTS:libuv::uv_a>,libuv::uv_a,libuv::uv>)
-        set(EXTRA_UV_INCLUDES "")
-    else()
-        message(STATUS "libuv not found via CONFIG; using vendored third_party/libuv")
-        add_subdirectory(third_party/libuv EXCLUDE_FROM_ALL)
-        set(UV_LIBRARIES uv_a)
-        set(EXTRA_UV_INCLUDES third_party/libuv/include)
-    endif()
-
+    # ── Windows: use vcpkg-provided packages ─────────────────────────────────
+    # GitHub Windows runners ship vcpkg at $env:VCPKG_INSTALLATION_ROOT.
+    # The CI passes -DCMAKE_TOOLCHAIN_FILE to activate vcpkg.
+    # Packages needed: libuv libsodium zstd  (install via vcpkg before cmake)
+    find_package(libuv   CONFIG REQUIRED)
     find_package(libsodium CONFIG QUIET)
     if(NOT libsodium_FOUND)
-        find_package(unofficial-sodium CONFIG QUIET)
-        if(unofficial-sodium_FOUND)
-            set(SODIUM_LIBRARIES unofficial-sodium::sodium)
-            set(EXTRA_SODIUM_INCLUDES "")
-        elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libsodium/CMakeLists.txt")
-            message(STATUS "libsodium not found; using vendored third_party/libsodium")
-            add_subdirectory(third_party/libsodium EXCLUDE_FROM_ALL)
-            set(SODIUM_LIBRARIES sodium)
-            set(EXTRA_SODIUM_INCLUDES third_party/libsodium/src/libsodium/include third_party/libsodium/src/libsodium/include/sodium)
-        endif()
+        find_package(unofficial-sodium CONFIG REQUIRED)
+        set(SODIUM_LIBRARIES unofficial-sodium::sodium)
     else()
         set(SODIUM_LIBRARIES sodium)
-        set(EXTRA_SODIUM_INCLUDES "")
     endif()
+    find_package(zstd CONFIG REQUIRED)
 
-    find_package(zstd CONFIG QUIET)
-    if(zstd_FOUND)
-        set(ZSTD_LIBRARIES $<IF:$<TARGET_EXISTS:zstd::libzstd_static>,zstd::libzstd_static,zstd::libzstd_shared>)
-        set(EXTRA_ZSTD_INCLUDES "")
-    else()
-        message(STATUS "zstd not found via CONFIG; using vendored third_party/zstd")
-        set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
-        set(ZSTD_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
-        add_subdirectory(third_party/zstd/build/cmake EXCLUDE_FROM_ALL)
-        set(ZSTD_LIBRARIES libzstd_static)
-        set(EXTRA_ZSTD_INCLUDES third_party/zstd/lib)
-    endif()
+    set(UV_LIBRARIES   $<IF:$<TARGET_EXISTS:libuv::uv_a>,libuv::uv_a,libuv::uv>)
+    set(ZSTD_LIBRARIES $<IF:$<TARGET_EXISTS:zstd::libzstd_static>,zstd::libzstd_static,zstd::libzstd_shared>)
 
     set(EIGEN3_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libRaptorQ/external/eigen3")
     add_subdirectory(third_party/libRaptorQ EXCLUDE_FROM_ALL)
     set(RAPTORQ_LIBRARIES RaptorQ_Static)
 
+    # vcpkg puts headers in standard places; find_package sets the import targets
     set(EXTRA_INCLUDES
-        ${EXTRA_UV_INCLUDES}
-        ${EXTRA_SODIUM_INCLUDES}
-        ${EXTRA_ZSTD_INCLUDES}
         third_party/libRaptorQ/src
     )
 
-    set(PLATFORM_LINK_LIBS "")
+    set(PLATFORM_LINK_LIBS "")  # stdc++/m not used on MSVC
+
 else()
     # ── macOS / other: best-effort vendored fallback ──────────────────────────
     add_subdirectory(third_party/libuv EXCLUDE_FROM_ALL)

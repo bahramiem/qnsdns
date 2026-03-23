@@ -350,7 +350,7 @@ static int build_txt_reply(uint8_t *outbuf, size_t *outlen,
 typedef struct {
     uv_udp_send_t    send_req;
     struct sockaddr_in dest;
-    uint8_t          reply_buf[MAX_UDP_PACKET_SIZE];
+    uint8_t          reply_buf[DNS_BUFFER_UDP];
     size_t           reply_len;
 } udp_reply_t;
 
@@ -405,7 +405,7 @@ static void on_server_recv(uv_udp_t *h,
     swarm_record_ip(src_ip);
 
     /* Decode DNS query */
-    dns_decoded_t decoded[DNS_DECODEBUF_16K];
+    dns_decoded_t decoded[DNS_DECODEBUF_4K];
     size_t decsz = sizeof(decoded);
     if (dns_decode(decoded, &decsz,
                    (const dns_packet_t*)buf->base,
@@ -441,7 +441,7 @@ static void on_server_recv(uv_udp_t *h,
         if (strcmp(parts[i], "tun") == 0) { tun_idx = i; break; }
     }
 
-    if (tun_idx < 2) { /* Need at least seq and sid */
+    if (tun_idx < 3) { /* Need at least seq, payload_1, sid */
         LOG_DEBUG("Malformed QNAME from %s: %s\n", src_ip, qname);
         return;
     }
@@ -658,10 +658,10 @@ static void on_server_recv(uv_udp_t *h,
     }
 
     /* ── Build reply — stuff any pending upstream data ───────────── */
-    uint8_t reply[8192];
+    uint8_t reply[DNS_BUFFER_UDP];
     size_t  rlen = sizeof(reply);
     uint16_t mtu = sess->cl_downstream_mtu;
-    if (mtu < 16 || mtu > 8192) mtu = 512;
+    if (mtu < 16 || mtu > 4096) mtu = 512;
 
     if (sess->upstream_len > 0) {
         size_t sz = sess->upstream_len;

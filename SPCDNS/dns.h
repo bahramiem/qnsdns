@@ -119,7 +119,7 @@ typedef uintptr_t dns_decoded_t;
 #define DNS_BUFFER_UDP_MAX      ( 1492uL / sizeof(dns_packet_t))
 #define DNS_DECODEBUF_4K        ( 4096uL / sizeof(dns_decoded_t))
 #define DNS_DECODEBUF_8K        ( 8192uL / sizeof(dns_decoded_t))
-#define DNS_DECODEBUF_16K       (16384uL / sizeof(dns_decoded_t))
+#define DNS_DECODEBUF_16k       (16384uL / sizeof(dns_decoded_t))
 
 /************************************************************************
 * Various upper limits in the DNS protocol

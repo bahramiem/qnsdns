@@ -23,14 +23,7 @@ typedef struct {
     uint64_t queries_lost;
     uint64_t last_server_rx_ms;  /* time of last successful TXT response from server */
     char     mode[32];           /* "CLIENT" or "SERVER" */
-    
-    /* Circular log buffer for debug outputs */
-    char     logs[20][128];
-    int      log_tail;           /* points to the next free slot */
-    int      log_count;          /* number of logs currently in buffer */
 } tui_stats_t;
-
-void tui_log(tui_ctx_t *t, const char *fmt, ...);
 
 /* ──────────────────────────────────────────────
    TUI Server Snapshot (mock competencies for server clients)
