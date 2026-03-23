@@ -23,7 +23,10 @@ void rpool_destroy(resolver_pool_t *pool) {
 
 /* ── Add resolver ───────────────────────────────────────────────────────────*/
 int rpool_add(resolver_pool_t *pool, const char *ip) {
+    fprintf(stderr, "[TRACE] rpool_add: Entering for %s\n", ip); fflush(stderr);
+    if (!pool) { fprintf(stderr, "[TRACE] rpool_add: pool is NULL!\n"); fflush(stderr); return -1; }
     uv_mutex_lock(&pool->lock);
+    fprintf(stderr, "[TRACE] rpool_add: Mutex locked\n"); fflush(stderr);
 
     if (pool->count >= DNSTUN_MAX_RESOLVERS) {
         uv_mutex_unlock(&pool->lock);
@@ -52,7 +55,9 @@ int rpool_add(resolver_pool_t *pool, const char *ip) {
     r->health_cursor  = 0;
     r->enc            = ENC_BASE64;
     
+    fprintf(stderr, "[TRACE] rpool_add: Calling rpool_on_ack_internal\n"); fflush(stderr);
     rpool_on_ack_internal(pool, idx, 999.0); /* Init health window with one 'success' if needed, or leave at 0 */
+    fprintf(stderr, "[TRACE] rpool_add: rpool_on_ack_internal returned\n"); fflush(stderr);
 
     /* add to dead list */
     pool->dead[pool->dead_count++] = idx;
@@ -110,6 +115,9 @@ int rpool_next(resolver_pool_t *pool) {
 
 /* ── AIMD Congestion Control ────────────────────────────────────────────────*/
 static void rpool_on_ack_internal(resolver_pool_t *pool, int idx, double rtt_ms) {
+    fprintf(stderr, "[TRACE] rpool_on_ack_internal: idx %d, rtt %.1f\n", idx, rtt_ms); fflush(stderr);
+    if (!pool) return;
+    if (!pool->cfg) { fprintf(stderr, "[TRACE] rpool_on_ack_internal: pool->cfg is NULL!\n"); fflush(stderr); return; }
     resolver_t *r = &pool->resolvers[idx];
 
     /* Update sliding window: 1 = success */
@@ -124,8 +132,10 @@ static void rpool_on_ack_internal(resolver_pool_t *pool, int idx, double rtt_ms)
     r->rtt_ms = rtt_ms;
 
     /* AIMD additive increase: window += 1/window */
-    if (r->cwnd < r->cwnd_max)
+    if (r->cwnd < r->cwnd_max && r->cwnd > 0.01)
         r->cwnd += 1.0 / r->cwnd;
+    else if (r->cwnd <= 0.01)
+        r->cwnd = 1.0;
 
     /* RTT spike check: soft penalty if RTT > 2x baseline */
     if (rtt_ms > 2.0 * r->rtt_baseline && r->rtt_baseline < 900.0) {

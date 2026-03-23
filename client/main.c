@@ -109,7 +109,9 @@ static void resolvers_save(void) {
 }
 
 static void resolvers_load(void) {
+    fprintf(stderr, "[TRACE] Entered resolvers_load\n"); fflush(stderr);
     if (!g_resolvers_file[0]) return;
+    fprintf(stderr, "[TRACE] resolvers_load: Opening %s\n", g_resolvers_file); fflush(stderr);
     FILE *f = fopen(g_resolvers_file, "r");
     if (!f) return;
     char line[64];
@@ -125,7 +127,9 @@ static void resolvers_load(void) {
             if (strcmp(g_pool.resolvers[i].ip, line) == 0) { dup = 1; break; }
         }
         uv_mutex_unlock(&g_pool.lock);
+        fprintf(stderr, "[TRACE] resolvers_load: Processing line: %s\n", line); fflush(stderr);
         if (!dup) {
+            fprintf(stderr, "[TRACE] resolvers_load: Calling rpool_add\n"); fflush(stderr);
             rpool_add(&g_pool, line);
             added++;
         }
