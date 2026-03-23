@@ -10,9 +10,11 @@ static void rpool_on_ack_internal(resolver_pool_t *pool, int idx, double rtt_ms)
 
 /* ── Init / Destroy ─────────────────────────────────────────────────────────*/
 int rpool_init(resolver_pool_t *pool, const dnstun_config_t *cfg) {
+    fprintf(stderr, "[TRACE] rpool_init: pool=%p, size=%zu\n", (void*)pool, sizeof(*pool)); fflush(stderr);
     memset(pool, 0, sizeof(*pool));
     pool->cfg = cfg;
     pool->rr_cursor = 0;
+    fprintf(stderr, "[TRACE] rpool_init: initializing lock at %p\n", (void*)&pool->lock); fflush(stderr);
     uv_mutex_init(&pool->lock);
     return 0;
 }
@@ -60,9 +62,16 @@ int rpool_add(resolver_pool_t *pool, const char *ip) {
     fprintf(stderr, "[TRACE] rpool_add: rpool_on_ack_internal returned\n"); fflush(stderr);
 
     /* add to dead list */
-    pool->dead[pool->dead_count++] = idx;
-
+    fprintf(stderr, "[TRACE] rpool_add: dead_count=%d, idx=%d\n", pool->dead_count, idx); fflush(stderr);
+    if (pool->dead_count >= DNSTUN_MAX_RESOLVERS) {
+        fprintf(stderr, "[TRACE] rpool_add: dead_count out of bounds!\n"); fflush(stderr);
+    } else {
+        pool->dead[pool->dead_count++] = idx;
+    }
+    
+    fprintf(stderr, "[TRACE] rpool_add: unlocking mutex at %p\n", (void*)&pool->lock); fflush(stderr);
     uv_mutex_unlock(&pool->lock);
+    fprintf(stderr, "[TRACE] rpool_add: returning %d\n", idx); fflush(stderr);
     return idx;
 }
 
