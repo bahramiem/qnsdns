@@ -190,7 +190,16 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
     size_t  rawlen = 0;
     memcpy(raw + rawlen, hdr, sizeof(*hdr));   rawlen += sizeof(*hdr);
     if (payload && paylen > 0) {
-        if (paylen > DNSTUN_CHUNK_PAYLOAD) paylen = DNSTUN_CHUNK_PAYLOAD;
+        /*
+         * CRITICAL: Strict bounds checking for FEC compatibility.
+         * Symbol size (T) in codec_fec_encode must match DNSTUN_CHUNK_PAYLOAD.
+         * Silent truncation here breaks FEC decoding at the server.
+         */
+        if (paylen > DNSTUN_CHUNK_PAYLOAD) {
+            LOG_ERR("Payload too large: %zu bytes (max %d). FEC symbol size mismatch!\n",
+                    paylen, DNSTUN_CHUNK_PAYLOAD);
+            return -1;
+        }
         memcpy(raw + rawlen, payload, paylen); rawlen += paylen;
     }
 
