@@ -24,8 +24,11 @@
 
 #ifdef _WIN32
 #include <process.h>
+#include <ws2tcpip.h>
 #else
 #include <unistd.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #endif
 
 #include "uv.h"
@@ -75,6 +78,7 @@ typedef struct srv_session {
 
     /* Client-reported capabilities */
     uint16_t  cl_downstream_mtu;
+    uint16_t  next_downstream_seq; /* Sequence for downstream reordering */
     uint8_t   cl_enc_format;
     uint8_t   cl_loss_pct;
     uint8_t   cl_fec_k;
@@ -156,21 +160,29 @@ static void swarm_load(void) {
 /*  Session lookup / alloc                        */
 /* ────────────────────────────────────────────── */
 
-/* Find session by 4-bit session ID */
-static int session_find_by_id(uint8_t id) {
-    for (int i = 0; i < SRV_MAX_SESSIONS; i++)
-        if (g_sessions[i].used && g_sessions[i].session_id == id)
-            return i;
+/* Find session by 4-bit session ID and client address (fix hijacking) */
+static int session_find(const struct sockaddr_in *addr, uint8_t id) {
+    for (int i = 0; i < SRV_MAX_SESSIONS; i++) {
+        if (g_sessions[i].used && g_sessions[i].session_id == id) {
+            if (g_sessions[i].client_addr.sin_addr.s_addr == addr->sin_addr.s_addr &&
+                g_sessions[i].client_addr.sin_port == addr->sin_port) {
+                return i;
+            }
+        }
+    }
     return -1;
 }
 
-/* Allocate new session with 4-bit session ID */
-static int session_alloc_by_id(uint8_t id) {
+/* Allocate new session with 4-bit session ID and record client address */
+static int session_alloc(const struct sockaddr_in *addr, uint8_t id) {
     for (int i = 0; i < SRV_MAX_SESSIONS; i++) {
         if (!g_sessions[i].used) {
+            /* If this index was used before, ensure its handle was closed.
+               uv_tcp_init below will fail if it's already a closing/active handle. */
             memset(&g_sessions[i], 0, sizeof(g_sessions[i]));
             g_sessions[i].session_id   = id;
             g_sessions[i].used         = true;
+            g_sessions[i].client_addr  = *addr;
             g_sessions[i].last_active  = time(NULL);
             g_stats.active_sessions++;
             return i;
@@ -320,7 +332,7 @@ static void on_upstream_connect(uv_connect_t *req, int status) {
 /*  Build DNS TXT Reply                           */
 /* ────────────────────────────────────────────── */
 
-/* Encode data using configured downstream encoding (base64 by default) */
+/* Obsolete: handled inline in build_txt_reply */
 static size_t encode_downstream_data(char *out, const uint8_t *in, size_t inlen) {
     /* Use base64 encoding by default for better compatibility with intermediate resolvers.
      * Raw binary data often gets dropped or mangled by DNS infrastructure. */
@@ -334,22 +346,31 @@ static size_t encode_downstream_data(char *out, const uint8_t *in, size_t inlen)
 
 static int build_txt_reply(uint8_t *outbuf, size_t *outlen,
                            uint16_t query_id, const char *qname,
+                           uint8_t session_id, uint16_t seq,
                            const uint8_t *data, size_t data_len,
                            uint16_t mtu)
 {
-    if (data_len > mtu) data_len = mtu;
-
-    /* Encode data for TXT record - use base64 for DNS compatibility */
-    char encoded[4096];
-    size_t encoded_len = encode_downstream_data(encoded, data, data_len);
-    if (encoded_len >= sizeof(encoded)) encoded_len = sizeof(encoded) - 1;
-    encoded[encoded_len] = '\0';
-
+    /* 1. Pack header + data into a temporary buffer */
+    uint8_t pkt[DNSTUN_MAX_DOWNSTREAM_MTU + 8];
+    server_response_header_t hdr = {0};
+    hdr.flags = 0; /* base64 */
+    hdr.session_id = session_id;
+    hdr.seq = seq;
+    
+    if (data_len > mtu - sizeof(hdr)) data_len = mtu - sizeof(hdr);
+    
+    memcpy(pkt, &hdr, sizeof(hdr));
+    if (data_len > 0) memcpy(pkt + sizeof(hdr), data, data_len);
+    
+    /* 2. Base64 encode the whole package */
+    char encoded[DNSTUN_MAX_DOWNSTREAM_MTU * 2];
+    size_t encoded_len = base64_encode(encoded, pkt, sizeof(hdr) + data_len);
+    
     dns_question_t q = {0};
     q.name  = qname;
     q.type  = RR_TXT;
     q.class = CLASS_IN;
-
+ 
     dns_answer_t ans = {0};
     ans.txt.name = qname;
     ans.txt.type   = RR_TXT;
@@ -357,7 +378,7 @@ static int build_txt_reply(uint8_t *outbuf, size_t *outlen,
     ans.txt.ttl    = 0;
     ans.txt.len    = (uint16_t)encoded_len;
     ans.txt.text   = encoded;
-
+ 
     dns_query_t resp = {0};
     resp.id        = query_id;
     resp.query     = false;
@@ -367,7 +388,7 @@ static int build_txt_reply(uint8_t *outbuf, size_t *outlen,
     resp.ancount   = 1;
     resp.questions = &q;
     resp.answers   = &ans;
-
+ 
     size_t sz = *outlen;
     dns_rcode_t rc = dns_encode((dns_packet_t*)outbuf, &sz, &resp);
     if (rc != RCODE_OKAY) return -1;
@@ -497,7 +518,6 @@ static void on_server_recv(uv_udp_t *h,
      * (now single consolidated label after client inline_dotify) */
     char b32_payload[512] = {0};
     for (int i = 0; i < tun_idx; i++) {
-        if (i > 0) strncat(b32_payload, ".", sizeof(b32_payload) - strlen(b32_payload) - 1);
         strncat(b32_payload, parts[i], sizeof(b32_payload) - strlen(b32_payload) - 1);
     }
     /* Decode b32 payload → raw bytes (chunk_header + data) */
@@ -528,10 +548,10 @@ static void on_server_recv(uv_udp_t *h,
     /* SYNC command: payload starts with "SYNC" (ASCII) */
     if (payload_len >= 4 && memcmp(payload, "SYNC", 4) == 0) is_sync = true;
 
-    /* Session lookup / allocate by 4-bit session ID */
-    int sidx = session_find_by_id(session_id);
+    /* Session lookup / allocate by 4-bit session ID + source IP */
+    int sidx = session_find(src, session_id);
     if (sidx < 0) {
-        sidx = session_alloc_by_id(session_id);
+        sidx = session_alloc(src, session_id);
         if (sidx < 0) {
             LOG_ERR("Session table full\n");
             return;
@@ -545,6 +565,7 @@ static void on_server_recv(uv_udp_t *h,
 
     srv_session_t *sess = &g_sessions[sidx];
     sess->last_active       = time(NULL);
+    /* Update client_addr in case port changed (though find logic uses it too) */
     sess->client_addr       = *src;
     
     /* MTU values from server config (no longer in header) */
@@ -702,6 +723,7 @@ static void on_server_recv(uv_udp_t *h,
         uint8_t reply[512]; /* Fix: was DNS_BUFFER_UDP which is only 64 bytes on 64-bit systems */
         size_t  rlen = sizeof(reply);
         if (build_txt_reply(reply, &rlen, query_id, qname,
+                            session_id, 0, /* SWARM sync is unsequenced/standalone */
                             (const uint8_t*)swarm_text,
                             slen,
                             sess->cl_downstream_mtu) == 0)
@@ -740,6 +762,7 @@ static void on_server_recv(uv_udp_t *h,
                   sidx, sz, (char*)sess->upstream_buf);
 
         if (build_txt_reply(reply, &rlen, query_id, qname,
+                            session_id, sess->next_downstream_seq++,
                             sess->upstream_buf, sz, mtu) == 0)
         {
             /* Shift consumed bytes out of upstream buffer */
@@ -752,7 +775,8 @@ static void on_server_recv(uv_udp_t *h,
     } else {
         /* Empty reply — acknowledge the query */
         uint8_t ack[1] = {0};
-        if (build_txt_reply(reply, &rlen, query_id, qname, ack, 1, mtu) == 0)
+        if (build_txt_reply(reply, &rlen, query_id, qname,
+                            session_id, sess->next_downstream_seq, ack, 1, mtu) == 0)
             send_udp_reply(src, reply, rlen);
     }
 }

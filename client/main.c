@@ -67,6 +67,10 @@ static uv_timer_t       g_penalty_timer;    /* release penalties */
 static session_t        g_sessions[DNSTUN_MAX_SESSIONS];
 static int              g_session_count = 0;
 
+/* Shared DNS UDP socket (fix #22: avoid handle exhaustion) */
+static uv_udp_t         g_dns_udp;
+static dns_query_ctx_t *g_pending_queries[65536];
+
 /* Persistent resolver list file */
 static char g_resolvers_file[1024];
 
@@ -1540,6 +1544,7 @@ static void socks5_handle_data(socks5_client_t *c,
 
         session_t *sess = &g_sessions[session_idx];
         memset(sess, 0, sizeof(*sess));
+        sess->reorder_buf = calloc(DNSTUN_REORDER_BUFFER, sizeof(downstream_chunk_t));
         sess->session_id = make_session_id();
         sess->established = true;
         sess->closed      = false;
@@ -1690,7 +1695,82 @@ static void on_dns_timeout(uv_timer_t *t) {
     }
 }
 
-static void on_dns_recv(uv_udp_t *h,
+/* Process and reorder downstream data (fix #12: out-of-order DNS replies) */
+static void session_add_downstream(int sidx, uint16_t seq, const uint8_t *data, size_t len) {
+    session_t *s = &g_sessions[sidx];
+    if (s->closed || !s->established) return;
+
+    LOG_DEBUG("Session %d: recv downstream seq=%u (expected %u), len=%zu\n",
+              sidx, seq, s->rx_next, len);
+
+    /* 1. If it's the exact sequence we expect, add it and check for buffered ones */
+    if (seq == s->rx_next) {
+        /* Deliver to recv_buf */
+        size_t need = s->recv_len + len;
+        if (need > s->recv_cap) {
+            size_t new_cap = need + 32768; /* grow generously */
+            if (new_cap > MAX_SESSION_BUFFER) new_cap = MAX_SESSION_BUFFER;
+            uint8_t *nb = realloc(s->recv_buf, new_cap);
+            if (nb) { s->recv_buf = nb; s->recv_cap = new_cap; }
+        }
+        if (s->recv_len + len <= s->recv_cap) {
+            memcpy(s->recv_buf + s->recv_len, data, len);
+            s->recv_len += len;
+            g_stats.rx_total += len;
+            g_stats.rx_bytes_sec += len;
+        }
+        s->rx_next++;
+
+        /* 2. Check reorder buffer for contiguous sequels */
+        if (s->reorder_buf) {
+            bool found;
+            do {
+                found = false;
+                for (int i = 0; i < DNSTUN_REORDER_BUFFER; i++) {
+                    if (s->reorder_buf[i].used && s->reorder_buf[i].seq == s->rx_next) {
+                        /* Copy buffered one to main buffer */
+                        size_t b_len = s->reorder_buf[i].len;
+                        size_t b_need = s->recv_len + b_len;
+                        if (b_need > s->recv_cap) {
+                            size_t nc = b_need + 32768;
+                            if (nc > MAX_SESSION_BUFFER) nc = MAX_SESSION_BUFFER;
+                            uint8_t *nb = realloc(s->recv_buf, nc);
+                            if (nb) { s->recv_buf = nb; s->recv_cap = nc; }
+                        }
+                        if (s->recv_len + b_len <= s->recv_cap) {
+                            memcpy(s->recv_buf + s->recv_len, s->reorder_buf[i].data, b_len);
+                            s->recv_len += b_len;
+                            g_stats.rx_total += b_len;
+                            g_stats.rx_bytes_sec += b_len;
+                        }
+                        s->rx_next++;
+                        s->reorder_buf[i].used = false;
+                        found = true;
+                        break;
+                    }
+                }
+            } while (found);
+        }
+    } else if (seq > s->rx_next && (seq - s->rx_next) < DNSTUN_REORDER_BUFFER) {
+        /* 3. Future packet: store in reorder buffer if slot available */
+        if (!s->reorder_buf) return;
+        int slot = -1;
+        for (int i = 0; i < DNSTUN_REORDER_BUFFER; i++) {
+            if (!s->reorder_buf[i].used) { slot = i; break; }
+            if (s->reorder_buf[i].seq == seq) return; /* duplicate */
+        }
+        if (slot >= 0) {
+            s->reorder_buf[slot].seq = seq;
+            s->reorder_buf[slot].len = (len < DNSTUN_MAX_DOWNSTREAM_MTU) ? len : DNSTUN_MAX_DOWNSTREAM_MTU;
+            memcpy(s->reorder_buf[slot].data, data, s->reorder_buf[slot].len);
+            s->reorder_buf[slot].used = true;
+            LOG_DEBUG("Session %d: buffered out-of-order seq %u in slot %d\n", sidx, seq, slot);
+        }
+    } else {
+        /* 4. Old packet: already processed or too far in past/future, drop */
+        LOG_DEBUG("Session %d: dropping seq %u (too old or far future)\n", sidx, seq);
+    }
+}
                         ssize_t nread,
                         const uv_buf_t *buf,
                         const struct sockaddr *addr,
@@ -1978,8 +2058,15 @@ static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
     }
     fprintf(stderr, "\n");
 
-    uv_udp_init(g_loop, &q->udp);
-    q->udp.data = q;
+    /* Allocate unique Query ID */
+    uint16_t query_id = 0;
+    for (int i=0; i<65536; i++) {
+        uint16_t tid = (uint16_t)(rand() % 65536);
+        if (!g_pending_queries[tid]) { query_id = tid; break; }
+    }
+    q->id = query_id;
+    g_pending_queries[query_id] = q;
+    
     q->sent_ms  = uv_hrtime() / 1000000ULL;
 
     uv_timer_init(g_loop, &q->timer);
@@ -2003,15 +2090,15 @@ static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
 
     /* Immediate send (no jitter or allocation failure) */
     uv_buf_t buf = uv_buf_init((char*)q->sendbuf, (unsigned)q->sendlen);
-    int send_rc = uv_udp_send(&q->send_req, &q->udp, &buf, 1,
+    int send_rc = uv_udp_send(&q->send_req, &g_dns_udp, &buf, 1,
                               (const struct sockaddr*)&q->dest, on_dns_send);
     if (send_rc != 0) {
         LOG_ERR("uv_udp_send failed: %s (resolver=%s)\n", uv_strerror(send_rc), r->ip);
-        uv_close((uv_handle_t*)&q->udp, on_dns_query_close);
+        g_pending_queries[q->id] = NULL;
         uv_close((uv_handle_t*)&q->timer, on_dns_query_close);
     } else {
-        LOG_DEBUG("DNS query sent to %s:%d (len=%zu, domain=%s)\n",
-                  r->ip, ntohs(q->dest.sin_port), q->sendlen, domain);
+        LOG_DEBUG("DNS query sent to %s:%d (len=%zu, id=%u)\n",
+                  r->ip, ntohs(q->dest.sin_port), q->sendlen, q->id);
         g_stats.queries_sent++;
     }
 }
@@ -2406,6 +2493,13 @@ int main(int argc, char *argv[]) {
     uv_timer_init(g_loop, &g_poll_timer);
     uv_timer_start(&g_poll_timer, on_poll_timer,
                    g_cfg.poll_interval_ms, g_cfg.poll_interval_ms);
+
+    uv_timer_init(g_loop, &g_penalty_timer);
+    uv_timer_start(&g_penalty_timer, on_penalty_timer, 5000, 5000);
+
+    /* Initialize shared DNS UDP socket */
+    uv_udp_init(g_loop, &g_dns_udp);
+    uv_udp_recv_start(&g_dns_udp, on_dns_alloc, on_dns_recv);
 
     uv_timer_init(g_loop, &g_recovery_timer);
     uv_timer_start(&g_recovery_timer, on_recovery_timer, 1000, 1000);
