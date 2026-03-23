@@ -1232,6 +1232,10 @@ static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
     q->udp.data = q;
     q->sent_ms  = uv_hrtime() / 1000000ULL;
 
+    uv_timer_init(g_loop, &q->timer);
+    q->timer.data = q;
+    uv_timer_start(&q->timer, on_dns_timeout, 5000, 0);  /* 5 second timeout */
+
     uv_udp_recv_start(&q->udp, on_dns_alloc, on_dns_recv);
 
     /* Anti-DPI Jitter (fix #10): defer the UDP send by 0-50 ms. */
@@ -1254,6 +1258,7 @@ static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
     if (send_rc != 0) {
         LOG_ERR("uv_udp_send failed: %s (resolver=%s)\n", uv_strerror(send_rc), r->ip);
         uv_close((uv_handle_t*)&q->udp, on_dns_query_close);
+        uv_close((uv_handle_t*)&q->timer, on_dns_query_close);
     } else {
         LOG_DEBUG("DNS query sent to %s:%d (len=%zu, domain=%s)\n",
                   r->ip, ntohs(q->dest.sin_port), q->sendlen, domain);
