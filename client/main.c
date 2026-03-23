@@ -243,6 +243,23 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
 
     size_t sz = *outlen;
     LOG_DEBUG("dns_encode: outbuf size=%zu, qname=%s\n", sz, qname);
+
+    /* DEBUG: Test with a simple known-good QNAME */
+    dns_question_t test_q = {0};
+    test_q.name = "test.example.com";
+    test_q.type = RR_TXT;
+    test_q.class = CLASS_IN;
+    dns_query_t test_query = {0};
+    test_query.id = 0x1234;
+    test_query.query = true;
+    test_query.rd = true;
+    test_query.qdcount = 1;
+    test_query.questions = &test_q;
+    uint8_t test_buf[512];
+    size_t test_sz = sizeof(test_buf);
+    dns_rcode_t test_rc = dns_encode((dns_packet_t*)test_buf, &test_sz, &test_query);
+    LOG_DEBUG("Test QNAME 'test.example.com': rcode=%d\n", test_rc);
+
     dns_rcode_t rc = dns_encode((dns_packet_t*)outbuf, &sz, &query);
     if (rc != RCODE_OKAY) {
         LOG_ERR("dns_encode failed: rcode=%d for QNAME=%s (bufsize=%zu)\n", rc, qname, *outlen);
