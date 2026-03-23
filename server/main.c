@@ -351,7 +351,7 @@ static int build_txt_reply(uint8_t *outbuf, size_t *outlen,
 typedef struct {
     uv_udp_send_t    send_req;
     struct sockaddr_in dest;
-    uint8_t          reply_buf[DNS_BUFFER_UDP];
+    uint8_t          reply_buf[512]; /* Fix: was DNS_BUFFER_UDP which is only 64 bytes on 64-bit systems */
     size_t           reply_len;
 } udp_reply_t;
 
@@ -655,7 +655,7 @@ static void on_server_recv(uv_udp_t *h,
         }
         uv_mutex_unlock(&g_swarm_lock);
 
-        uint8_t reply[DNS_BUFFER_UDP];
+        uint8_t reply[512]; /* Fix: was DNS_BUFFER_UDP which is only 64 bytes on 64-bit systems */
         size_t  rlen = sizeof(reply);
         if (build_txt_reply(reply, &rlen, query_id, qname,
                             (const uint8_t*)swarm_text,
@@ -675,8 +675,8 @@ static void on_server_recv(uv_udp_t *h,
     }
 
     /* ── Build reply — stuff any pending upstream data ───────────── */
-    uint8_t reply[DNS_BUFFER_UDP];
-    size_t  rlen = sizeof(reply);
+        uint8_t reply[512]; /* Fix: was DNS_BUFFER_UDP which is only 64 bytes on 64-bit systems */
+        size_t  rlen = sizeof(reply);
     uint16_t mtu = sess->cl_downstream_mtu;
     if (mtu < 16 || mtu > 4096) mtu = 512;
 

@@ -956,9 +956,9 @@ typedef struct dns_query_ctx {
     int              session_idx;
     uint16_t         seq;
     uint64_t         sent_ms;  /* renamed from sent_us: actually ms (fix #14) */
-    uint8_t          sendbuf[DNS_BUFFER_UDP];
+    uint8_t          sendbuf[512]; /* Fix: was DNS_BUFFER_UDP which is only 64 bytes on 64-bit systems */
     size_t           sendlen;
-    uint8_t          recvbuf[DNS_BUFFER_UDP];
+    uint8_t          recvbuf[512]; /* Fix: was DNS_BUFFER_UDP which is only 64 bytes on 64-bit systems */
 } dns_query_ctx_t;
 
 static void on_dns_query_close(uv_handle_t *h) {
