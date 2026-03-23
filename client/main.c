@@ -739,6 +739,26 @@ static void resolver_init_phase(void) {
     LOG_INFO("EDNS resolvers: %d, TXT resolvers: %d\n",
              active, active);
 
+    /* DEBUG: Log details of each resolver's status */
+    for (int i = 0; i < g_pool.count; i++) {
+        resolver_t *r = &g_pool.resolvers[i];
+        const char *state_str = "UNKNOWN";
+        switch (r->state) {
+            case RSV_ACTIVE:   state_str = "ACTIVE"; break;
+            case RSV_DEAD:     state_str = "DEAD"; break;
+            case RSV_PENALTY:  state_str = "PENALTY"; break;
+            case RSV_ZOMBIE:   state_str = "ZOMBIE"; break;
+            case RSV_TESTING:  state_str = "TESTING"; break;
+        }
+        if (r->state != RSV_ACTIVE) {
+            LOG_ERR("Resolver %s state=%s reason=%s\n", r->ip, state_str,
+                    r->fail_reason[0] ? r->fail_reason : "(none)");
+        } else {
+            LOG_INFO("Resolver %s state=%s MTU=%u RTT=%.1fms\n",
+                     r->ip, state_str, r->upstream_mtu, r->rtt_ms);
+        }
+    }
+
     /* Log MTU statistics */
     int mtu_min = 9999, mtu_max = 0;
     for (int i = 0; i < g_pool.count; i++) {
@@ -1077,7 +1097,13 @@ static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
                                   int total_symbols)
 {
     int ridx = rpool_next(&g_pool);
-    if (ridx < 0) return;
+    if (ridx < 0) {
+        LOG_ERR("fire_dns_chunk_symbol: no active resolver available (session_idx=%d, seq=%u)\n",
+                session_idx, seq);
+        return;
+    }
+    LOG_DEBUG("fire_dns_chunk_symbol: using resolver %d (%s) for session %d seq %u\n",
+              ridx, g_pool.resolvers[ridx].ip, session_idx, seq);
 
     resolver_t *r = &g_pool.resolvers[ridx];
 
@@ -1141,11 +1167,14 @@ static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
 
     /* Immediate send (no jitter or allocation failure) */
     uv_buf_t buf = uv_buf_init((char*)q->sendbuf, (unsigned)q->sendlen);
-    if (uv_udp_send(&q->send_req, &q->udp, &buf, 1,
-                    (const struct sockaddr*)&q->dest, on_dns_send) != 0)
-    {
+    int send_rc = uv_udp_send(&q->send_req, &q->udp, &buf, 1,
+                              (const struct sockaddr*)&q->dest, on_dns_send);
+    if (send_rc != 0) {
+        LOG_ERR("uv_udp_send failed: %s (resolver=%s)\n", uv_strerror(send_rc), r->ip);
         uv_close((uv_handle_t*)&q->udp, on_dns_query_close);
     } else {
+        LOG_DEBUG("DNS query sent to %s:%d (len=%zu, domain=%s)\n",
+                  r->ip, ntohs(q->dest.sin_port), q->sendlen, domain);
         g_stats.queries_sent++;
     }
 }

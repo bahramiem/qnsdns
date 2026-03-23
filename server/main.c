@@ -282,12 +282,13 @@ static void on_upstream_connect(uv_connect_t *req, int status) {
     srv_session_t *sess = &g_sessions[sidx];
 
     if (status != 0) {
-        LOG_ERR("Upstream connect failed: %s\n", uv_strerror(status));
+        LOG_ERR("Upstream connect failed for session %d: %s\n", sidx, uv_strerror(status));
         free(cr->payload);
         free(cr);
         session_close(sidx);
         return;
     }
+    LOG_INFO("Upstream connected for session %d\n", sidx);
 
     sess->tcp_connected = true;
     static int sidx_store[SRV_MAX_SESSIONS];
@@ -388,20 +389,26 @@ static void on_server_alloc(uv_handle_t *h, size_t sz, uv_buf_t *buf) {
 }
 
 static void on_server_recv(uv_udp_t *h,
-                           ssize_t nread,
-                           const uv_buf_t *buf,
-                           const struct sockaddr *addr,
-                           unsigned flags)
+                            ssize_t nread,
+                            const uv_buf_t *buf,
+                            const struct sockaddr *addr,
+                            unsigned flags)
 {
     (void)h; (void)flags;
-    if (nread <= 0 || !addr) return;
+    if (nread <= 0 || !addr) {
+        if (nread < 0) {
+            LOG_ERR("UDP recv error: %zd\n", nread);
+        }
+        return;
+    }
 
     const struct sockaddr_in *src = (const struct sockaddr_in*)addr;
+    char src_ip[46];
+    uv_inet_ntop(AF_INET, &src->sin_addr, src_ip, sizeof(src_ip));
+    LOG_DEBUG("Server received %zd bytes from %s:%d\n", nread, src_ip, ntohs(src->sin_port));
     g_stats.queries_recv++;
 
-    /* Record source IP in swarm */
-    char src_ip[46] = {0};
-    uv_inet_ntop(AF_INET, &src->sin_addr, src_ip, sizeof(src_ip));
+    /* Record source IP in swarm (src_ip already defined above) */
     swarm_record_ip(src_ip);
 
     /* Decode DNS query */
@@ -442,9 +449,12 @@ static void on_server_recv(uv_udp_t *h,
     }
 
     if (tun_idx < 3) { /* Need at least seq, payload_1, sid */
-        LOG_DEBUG("Malformed QNAME from %s: %s\n", src_ip, qname);
+        LOG_ERR("Malformed QNAME from %s: %s (tun_idx=%d, part_count=%d)\n",
+                src_ip, qname, tun_idx, part_count);
         return;
     }
+    LOG_DEBUG("Parsed QNAME: tun_idx=%d, sid_idx=%d, part_count=%d\n",
+              tun_idx, tun_idx-1, part_count);
 
     int sid_idx = tun_idx - 1;
     const char *sid_hex = parts[sid_idx];
@@ -483,6 +493,11 @@ static void on_server_recv(uv_udp_t *h,
             LOG_ERR("Session table full\n");
             return;
         }
+        LOG_INFO("New session created: idx=%d, is_poll=%d, is_sync=%d, payload_len=%zu\n",
+                 sidx, is_poll, is_sync, payload_len);
+    } else {
+        LOG_DEBUG("Existing session: idx=%d, seq=%u, total=%u, payload_len=%zu\n",
+                  sidx, hdr.seq, hdr.chunk_total, payload_len);
     }
 
     srv_session_t *sess = &g_sessions[sidx];
@@ -600,6 +615,8 @@ static void on_server_recv(uv_udp_t *h,
                                     cr->payload = malloc(cr->payload_len);
                                     memcpy(cr->payload, p + hdr_sz, cr->payload_len);
                                 }
+                                LOG_INFO("Connecting upstream for session %d to %s:%d\n",
+                                         sidx, target_host, target_port);
                                 uv_tcp_init(g_loop, &sess->upstream_tcp);
                                 uv_tcp_connect(&cr->connect, &sess->upstream_tcp, (const struct sockaddr*)&up_addr, on_upstream_connect);
                             }
