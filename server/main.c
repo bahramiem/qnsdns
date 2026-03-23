@@ -422,25 +422,38 @@ static void on_server_recv(uv_udp_t *h,
     const char *qname = qry->questions[0].name;
     uint16_t query_id = qry->id;
 
-    /* Parse QNAME: <seq_hex>.<b32_payload>.<sid_hex>.tun.<domain> */
+    /* Parse QNAME: <seq_hex>.<b32_parts...>.<sid_hex>.tun.<domain>
+       Fix #31: Handle multi-label b32 payloads split by the client. */
     char tmp[DNSTUN_MAX_QNAME_LEN + 1];
     strncpy(tmp, qname, sizeof(tmp)-1);
 
-    char *parts[8] = {0};
+    char *parts[16] = {0};
     int part_count = 0;
     char *tok = strtok(tmp, ".");
-    while (tok && part_count < 8) {
+    while (tok && part_count < 16) {
         parts[part_count++] = tok;
         tok = strtok(NULL, ".");
     }
 
-    /* Need at least: seq, payload, sid, "tun", domain */
-    if (part_count < 5) {
-        LOG_DEBUG("QNAME too short from %s: %s\n", src_ip, qname);
+    /* Find "tun" marker to identify structure */
+    int tun_idx = -1;
+    for (int i = 0; i < part_count; i++) {
+        if (strcmp(parts[i], "tun") == 0) { tun_idx = i; break; }
+    }
+
+    if (tun_idx < 3) { /* Need at least seq, payload_1, sid */
+        LOG_DEBUG("Malformed QNAME from %s: %s\n", src_ip, qname);
         return;
     }
 
-    const char *b32_payload = parts[1];
+    int sid_idx = tun_idx - 1;
+    const char *sid_hex = parts[sid_idx];
+
+    /* Reassemble b32 payload from parts[1] to parts[sid_idx-1] */
+    char b32_payload[512] = {0};
+    for (int i = 1; i < sid_idx; i++) {
+        strncat(b32_payload, parts[i], sizeof(b32_payload) - strlen(b32_payload) - 1);
+    }
     /* Decode b32 payload → raw bytes (chunk_header + data) */
     uint8_t raw[sizeof(chunk_header_t) + DNSTUN_CHUNK_PAYLOAD + 4];
     ssize_t rawlen = base32_decode(raw, b32_payload, strlen(b32_payload));

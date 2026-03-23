@@ -161,10 +161,22 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
 
     /* Build QNAME: <seq>.<b32>.<sid>.tun.<domain>
        Fix #4: use full b32 string (not %.100s) so the server receives
-       the complete payload without silent truncation. */
+       the complete payload without silent truncation.
+       Fix #31: Split b32 into multiple labels to stay under the 63-char DNS limit. */
+    char b32_dotted[base32_encode_len(sizeof(chunk_header_t) + DNSTUN_CHUNK_PAYLOAD) + 4];
+    int bidx = 0;
+    int b32_len = (int)strlen(b32);
+    for (int i = 0; i < b32_len; i++) {
+        b32_dotted[bidx++] = b32[i];
+        if ((i + 1) % 60 == 0 && (i + 1) < b32_len) {
+            b32_dotted[bidx++] = '.';
+        }
+    }
+    b32_dotted[bidx] = '\0';
+
     char qname[DNSTUN_MAX_QNAME_LEN + 1];
     snprintf(qname, sizeof(qname), "%s.%s.%s.tun.%s",
-             seq_hex, b32, sid_hex, domain);
+             seq_hex, b32_dotted, sid_hex, domain);
 
     /* Encode into DNS TXT query packet */
     dns_question_t question = {0};
