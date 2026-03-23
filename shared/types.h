@@ -23,7 +23,6 @@
 #define DNSTUN_MAX_DOMAINS       32
 #define DNSTUN_MAX_LABEL_LEN     63
 #define DNSTUN_MAX_QNAME_LEN     253
-#define DNSTUN_REORDER_BUFFER    16     /* max out-of-order downstream chunks to buffer */
 
 /* Buffer sizes for large downstream MTU (up to 4096 bytes) */
 #define DNSTUN_MAX_DOWNSTREAM_MTU   4096
@@ -144,9 +143,8 @@ typedef struct {
 #pragma pack(push, 1)
 typedef struct {
     uint8_t  flags;          /* bit 0: encoding_type (0=base64, 1=hex), bits 1-7: reserved */
-    uint8_t  session_id;     /* session ID (0-15) */
-    uint16_t seq;            /* sequence number for reordering */
-} server_response_header_t;   /* Total: 4 bytes */
+    uint8_t  session_id;     /* session ID (4 bits used, 0-15) */
+} server_response_header_t;   /* Total: 2 bytes */
 #pragma pack(pop)
 
 /* ──────────────────────────────────────────────
@@ -327,16 +325,6 @@ typedef struct {
 } symbol_encoder_t;
 
 /* ──────────────────────────────────────────────
-   Downstream reordering support
-   ────────────────────────────────────────────── */
-typedef struct {
-    uint16_t seq;
-    uint8_t  data[DNSTUN_MAX_DOWNSTREAM_MTU];
-    size_t   len;
-    bool     used;
-} downstream_chunk_t;
-
-/* ──────────────────────────────────────────────
    Active SOCKS5 session
 ────────────────────────────────────────────── */
 /* Resource limits to prevent memory exhaustion (10MB max per session buffer) */
@@ -357,10 +345,10 @@ typedef struct session {
     size_t    recv_len;
     size_t    recv_cap;
 
-    /* sequencing */
-    uint16_t  tx_next;    /* next transmit seq (upstream) */
-    uint16_t  rx_next;    /* expected receive seq (downstream) */
-    downstream_chunk_t *reorder_buf; /* optionally allocated for heavy loss/jitter */
+    /* sliding window */
+    uint16_t  tx_next;    /* next seq to send */
+    uint16_t  tx_acked;   /* last acked seq */
+    uint16_t  rx_next;    /* expected receive seq */
 
     time_t    last_active;
     bool      closed;

@@ -24,11 +24,8 @@
 
 #ifdef _WIN32
 #include <process.h>
-#include <ws2tcpip.h>
 #else
 #include <unistd.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
 #endif
 
 #include "uv.h"
@@ -78,7 +75,6 @@ typedef struct srv_session {
 
     /* Client-reported capabilities */
     uint16_t  cl_downstream_mtu;
-    uint16_t  next_downstream_seq; /* Sequence for downstream reordering */
     uint8_t   cl_enc_format;
     uint8_t   cl_loss_pct;
     uint8_t   cl_fec_k;
@@ -160,29 +156,21 @@ static void swarm_load(void) {
 /*  Session lookup / alloc                        */
 /* ────────────────────────────────────────────── */
 
-/* Find session by 4-bit session ID and client address (fix hijacking) */
-static int session_find(const struct sockaddr_in *addr, uint8_t id) {
-    for (int i = 0; i < SRV_MAX_SESSIONS; i++) {
-        if (g_sessions[i].used && g_sessions[i].session_id == id) {
-            if (g_sessions[i].client_addr.sin_addr.s_addr == addr->sin_addr.s_addr &&
-                g_sessions[i].client_addr.sin_port == addr->sin_port) {
-                return i;
-            }
-        }
-    }
+/* Find session by 4-bit session ID */
+static int session_find_by_id(uint8_t id) {
+    for (int i = 0; i < SRV_MAX_SESSIONS; i++)
+        if (g_sessions[i].used && g_sessions[i].session_id == id)
+            return i;
     return -1;
 }
 
-/* Allocate new session with 4-bit session ID and record client address */
-static int session_alloc(const struct sockaddr_in *addr, uint8_t id) {
+/* Allocate new session with 4-bit session ID */
+static int session_alloc_by_id(uint8_t id) {
     for (int i = 0; i < SRV_MAX_SESSIONS; i++) {
         if (!g_sessions[i].used) {
-            /* If this index was used before, ensure its handle was closed.
-               uv_tcp_init below will fail if it's already a closing/active handle. */
             memset(&g_sessions[i], 0, sizeof(g_sessions[i]));
             g_sessions[i].session_id   = id;
             g_sessions[i].used         = true;
-            g_sessions[i].client_addr  = *addr;
             g_sessions[i].last_active  = time(NULL);
             g_stats.active_sessions++;
             return i;
@@ -332,7 +320,7 @@ static void on_upstream_connect(uv_connect_t *req, int status) {
 /*  Build DNS TXT Reply                           */
 /* ────────────────────────────────────────────── */
 
-/* Obsolete: handled inline in build_txt_reply */
+/* Encode data using configured downstream encoding (base64 by default) */
 static size_t encode_downstream_data(char *out, const uint8_t *in, size_t inlen) {
     /* Use base64 encoding by default for better compatibility with intermediate resolvers.
      * Raw binary data often gets dropped or mangled by DNS infrastructure. */
@@ -346,31 +334,22 @@ static size_t encode_downstream_data(char *out, const uint8_t *in, size_t inlen)
 
 static int build_txt_reply(uint8_t *outbuf, size_t *outlen,
                            uint16_t query_id, const char *qname,
-                           uint8_t session_id, uint16_t seq,
                            const uint8_t *data, size_t data_len,
                            uint16_t mtu)
 {
-    /* 1. Pack header + data into a temporary buffer */
-    uint8_t pkt[DNSTUN_MAX_DOWNSTREAM_MTU + 8];
-    server_response_header_t hdr = {0};
-    hdr.flags = 0; /* base64 */
-    hdr.session_id = session_id;
-    hdr.seq = seq;
-    
-    if (data_len > mtu - sizeof(hdr)) data_len = mtu - sizeof(hdr);
-    
-    memcpy(pkt, &hdr, sizeof(hdr));
-    if (data_len > 0) memcpy(pkt + sizeof(hdr), data, data_len);
-    
-    /* 2. Base64 encode the whole package */
-    char encoded[DNSTUN_MAX_DOWNSTREAM_MTU * 2];
-    size_t encoded_len = base64_encode(encoded, pkt, sizeof(hdr) + data_len);
-    
+    if (data_len > mtu) data_len = mtu;
+
+    /* Encode data for TXT record - use base64 for DNS compatibility */
+    char encoded[4096];
+    size_t encoded_len = encode_downstream_data(encoded, data, data_len);
+    if (encoded_len >= sizeof(encoded)) encoded_len = sizeof(encoded) - 1;
+    encoded[encoded_len] = '\0';
+
     dns_question_t q = {0};
     q.name  = qname;
     q.type  = RR_TXT;
     q.class = CLASS_IN;
- 
+
     dns_answer_t ans = {0};
     ans.txt.name = qname;
     ans.txt.type   = RR_TXT;
@@ -378,7 +357,7 @@ static int build_txt_reply(uint8_t *outbuf, size_t *outlen,
     ans.txt.ttl    = 0;
     ans.txt.len    = (uint16_t)encoded_len;
     ans.txt.text   = encoded;
- 
+
     dns_query_t resp = {0};
     resp.id        = query_id;
     resp.query     = false;
@@ -388,7 +367,7 @@ static int build_txt_reply(uint8_t *outbuf, size_t *outlen,
     resp.ancount   = 1;
     resp.questions = &q;
     resp.answers   = &ans;
- 
+
     size_t sz = *outlen;
     dns_rcode_t rc = dns_encode((dns_packet_t*)outbuf, &sz, &resp);
     if (rc != RCODE_OKAY) return -1;
@@ -518,6 +497,7 @@ static void on_server_recv(uv_udp_t *h,
      * (now single consolidated label after client inline_dotify) */
     char b32_payload[512] = {0};
     for (int i = 0; i < tun_idx; i++) {
+        if (i > 0) strncat(b32_payload, ".", sizeof(b32_payload) - strlen(b32_payload) - 1);
         strncat(b32_payload, parts[i], sizeof(b32_payload) - strlen(b32_payload) - 1);
     }
     /* Decode b32 payload → raw bytes (chunk_header + data) */
@@ -548,10 +528,10 @@ static void on_server_recv(uv_udp_t *h,
     /* SYNC command: payload starts with "SYNC" (ASCII) */
     if (payload_len >= 4 && memcmp(payload, "SYNC", 4) == 0) is_sync = true;
 
-    /* Session lookup / allocate by 4-bit session ID + source IP */
-    int sidx = session_find(src, session_id);
+    /* Session lookup / allocate by 4-bit session ID */
+    int sidx = session_find_by_id(session_id);
     if (sidx < 0) {
-        sidx = session_alloc(src, session_id);
+        sidx = session_alloc_by_id(session_id);
         if (sidx < 0) {
             LOG_ERR("Session table full\n");
             return;
@@ -567,23 +547,27 @@ static void on_server_recv(uv_udp_t *h,
     sess->last_active       = time(NULL);
     sess->client_addr       = *src;
     
+    /* MTU values from server config (no longer in header) */
     sess->cl_downstream_mtu = DNSTUN_MAX_DOWNSTREAM_MTU;
-    sess->cl_enc_format     = 0;
-    sess->cl_loss_pct       = 0;
+    sess->cl_enc_format     = 0; /* Will be determined by client request */
+    sess->cl_loss_pct       = 0;  /* No longer in header - could add later if needed */
     sess->cl_fec_k          = fec_k;
+
+    /* Adaptive FEC based on loss rate if reported */
+    if (sess->cl_loss_pct > 0) {
+        double loss = sess->cl_loss_pct / 100.0;
+        fec_k = (uint8_t)ceil(1.0 * loss / (1.0 - loss));
+        if (fec_k > 64) fec_k = 64;
+    }
+    sess->cl_fec_k = fec_k;
 
     /* ── Handle FEC Burst Reassembly ──────────────────────────────────── */
     if (chunk_total > 0) {
-        if (chunk_total > 32 || payload_len > 2048) {
-            LOG_ERR("DoS: oversized FEC burst (total=%u, len=%zu)\n", chunk_total, payload_len);
-            return;
-        }
-
+        /* New burst or continuation? */
         if (sess->burst_count_needed == 0 || seq < sess->burst_seq_start) {
+            /* Cleanup old */
             if (sess->burst_symbols) {
-                for (int i = 0; i < (int)sess->burst_count_needed; i++) {
-                    if (sess->burst_symbols[i]) free(sess->burst_symbols[i]);
-                }
+                for (int i = 0; i < sess->burst_count_needed; i++) free(sess->burst_symbols[i]);
                 free(sess->burst_symbols);
             }
             sess->burst_seq_start     = seq;
@@ -594,18 +578,16 @@ static void on_server_recv(uv_udp_t *h,
         }
 
         int offset = seq - sess->burst_seq_start;
-        if (offset >= 0 && offset < (int)sess->burst_count_needed && !sess->burst_symbols[offset]) {
-            if (payload_len != sess->burst_symbol_len) {
-                LOG_ERR("FEC: symbol size mismatch (%zu vs %zu)\n", payload_len, sess->burst_symbol_len);
-                return;
-            }
+        if (offset >= 0 && offset < sess->burst_count_needed && !sess->burst_symbols[offset]) {
             sess->burst_symbols[offset] = malloc(payload_len);
-            if (sess->burst_symbols[offset]) {
-                memcpy(sess->burst_symbols[offset], payload, payload_len);
-                sess->burst_received++;
-            }
+            memcpy(sess->burst_symbols[offset], payload, payload_len);
+            sess->burst_received++;
         }
 
+        /* Enough symbols to decode? (Simplified: wait for K symbols or more) */
+        /* For RaptorQ, we need K symbols. chunk_total is K+R. */
+        /* Let's assume K = chunk_total - fec_k. But chunk_total is actually the total sent. */
+        /* In our client, total = k + r. */
         int k_est = sess->burst_count_needed - (int)sess->cl_fec_k;
         if (k_est < 1) k_est = 1;
 
@@ -615,58 +597,70 @@ static void on_server_recv(uv_udp_t *h,
             fec.symbol_len   = sess->burst_symbol_len;
             fec.total_count  = sess->burst_count_needed;
 
+            /* Rough estimation of original len based on symbol count */
             size_t orig_len_est = (size_t)k_est * DNSTUN_CHUNK_PAYLOAD;
+
             codec_result_t fdec = codec_fec_decode(&fec, orig_len_est);
             if (!fdec.error) {
                 const uint8_t *dec_in = fdec.data;
                 size_t         dec_len = fdec.len;
                 codec_result_t dret = {0};
-                codec_result_t zdec = {0};
 
-                if (hdr.flags & CHUNK_FLAG_ENCRYPTED) {
+                /* 1. DECRYPT (Optional) */
+                if (hdr.flags & 0x01) {
                     dret = codec_decrypt(fdec.data, fdec.len, g_cfg.psk);
                     if (!dret.error) {
                         dec_in = dret.data;
                         dec_len = dret.len;
                     } else {
                         LOG_ERR("Decryption failed\n");
-                        goto cleanup_burst_results;
+                        goto next_burst;
                     }
                 }
 
-                zdec = codec_decompress(dec_in, dec_len, 0);
+                /* 2. DECOMPRESS (0 = auto-detect size via decompress_bound) */
+                codec_result_t zdec = codec_decompress(dec_in, dec_len, 0);
                 if (!zdec.error) {
+                    /* SUCCESS: Forward reassembled, decrypted, decompressed packet */
                     if (!sess->tcp_connected) {
+                        /* Fix #11: SOCKS5 CONNECT is parsed ONLY from the fully
+                           decompressed + decrypted data.  The duplicate raw-payload
+                           parse path below is removed to avoid inconsistency. */
                         const uint8_t *p = zdec.data;
                         size_t l = zdec.len;
                         if (l >= 10 && p[0] == 0x05 && p[1] == 0x01) {
                             char target_host[256] = {0};
                             uint16_t target_port = 0;
                             uint8_t atype = p[3];
-                            if (atype == 0x01) {
+                            
+                            if (atype == 0x01) { /* IPv4 */
                                 snprintf(target_host, sizeof(target_host), "%d.%d.%d.%d", p[4], p[5], p[6], p[7]);
                                 target_port = (uint16_t)((p[8]<<8)|p[9]);
-                            } else if (atype == 0x03) {
+                            } else if (atype == 0x03) { /* Domain */
                                 uint8_t dlen = p[4];
+                                /* Fix #5: bounds check before reading domain bytes */
                                 if ((size_t)(5 + dlen + 2) <= l && dlen < 255) {
                                     memcpy(target_host, p + 5, dlen);
                                     target_host[dlen] = '\0';
                                     target_port = (uint16_t)((p[5+dlen]<<8)|p[6+dlen]);
                                 }
                             }
+                            
                             if (target_host[0] && target_port > 0) {
                                 struct sockaddr_in up_addr;
                                 uv_ip4_addr(target_host, target_port, &up_addr);
                                 connect_req_t *cr = calloc(1, sizeof(*cr));
                                 cr->session_idx = sidx;
-                                size_t hdr_sz = (atype == 0x01) ? 10 : (5 + p[4] + 2);
+                                size_t hdr_sz = (atype == 0x01) ? 10 : (6 + p[4]);
                                 if (l > hdr_sz) {
                                     cr->payload_len = l - hdr_sz;
                                     cr->payload = malloc(cr->payload_len);
                                     memcpy(cr->payload, p + hdr_sz, cr->payload_len);
                                 }
-                                LOG_INFO("Connecting upstream for session %d to %s:%d\n", sidx, target_host, target_port);
+                                LOG_INFO("Connecting upstream for session %d to %s:%d\n",
+                                         sidx, target_host, target_port);
                                 uv_tcp_init(g_loop, &sess->upstream_tcp);
+                                /* Enable TCP_NODELAY to minimize latency for interactive traffic */
                                 uv_tcp_nodelay(&sess->upstream_tcp, 1);
                                 uv_tcp_connect(&cr->connect, &sess->upstream_tcp, (const struct sockaddr*)&up_addr, on_upstream_connect);
                             }
@@ -676,16 +670,14 @@ static void on_server_recv(uv_udp_t *h,
                     }
                     codec_free_result(&zdec);
                 }
-            cleanup_burst_results:
-                if (dret.data) codec_free_result(&dret);
+
+                if (!dret.error && dret.data) codec_free_result(&dret);
                 codec_free_result(&fdec);
             }
 
         next_burst:
             /* Reset burst */
-            for (int i = 0; i < (int)sess->burst_count_needed; i++) {
-                if (sess->burst_symbols[i]) free(sess->burst_symbols[i]);
-            }
+            for (int i = 0; i < sess->burst_count_needed; i++) free(sess->burst_symbols[i]);
             free(sess->burst_symbols);
             sess->burst_symbols = NULL;
             sess->burst_count_needed = 0;
@@ -710,7 +702,6 @@ static void on_server_recv(uv_udp_t *h,
         uint8_t reply[512]; /* Fix: was DNS_BUFFER_UDP which is only 64 bytes on 64-bit systems */
         size_t  rlen = sizeof(reply);
         if (build_txt_reply(reply, &rlen, query_id, qname,
-                            session_id, 0, /* SWARM sync is unsequenced/standalone */
                             (const uint8_t*)swarm_text,
                             slen,
                             sess->cl_downstream_mtu) == 0)
@@ -749,7 +740,6 @@ static void on_server_recv(uv_udp_t *h,
                   sidx, sz, (char*)sess->upstream_buf);
 
         if (build_txt_reply(reply, &rlen, query_id, qname,
-                            session_id, sess->next_downstream_seq++,
                             sess->upstream_buf, sz, mtu) == 0)
         {
             /* Shift consumed bytes out of upstream buffer */
@@ -762,8 +752,7 @@ static void on_server_recv(uv_udp_t *h,
     } else {
         /* Empty reply — acknowledge the query */
         uint8_t ack[1] = {0};
-        if (build_txt_reply(reply, &rlen, query_id, qname,
-                            session_id, sess->next_downstream_seq, ack, 1, mtu) == 0)
+        if (build_txt_reply(reply, &rlen, query_id, qname, ack, 1, mtu) == 0)
             send_udp_reply(src, reply, rlen);
     }
 }
