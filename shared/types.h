@@ -253,7 +253,7 @@ typedef struct {
    Active SOCKS5 session
 ────────────────────────────────────────────── */
 typedef struct session {
-    uint8_t   id[DNSTUN_SESSION_ID_LEN];
+    uint8_t   session_id;    /* 4-bit session ID (0-15), embedded in chunk header */
     char      target_host[256];
     uint16_t  target_port;
     bool      established;

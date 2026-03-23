@@ -56,7 +56,6 @@ static uv_timer_t       g_idle_timer;
 
 /* Active upstream sessions */
 typedef struct srv_session {
-    uint8_t   id[DNSTUN_SESSION_ID_LEN];
     bool      used;
 
     /* 4-bit session ID (0-15, embedded in chunk header flags) */

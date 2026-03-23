@@ -86,12 +86,9 @@ static uint16_t rand_u16(void) {
     return (uint16_t)(rand() & 0xFFFF);
 }
 
-/* Generate a cryptographically random session ID (fix #23: use libsodium,
-   not rand(), to prevent session hijacking by predictable IDs). */
-static void make_session_id(uint8_t *id) {
-    for (int i = 0; i < DNSTUN_SESSION_ID_LEN; i++) {
-        id[i] = (uint8_t)(rand() & 0xFF);
-    }
+/* Generate a random 4-bit session ID (0-15, embedded in chunk header flags) */
+static uint8_t make_session_id(void) {
+    return (uint8_t)(random() & 0x0F);  /* Only use lower 4 bits */
 }
 
 /* ────────────────────────────────────────────── */
@@ -1502,7 +1499,7 @@ static void socks5_handle_data(socks5_client_t *c,
 
         session_t *sess = &g_sessions[session_idx];
         memset(sess, 0, sizeof(*sess));
-        make_session_id(sess->id);
+        sess->session_id = make_session_id();
         sess->established = true;
         sess->closed      = false;
         sess->last_active = time(NULL);
