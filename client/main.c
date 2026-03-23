@@ -1444,6 +1444,21 @@ static void socks5_send(socks5_client_t *c, const uint8_t *data, size_t len) {
     uv_write(w, (uv_stream_t*)&c->tcp, &buf, 1, on_socks5_write_done);
 }
 
+/* Flush received data from server to SOCKS5 client */
+static void socks5_flush_recv_buf(socks5_client_t *c) {
+    if (c->session_idx < 0 || c->session_idx >= DNSTUN_MAX_SESSIONS) return;
+    session_t *s = &g_sessions[c->session_idx];
+    if (s->closed || s->recv_len == 0) return;
+    
+    /* Send all pending data to SOCKS5 client */
+    socks5_send(c, s->recv_buf, s->recv_len);
+    LOG_DEBUG("Flushed %zu bytes from recv_buf to SOCKS5 client (session %d)\n",
+              s->recv_len, c->session_idx);
+    
+    /* Clear the buffer */
+    s->recv_len = 0;
+}
+
 static void socks5_handle_data(socks5_client_t *c,
                                const uint8_t *data, size_t len)
 {
@@ -1502,6 +1517,7 @@ static void socks5_handle_data(socks5_client_t *c,
 
         c->session_idx = session_idx;
         c->state = 2;
+        sess->client_ptr = c;  /* Link session back to SOCKS5 client */
         g_stats.active_sessions++;
 
         LOG_INFO("SOCKS5 CONNECT %s:%d (session %d)\n",
@@ -1683,6 +1699,11 @@ static void on_dns_recv(uv_udp_t *h,
                             s->recv_len += ans->txt.len;
                             g_stats.rx_total += ans->txt.len;
                             g_stats.rx_bytes_sec += ans->txt.len;
+                            
+                            /* Flush received data to SOCKS5 client */
+                            if (s->client_ptr) {
+                                socks5_flush_recv_buf((socks5_client_t*)s->client_ptr);
+                            }
                         }
                     }
                     g_stats.queries_recv++;

@@ -190,6 +190,9 @@ typedef struct session {
 
     time_t    last_active;
     bool      closed;
+    
+    /* Client-specific: back-pointer to SOCKS5 client (client only) */
+    void      *client_ptr;
 } session_t;
 
 #endif /* DNSTUN_TYPES_H */
