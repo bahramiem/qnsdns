@@ -20,10 +20,7 @@ void rpool_destroy(resolver_pool_t *pool) {
 
 /* ── Add resolver ───────────────────────────────────────────────────────────*/
 int rpool_add(resolver_pool_t *pool, const char *ip) {
-    fprintf(stderr, "[TRACE] rpool_add: Entering for %s\n", ip); fflush(stderr);
-    fprintf(stderr, "[TRACE] rpool_add: Locking mutex\n"); fflush(stderr);
     uv_mutex_lock(&pool->lock);
-    fprintf(stderr, "[TRACE] rpool_add: Mutex locked\n"); fflush(stderr);
 
     if (pool->count >= DNSTUN_MAX_RESOLVERS) {
         uv_mutex_unlock(&pool->lock);
@@ -46,12 +43,13 @@ int rpool_add(resolver_pool_t *pool, const char *ip) {
     r->state          = RSV_DEAD; /* start in dead; testing promotes it */
     r->cwnd           = pool->cfg->cwnd_init;
     r->cwnd_max       = pool->cfg->cwnd_max;
-    rpool_on_ack(pool, idx, 999.0); /* Init health window with one 'success' if needed, or leave at 0 */
     r->mtu_low        = 512;
     r->mtu_high       = 1401;
     r->health_window  = 0xFFFFFFFF; /* Assume healthy until proven otherwise */
     r->health_cursor  = 0;
     r->enc            = ENC_BASE64;
+    
+    rpool_on_ack_internal(pool, idx, 999.0); /* Init health window with one 'success' if needed, or leave at 0 */
 
     /* add to dead list */
     pool->dead[pool->dead_count++] = idx;
@@ -108,8 +106,7 @@ int rpool_next(resolver_pool_t *pool) {
 }
 
 /* ── AIMD Congestion Control ────────────────────────────────────────────────*/
-void rpool_on_ack(resolver_pool_t *pool, int idx, double rtt_ms) {
-    uv_mutex_lock(&pool->lock);
+static void rpool_on_ack_internal(resolver_pool_t *pool, int idx, double rtt_ms) {
     resolver_t *r = &pool->resolvers[idx];
 
     /* Update sliding window: 1 = success */
@@ -132,7 +129,11 @@ void rpool_on_ack(resolver_pool_t *pool, int idx, double rtt_ms) {
         r->cwnd *= 0.75;
         if (r->cwnd < 1.0) r->cwnd = 1.0;
     }
-    
+}
+
+void rpool_on_ack(resolver_pool_t *pool, int idx, double rtt_ms) {
+    uv_mutex_lock(&pool->lock);
+    rpool_on_ack_internal(pool, idx, rtt_ms);
     uv_mutex_unlock(&pool->lock);
 }
 
