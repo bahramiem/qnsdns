@@ -197,21 +197,33 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
     size_t qname_len = strlen(qname);
     LOG_DEBUG("build_dns_query: QNAME=%s (len=%zu)\n", qname, qname_len);
 
+    /* DEBUG: Full QNAME hex dump to see actual bytes */
+    fprintf(stderr, "[DEBUG] QNAME hex (%zu bytes): ", qname_len);
+    for (size_t i = 0; i < qname_len; i++) {
+        fprintf(stderr, "%02x ", (unsigned char)qname[i]);
+    }
+    fprintf(stderr, "\n");
+
     /* DEBUG: Check each label length (max 63 bytes per DNS spec) */
     size_t label_len = 0;
     size_t max_label = 0;
+    int label_count = 0;
     for (size_t i = 0; i <= qname_len; i++) {
         if (qname[i] == '.' || qname[i] == '\0') {
+            label_count++;
             if (label_len > max_label) max_label = label_len;
             if (label_len > 63) {
-                LOG_ERR("LABEL TOO LONG at pos %zu: len=%zu (max 63)\n", i - label_len, label_len);
+                LOG_ERR("LABEL %d TOO LONG at pos %zu: len=%zu (max 63)\n", label_count, i - label_len, label_len);
+            }
+            if (label_len == 0 && i > 0 && qname[i-1] != '.') {
+                LOG_ERR("EMPTY LABEL at position %zu\n", i);
             }
             label_len = 0;
         } else {
             label_len++;
         }
     }
-    LOG_DEBUG("Longest label: %zu bytes\n", max_label);
+    LOG_DEBUG("Labels: %d, Longest: %zu bytes, Total: %zu bytes\n", label_count, max_label, qname_len);
     if (qname_len > 253) {
         LOG_ERR("QNAME TOO LONG: %zu bytes (max 253)\n", qname_len);
     }
