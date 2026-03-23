@@ -47,6 +47,15 @@ void config_defaults(dnstun_config_t *cfg, bool is_server) {
     cfg->cwnd_max             = 512.0;
     cfg->idle_timeout_sec     = 120;
 
+    /* mtu_testing - Binary search MTU testing like client.py */
+    cfg->max_upload_mtu       = 512;     /* Maximum upload MTU to test */
+    cfg->max_download_mtu      = 1200;    /* Maximum download MTU to test */
+    cfg->min_upload_mtu        = 0;       /* Minimum acceptable upload MTU (0 = no minimum) */
+    cfg->min_download_mtu      = 0;       /* Minimum acceptable download MTU (0 = no minimum) */
+    cfg->mtu_test_retries     = 2;       /* Number of retries per MTU test */
+    cfg->mtu_test_timeout_ms   = 1000;    /* Timeout for MTU test packets (ms) */
+    cfg->mtu_test_parallelism  = 10;      /* Parallel MTU tests */
+
     /* domains */
     cfg->dns_flux             = false;
     cfg->flux_period_sec      = 21600; /* 6 hours */
@@ -125,6 +134,16 @@ int config_set_key(dnstun_config_t *cfg,
         else if (strcmp(key,"cwnd_init")==0)        cfg->cwnd_init        = atof(value);
         else if (strcmp(key,"cwnd_max")==0)         cfg->cwnd_max         = atof(value);
         else if (strcmp(key,"idle_timeout_sec")==0) cfg->idle_timeout_sec = atoi(value);
+    }
+    /* [mtu_testing] - Binary search MTU testing like client.py */
+    else if (strcmp(section,"mtu_testing")==0) {
+        if      (strcmp(key,"max_upload_mtu")==0)       cfg->max_upload_mtu      = atoi(value);
+        else if (strcmp(key,"max_download_mtu")==0)      cfg->max_download_mtu    = atoi(value);
+        else if (strcmp(key,"min_upload_mtu")==0)        cfg->min_upload_mtu      = atoi(value);
+        else if (strcmp(key,"min_download_mtu")==0)       cfg->min_download_mtu    = atoi(value);
+        else if (strcmp(key,"mtu_test_retries")==0)      cfg->mtu_test_retries    = atoi(value);
+        else if (strcmp(key,"mtu_test_timeout_ms")==0)   cfg->mtu_test_timeout_ms = atoi(value);
+        else if (strcmp(key,"mtu_test_parallelism")==0)  cfg->mtu_test_parallelism = atoi(value);
     }
     /* [domains] */
     else if (strcmp(section,"domains")==0) {

@@ -38,6 +38,15 @@ typedef struct dnstun_config {
     double   cwnd_max;          /* max cong window */
     int      idle_timeout_sec;
 
+    /* [mtu_testing] - Binary search MTU testing like client.py */
+    int      max_upload_mtu;       /* Maximum upload MTU to test (default: 512) */
+    int      max_download_mtu;     /* Maximum download MTU to test (default: 1200) */
+    int      min_upload_mtu;       /* Minimum acceptable upload MTU (default: 0) */
+    int      min_download_mtu;     /* Minimum acceptable download MTU (default: 0) */
+    int      mtu_test_retries;     /* Number of retries per MTU test (default: 2) */
+    int      mtu_test_timeout_ms;  /* Timeout for MTU test packets (default: 1000ms) */
+    int      mtu_test_parallelism; /* Parallel MTU tests (default: 10) */
+
     /* [domains] */
     char     domains[DNSTUN_MAX_DOMAINS][256];
     int      domain_count;

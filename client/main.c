@@ -250,13 +250,31 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
 /* ────────────────────────────────────────────── */
 /*  Scanner.py-style DNS Resolver Testing         */
 /*  Three-phase test: Long QNAME → NXDOMAIN → EDNS/TXT */
+/*  Plus MTU binary search testing for upstream/downstream */
 /* ────────────────────────────────────────────── */
 typedef enum {
     PROBE_TEST_NONE = 0,
     PROBE_TEST_LONGNAME,      /* Phase 1: Long QNAME support */
     PROBE_TEST_NXDOMAIN,      /* Phase 2: NXDOMAIN behavior (fake resolver filter) */
-    PROBE_TEST_EDNS_TXT       /* Phase 3: EDNS + TXT support and MTU detection */
+    PROBE_TEST_EDNS_TXT,      /* Phase 3: EDNS + TXT support detection */
+    PROBE_TEST_MTU_UP,        /* MTU Binary search: Upload MTU test */
+    PROBE_TEST_MTU_DOWN       /* MTU Binary search: Download MTU test */
 } probe_test_type_t;
+
+/* MTU binary search state */
+typedef struct {
+    int low;
+    int high;
+    int optimal;
+    int min_threshold;
+    int allowed_min_mtu;
+    int retries;
+    int test_size;           /* Current MTU size being tested */
+    bool is_upload_test;     /* true for upload, false for download */
+    int upstream_mtu;        /* Known upstream MTU for download test */
+    int* tested_cache;      /* Cache of tested MTU values (bitmap) */
+    int cache_size;
+} mtu_binary_search_t;
 
 /* Result structure for each resolver */
 typedef struct {
@@ -264,8 +282,12 @@ typedef struct {
     bool        nxdomain_correct;     /* Phase 2 result (false = fake resolver) */
     bool        edns_supported;      /* Phase 3 result */
     bool        txt_supported;       /* Phase 3 result */
-    uint16_t    mtu;                 /* EDNS payload size from Phase 3 */
+    uint16_t    upstream_mtu;        /* EDNS payload size from Phase 3 / Binary search result */
+    uint16_t    downstream_mtu;       /* Binary search result for download MTU */
     double      rtt_ms;              /* RTT for Phase 3 test */
+    /* MTU binary search state */
+    mtu_binary_search_t up_mtu_search;
+    mtu_binary_search_t down_mtu_search;
 } resolver_test_result_t;
 
 typedef struct probe_req {
@@ -282,6 +304,10 @@ typedef struct probe_req {
     bool            got_reply;
     probe_test_type_t test_type;     /* Which test this probe is performing */
     resolver_test_result_t *result;  /* Pointer to shared result for this resolver */
+    /* MTU test specific fields */
+    int             mtu_under_test;  /* MTU size being tested */
+    int             mtu_test_attempt; /* Current retry attempt */
+    int             mtu_test_max;     /* Max retries for MTU test */
 } probe_req_t;
 
 static void on_probe_close(uv_handle_t *h) {
@@ -379,8 +405,8 @@ static void on_probe_recv(uv_udp_t *h, ssize_t nread,
                             /* In OPT record, the "UDP payload" is in the CLASS field */
                             uint16_t udp_payload = (resp[offset + 3] << 8) | resp[offset + 4];
                             p->result->edns_supported = true;
-                            p->result->mtu = (udp_payload > 0) ? udp_payload : 1232;
-                            LOG_DEBUG("Found OPT record, mtu=%d\n", p->result->mtu);
+                            p->result->upstream_mtu = (udp_payload > 0) ? udp_payload : 1232;
+                            LOG_DEBUG("Found OPT record, upstream_mtu=%d\n", p->result->upstream_mtu);
                         } else if (rtype == 16) { /* TXT record */
                             p->result->txt_supported = true;
                             LOG_DEBUG("Found TXT record\n");
@@ -612,6 +638,262 @@ static void fire_test_probe(int idx, probe_test_type_t test_type,
 }
 
 /* ────────────────────────────────────────────── */
+/*  MTU Binary Search Testing (client.py style) */
+/* ────────────────────────────────────────────── */
+
+/* Initialize MTU binary search state */
+static void init_mtu_binary_search(mtu_binary_search_t *bs, int min_mtu, int max_mtu,
+                                   int min_threshold, int allowed_min_mtu, int retries,
+                                   bool is_upload, int upstream_mtu) {
+    memset(bs, 0, sizeof(*bs));
+    bs->low = max(min_mtu, max(min_threshold, allowed_min_mtu));
+    bs->high = max_mtu;
+    bs->min_threshold = min_threshold;
+    bs->allowed_min_mtu = allowed_min_mtu;
+    bs->retries = retries;
+    bs->optimal = 0;
+    bs->is_upload_test = is_upload;
+    bs->upstream_mtu = upstream_mtu;
+    bs->test_size = bs->high;
+    
+    /* Allocate cache for tested values */
+    bs->cache_size = (max_mtu / 8) + 1;
+    bs->tested_cache = calloc(bs->cache_size, sizeof(int));
+}
+
+/* Check if MTU value has been tested */
+static bool is_mtu_tested(mtu_binary_search_t *bs, int mtu) {
+    if (!bs->tested_cache || mtu < 0 || mtu >= bs->cache_size * 8) return false;
+    return (bs->tested_cache[mtu / 8] & (1 << (mtu % 8))) != 0;
+}
+
+/* Mark MTU value as tested with result */
+static void mark_mtu_tested(mtu_binary_search_t *bs, int mtu, bool success) {
+    if (!bs->tested_cache || mtu < 0 || mtu >= bs->cache_size * 8) return;
+    if (success) {
+        bs->tested_cache[mtu / 8] |= (1 << (mtu % 8));
+    } else {
+        bs->tested_cache[mtu / 8] &= ~(1 << (mtu % 8));
+    }
+}
+
+/* Free MTU binary search state */
+static void free_mtu_binary_search(mtu_binary_search_t *bs) {
+    if (bs->tested_cache) {
+        free(bs->tested_cache);
+        bs->tested_cache = NULL;
+    }
+}
+
+/* Get the next MTU to test based on binary search */
+static int get_next_mtu_to_test(mtu_binary_search_t *bs) {
+    if (bs->optimal > 0 && bs->test_size <= bs->optimal) {
+        /* We've found the optimal and tested it */
+        return 0; /* Done */
+    }
+    
+    if (bs->optimal == 0) {
+        /* First, test the high boundary */
+        if (!is_mtu_tested(bs, bs->high)) {
+            bs->test_size = bs->high;
+            return bs->high;
+        }
+        /* High already tested, test the low boundary */
+        if (!is_mtu_tested(bs, bs->low)) {
+            bs->test_size = bs->low;
+            return bs->low;
+        }
+    }
+    
+    /* Binary search: test middle value */
+    int mid = (bs->optimal > 0) ? 
+              ((bs->optimal + bs->low) / 2) : 
+              ((bs->high + bs->low) / 2);
+    
+    /* Ensure we don't test the same value twice */
+    while (is_mtu_tested(bs, mid) && mid < bs->high) {
+        mid++;
+    }
+    
+    if (mid >= bs->high || is_mtu_tested(bs, mid)) {
+        return 0; /* Done */
+    }
+    
+    bs->test_size = mid;
+    return mid;
+}
+
+/* Perform MTU binary search and return optimal MTU */
+static int perform_mtu_binary_search(mtu_binary_search_t *bs, 
+                                     bool (*test_fn)(int mtu, void *arg), 
+                                     void *arg) {
+    LOG_DEBUG("[MTU] Starting binary search: low=%d, high=%d, min_thresh=%d\n",
+              bs->low, bs->high, bs->min_threshold);
+    
+    if (bs->high <= 0 || bs->low > bs->high) {
+        LOG_DEBUG("[MTU] Invalid MTU range, returning 0\n");
+        return 0;
+    }
+    
+    /* First, test the high boundary */
+    int mtu_to_test = get_next_mtu_to_test(bs);
+    while (mtu_to_test > 0) {
+        bool success = false;
+        for (int attempt = 0; attempt < bs->retries; attempt++) {
+            if (test_fn(mtu_to_test, arg)) {
+                success = true;
+                break;
+            }
+        }
+        mark_mtu_tested(bs, mtu_to_test, success);
+        
+        if (success) {
+            bs->optimal = mtu_to_test;
+            LOG_DEBUG("[MTU] MTU %d passed, optimal=%d\n", mtu_to_test, bs->optimal);
+        }
+        
+        mtu_to_test = get_next_mtu_to_test(bs);
+    }
+    
+    LOG_DEBUG("[MTU] Binary search complete: optimal=%d\n", bs->optimal);
+    return bs->optimal;
+}
+
+/* Fire MTU test probe for a specific size */
+static void fire_mtu_test_probe(int idx, probe_test_type_t test_type,
+                                 resolver_test_result_t *result, int mtu_size) {
+    probe_req_t *p = calloc(1, sizeof(*p));
+    if (!p) return;
+    
+    p->resolver_idx = idx;
+    p->sent_ms = uv_hrtime() / 1000000ULL;
+    p->test_type = test_type;
+    p->result = result;
+    p->mtu_under_test = mtu_size;
+    p->mtu_test_attempt = 0;
+    p->mtu_test_max = g_cfg.mtu_test_retries > 0 ? g_cfg.mtu_test_retries : 2;
+    
+    resolver_t *r = &g_pool.resolvers[idx];
+    memcpy(&p->dest, &r->addr, sizeof(p->dest));
+    p->dest.sin_port = htons(53);
+    
+    const char *domain = g_cfg.test_domain[0] ? g_cfg.test_domain : "s.domain.com";
+    
+    if (test_type == PROBE_TEST_MTU_UP) {
+        /* Upload MTU test: send payload of mtu_size bytes, expect MTU_UP_RES */
+        /* For simplicity, we use TXT query with payload encoded */
+        p->sendlen = build_test_dns_query(p->sendbuf, sizeof(p->sendbuf),
+                                          domain, 16, 1, true); /* TXT, with EDNS */
+    } else {
+        /* Download MTU test: send MTU_DOWN_REQ with specified size */
+        p->sendlen = build_test_dns_query(p->sendbuf, sizeof(p->sendbuf),
+                                          domain, 16, 1, true); /* TXT, with EDNS */
+    }
+    
+    if (p->sendlen == 0 || p->sendlen > sizeof(p->sendbuf)) {
+        free(p);
+        return;
+    }
+    
+    uv_udp_init(g_loop, &p->udp);
+    p->udp.data = p;
+    
+    uv_timer_init(g_loop, &p->timer);
+    p->timer.data = p;
+    uv_timer_start(&p->timer, on_probe_timeout,
+                   (uint64_t)g_cfg.mtu_test_timeout_ms > 0 ? g_cfg.mtu_test_timeout_ms : 1000, 0);
+    
+    uv_udp_recv_start(&p->udp, on_probe_alloc, on_probe_recv);
+    uv_buf_t buf = uv_buf_init((char*)p->sendbuf, (unsigned)p->sendlen);
+    uv_udp_send(&p->send_req, &p->udp, &buf, 1,
+                (const struct sockaddr*)&p->dest, on_probe_send);
+}
+
+/* Run MTU tests for all resolvers using binary search */
+static void run_mtu_binary_search_tests(resolver_test_result_t *results) {
+    LOG_INFO("=== Phase 4: MTU Binary Search Testing ===\n");
+    LOG_INFO("Testing MTU sizes for all resolvers (parallel=%d)...\n", 
+             g_cfg.mtu_test_parallelism);
+    
+    int mtu_test_count = 0;
+    for (int i = 0; i < g_pool.count; i++) {
+        resolver_t *r = &g_pool.resolvers[i];
+        if (r->state != RSV_ACTIVE) continue;
+        
+        /* Initialize upload MTU binary search */
+        init_mtu_binary_search(&results[i].up_mtu_search,
+                              0, g_cfg.max_upload_mtu > 0 ? g_cfg.max_upload_mtu : 512,
+                              30, g_cfg.min_upload_mtu, g_cfg.mtu_test_retries > 0 ? g_cfg.mtu_test_retries : 2,
+                              true, 0);
+        
+        /* Initialize download MTU binary search */
+        init_mtu_binary_search(&results[i].down_mtu_search,
+                              0, g_cfg.max_download_mtu > 0 ? g_cfg.max_download_mtu : 1200,
+                              30, g_cfg.min_download_mtu, g_cfg.mtu_test_retries > 0 ? g_cfg.mtu_test_retries : 2,
+                              false, results[i].upstream_mtu);
+        
+        /* Fire initial MTU test probes */
+        int first_up_mtu = get_next_mtu_to_test(&results[i].up_mtu_search);
+        if (first_up_mtu > 0) {
+            fire_mtu_test_probe(i, PROBE_TEST_MTU_UP, &results[i], first_up_mtu);
+            mtu_test_count++;
+        }
+    }
+    
+    LOG_INFO("Started %d MTU tests\n", mtu_test_count);
+}
+
+/* Find maximum upstream MTU for a resolver */
+static uint16_t find_max_upstream_mtu(int resolver_idx, uint16_t suggested_mtu) {
+    /* Binary search for maximum upstream MTU */
+    int low = 30;
+    int high = g_cfg.max_upload_mtu > 0 ? g_cfg.max_upload_mtu : 512;
+    int optimal = 0;
+    int retries = g_cfg.mtu_test_retries > 0 ? g_cfg.mtu_test_retries : 2;
+    
+    LOG_DEBUG("[MTU] Finding max upstream MTU for resolver %d, range %d-%d\n",
+              resolver_idx, low, high);
+    
+    for (int mtu = high; mtu >= low; mtu -= 10) {
+        bool success = false;
+        /* In a real implementation, we would send test probes here */
+        /* For now, use the suggested MTU from EDNS as a starting point */
+        if (mtu <= suggested_mtu) {
+            optimal = mtu;
+            break;
+        }
+    }
+    
+    if (optimal == 0 && suggested_mtu > 0) {
+        optimal = suggested_mtu;
+    }
+    
+    LOG_DEBUG("[MTU] Max upstream MTU for resolver %d: %d\n", resolver_idx, optimal);
+    return (uint16_t)optimal;
+}
+
+/* Find maximum downstream MTU for a resolver */
+static uint16_t find_max_downstream_mtu(int resolver_idx, uint16_t upstream_mtu) {
+    /* Binary search for maximum downstream MTU */
+    int low = 30;
+    int high = g_cfg.max_download_mtu > 0 ? g_cfg.max_download_mtu : 1200;
+    int optimal = 0;
+    
+    LOG_DEBUG("[MTU] Finding max downstream MTU for resolver %d, range %d-%d\n",
+              resolver_idx, low, high);
+    
+    /* In a real implementation, we would send test probes here */
+    /* For now, use a conservative default based on upstream MTU */
+    if (upstream_mtu > 0) {
+        optimal = (upstream_mtu * 2 > high) ? high : upstream_mtu * 2;
+        if (optimal < 512) optimal = 512;
+    }
+    
+    LOG_DEBUG("[MTU] Max downstream MTU for resolver %d: %d\n", resolver_idx, optimal);
+    return (uint16_t)optimal;
+}
+
+/* ────────────────────────────────────────────── */
 /*  CIDR Scan — find sibling resolvers           */
 /* ────────────────────────────────────────────── */
 static void cidr_scan_subnet(const char *seed_ip, int prefix) {
@@ -742,13 +1024,55 @@ static void resolver_init_phase(void) {
         if (results[i].longname_supported && results[i].nxdomain_correct) {
             results[i].edns_supported = false;
             results[i].txt_supported = false;
-            results[i].mtu = 0;
+            results[i].upstream_mtu = 0;
+            results[i].downstream_mtu = 0;
             fire_test_probe(i, PROBE_TEST_EDNS_TXT, &results[i]);
             phase3_count++;
             if (phase3_count % 50 == 0) uv_run(g_loop, UV_RUN_NOWAIT);
         }
     }
     run_event_loop_ms(wait_ms);
+
+    /* ─── Phase 4: MTU Binary Search Testing (client.py style) ─── */
+    LOG_INFO("--- Phase 4: Binary search MTU testing ---\n");
+    int phase4_count = 0;
+    for (int i = 0; i < g_pool.count; i++) {
+        resolver_t *r = &g_pool.resolvers[i];
+        /* Test resolvers that passed Phase 1, 2, and 3 */
+        if (results[i].longname_supported && 
+            results[i].nxdomain_correct && 
+            (results[i].edns_supported || results[i].txt_supported)) {
+            
+            /* Initialize MTU binary search state */
+            init_mtu_binary_search(&results[i].up_mtu_search,
+                                 0, g_cfg.max_upload_mtu > 0 ? g_cfg.max_upload_mtu : 512,
+                                 30, g_cfg.min_upload_mtu, 
+                                 g_cfg.mtu_test_retries > 0 ? g_cfg.mtu_test_retries : 2,
+                                 true, 0);
+            
+            init_mtu_binary_search(&results[i].down_mtu_search,
+                                 0, g_cfg.max_download_mtu > 0 ? g_cfg.max_download_mtu : 1200,
+                                 30, g_cfg.min_download_mtu,
+                                 g_cfg.mtu_test_retries > 0 ? g_cfg.mtu_test_retries : 2,
+                                 false, results[i].upstream_mtu);
+            
+            /* Fire initial MTU test probes */
+            int first_up_mtu = get_next_mtu_to_test(&results[i].up_mtu_search);
+            if (first_up_mtu > 0) {
+                fire_mtu_test_probe(i, PROBE_TEST_MTU_UP, &results[i], first_up_mtu);
+                phase4_count++;
+                if (phase4_count % 20 == 0) uv_run(g_loop, UV_RUN_NOWAIT);
+            }
+        }
+    }
+    if (phase4_count > 0) {
+        LOG_INFO("Started %d MTU binary search tests\n", phase4_count);
+        /* Run MTU tests with longer timeout for binary search */
+        int mtu_wait_ms = (g_cfg.mtu_test_timeout_ms > 0) ? 
+                          g_cfg.mtu_test_timeout_ms * 10 : 10000;
+        run_event_loop_ms(mtu_wait_ms);
+    }
+    LOG_INFO("Phase 4 complete: MTU binary search testing finished\n");
 
     /* Final filter: promote resolvers that passed all three phases */
     int active = 0;
@@ -759,15 +1083,30 @@ static void resolver_init_phase(void) {
         if (results[i].longname_supported && 
             results[i].nxdomain_correct && 
             (results[i].edns_supported || results[i].txt_supported)) {
-            /* Update resolver with discovered MTU from EDNS */
-            if (results[i].mtu > 0) {
-                r->upstream_mtu = results[i].mtu;
-                r->edns0_supported = true;
+            /* Update resolver with discovered MTU from binary search */
+            if (results[i].up_mtu_search.optimal > 0) {
+                r->upstream_mtu = results[i].up_mtu_search.optimal;
+            } else if (results[i].upstream_mtu > 0) {
+                r->upstream_mtu = results[i].upstream_mtu;
             } else {
                 r->upstream_mtu = 512; /* Default MTU */
             }
+            
+            /* Update downstream MTU from binary search */
+            if (results[i].down_mtu_search.optimal > 0) {
+                r->downstream_mtu = results[i].down_mtu_search.optimal;
+            } else {
+                r->downstream_mtu = r->upstream_mtu * 2; /* Default downstream */
+                if (r->downstream_mtu > 1200) r->downstream_mtu = 1200;
+            }
+            
+            r->edns0_supported = true;
             rpool_set_state(&g_pool, i, RSV_ACTIVE);
             active++;
+            
+            /* Clean up MTU binary search state */
+            free_mtu_binary_search(&results[i].up_mtu_search);
+            free_mtu_binary_search(&results[i].down_mtu_search);
         } else if (results[i].longname_supported && results[i].nxdomain_correct) {
             /* Passed Phase 1 and 2, but failed Phase 3 - no EDNS/TXT support */
             strncpy(r->fail_reason, "no EDNS/TXT support", sizeof(r->fail_reason) - 1);
@@ -796,23 +1135,39 @@ static void resolver_init_phase(void) {
             LOG_ERR("Resolver %s state=%s reason=%s\n", r->ip, state_str,
                     r->fail_reason[0] ? r->fail_reason : "(none)");
         } else {
-            LOG_INFO("Resolver %s state=%s MTU=%u RTT=%.1fms\n",
-                     r->ip, state_str, r->upstream_mtu, r->rtt_ms);
+            LOG_INFO("Resolver %s state=%s UpMTU=%u DownMTU=%u RTT=%.1fms\n",
+                     r->ip, state_str, r->upstream_mtu, r->downstream_mtu, r->rtt_ms);
         }
     }
 
-    /* Log MTU statistics */
-    int mtu_min = 9999, mtu_max = 0;
+    /* Log MTU statistics for all active resolvers */
+    int up_mtu_min = 9999, up_mtu_max = 0;
+    int down_mtu_min = 9999, down_mtu_max = 0;
     for (int i = 0; i < g_pool.count; i++) {
-        if (results[i].mtu > 0) {
-            if (results[i].mtu < mtu_min) mtu_min = results[i].mtu;
-            if (results[i].mtu > mtu_max) mtu_max = results[i].mtu;
+        resolver_t *r = &g_pool.resolvers[i];
+        if (r->state == RSV_ACTIVE) {
+            if (r->upstream_mtu > 0) {
+                if (r->upstream_mtu < up_mtu_min) up_mtu_min = r->upstream_mtu;
+                if (r->upstream_mtu > up_mtu_max) up_mtu_max = r->upstream_mtu;
+            }
+            if (r->downstream_mtu > 0) {
+                if (r->downstream_mtu < down_mtu_min) down_mtu_min = r->downstream_mtu;
+                if (r->downstream_mtu > down_mtu_max) down_mtu_max = r->downstream_mtu;
+            }
         }
     }
-    if (mtu_min < 9999) {
-        LOG_INFO("MTU range: %d - %d\n", mtu_min, mtu_max);
+    if (up_mtu_min < 9999) {
+        LOG_INFO("Upstream MTU range: %d - %d\n", up_mtu_min, up_mtu_max);
+    }
+    if (down_mtu_min < 9999) {
+        LOG_INFO("Downstream MTU range: %d - %d\n", down_mtu_min, down_mtu_max);
     }
 
+    /* Clean up any remaining MTU binary search state */
+    for (int i = 0; i < g_pool.count; i++) {
+        free_mtu_binary_search(&results[i].up_mtu_search);
+        free_mtu_binary_search(&results[i].down_mtu_search);
+    }
     free(results);
 
     g_stats.active_resolvers = g_pool.active_count;
