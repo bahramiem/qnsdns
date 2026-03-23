@@ -1534,14 +1534,15 @@ static void socks5_handle_data(socks5_client_t *c,
         c->session_idx = session_idx;
         c->state = 2;
         sess->client_ptr = c;  /* Link session back to SOCKS5 client */
+        sess->socks5_connected = false;  /* Don't ack until server confirms */
         g_stats.active_sessions++;
 
-        LOG_INFO("SOCKS5 CONNECT %s:%d (session %d)\n",
+        LOG_INFO("SOCKS5 CONNECT %s:%d (session %d) - waiting for server ack\n",
                  sess->target_host, sess->target_port, session_idx);
 
-        /* Send success */
-        uint8_t ok[10] = {0x05,0x00,0x00,0x01,127,0,0,1,0x04,0x38};
-        socks5_send(c, ok, 10);
+        /* Don't send success yet - wait for server acknowledgment.
+         * The CONNECT request will be sent via DNS queries and the SOCKS5
+         * success will be sent when we receive the first upstream response. */
         return;
     }
 
@@ -1753,7 +1754,18 @@ static void on_dns_recv(uv_udp_t *h,
                                 
                                 /* Flush received data to SOCKS5 client */
                                 if (s->client_ptr) {
-                                    socks5_flush_recv_buf((socks5_client_t*)s->client_ptr);
+                                    socks5_client_t *c = (socks5_client_t*)s->client_ptr;
+                                    
+                                    /* Send SOCKS5 success before flushing data if not yet sent.
+                                     * This indicates the server has acknowledged our CONNECT. */
+                                    if (!s->socks5_connected) {
+                                        uint8_t ok[10] = {0x05,0x00,0x00,0x01,127,0,0,1,0x04,0x38};
+                                        socks5_send(c, ok, 10);
+                                        s->socks5_connected = true;
+                                        LOG_INFO("Session %d: sent SOCKS5 success (server ack received)\n", sidx);
+                                    }
+                                    
+                                    socks5_flush_recv_buf(c);
                                 }
                             }
                         }

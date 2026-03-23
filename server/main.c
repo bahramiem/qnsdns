@@ -461,20 +461,10 @@ static void on_server_recv(uv_udp_t *h,
         if (strcasecmp(parts[i], "tun") == 0) { tun_idx = i; break; }
     }
 
-    /* Handle POLL queries: tun.t2.bahra.pl (no seq/payload/sid)
-     * These are keepalive probes from the client */
-    if (tun_idx == 0 && part_count >= 2) {
-        LOG_DEBUG("POLL query from %s: %s\n", src_ip, qname);
-        /* Send empty TXT response */
-        uint8_t reply_buf[512];
-        size_t reply_len = sizeof(reply_buf);
-        if (build_txt_reply(reply_buf, &reply_len, query_id, qname, NULL, 0, 512) == 0) {
-            send_udp_reply(src, reply_buf, reply_len);
-        }
-        return;
-    }
-
-    if (tun_idx < 3) { /* Need at least seq, payload_1, sid */
+    /* New consolidated format: <b32_payload>.<sid_hex>.tun.<domain>
+     * The b32 payload is a single label containing all base32-encoded data.
+     * Collect all labels before .tun. marker, starting from index 0. */
+    if (tun_idx < 2) { /* Need at least b32_payload and sid */
         /* This is likely a resolver test probe (MTU test, NXDOMAIN test, etc.)
          * from the client. These don't have the .tun. marker. Silently ignore. */
         LOG_DEBUG("Ignoring non-tunnel probe from %s: %s (tun_idx=%d, part_count=%d)\n",
@@ -487,9 +477,10 @@ static void on_server_recv(uv_udp_t *h,
     int sid_idx = tun_idx - 1;
     const char *sid_hex = parts[sid_idx];
 
-    /* Reassemble b32 payload from parts[1] to parts[sid_idx-1] */
+    /* Reassemble b32 payload from parts[0] to parts[sid_idx-1]
+     * (all labels before the session ID and .tun. marker) */
     char b32_payload[512] = {0};
-    for (int i = 1; i < sid_idx; i++) {
+    for (int i = 0; i < sid_idx; i++) {
         strncat(b32_payload, parts[i], sizeof(b32_payload) - strlen(b32_payload) - 1);
     }
     /* Decode b32 payload → raw bytes (chunk_header + data) */

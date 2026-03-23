@@ -350,6 +350,9 @@ typedef struct session {
     time_t    last_active;
     bool      closed;
     
+    /* Client-specific: SOCKS5 handshake state */
+    bool      socks5_connected;  /* true once SOCKS5 success sent */
+    
     /* Client-specific: back-pointer to SOCKS5 client (client only) */
     void      *client_ptr;
 } session_t;
