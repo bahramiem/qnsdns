@@ -565,36 +565,23 @@ static void on_server_recv(uv_udp_t *h,
 
     srv_session_t *sess = &g_sessions[sidx];
     sess->last_active       = time(NULL);
-    /* Update client_addr in case port changed (though find logic uses it too) */
     sess->client_addr       = *src;
     
-    /* MTU values from server config (no longer in header) */
     sess->cl_downstream_mtu = DNSTUN_MAX_DOWNSTREAM_MTU;
-    sess->cl_enc_format     = 0; /* Will be determined by client request */
-    sess->cl_loss_pct       = 0;  /* No longer in header - could add later if needed */
+    sess->cl_enc_format     = 0;
+    sess->cl_loss_pct       = 0;
     sess->cl_fec_k          = fec_k;
-
-    /* Adaptive FEC based on loss rate if reported */
-    if (sess->cl_loss_pct > 0) {
-        double loss = sess->cl_loss_pct / 100.0;
-        fec_k = (uint8_t)ceil(1.0 * loss / (1.0 - loss));
-        if (fec_k > 64) fec_k = 64;
-    }
-    sess->cl_fec_k = fec_k;
 
     /* ── Handle FEC Burst Reassembly ──────────────────────────────────── */
     if (chunk_total > 0) {
-        /* DoS Mitigation: Cap chunk_total and payload_len to sane limits */
         if (chunk_total > 32 || payload_len > 2048) {
             LOG_ERR("DoS: oversized FEC burst (total=%u, len=%zu)\n", chunk_total, payload_len);
             return;
         }
 
-        /* New burst or continuation? */
         if (sess->burst_count_needed == 0 || seq < sess->burst_seq_start) {
-            /* Cleanup old */
             if (sess->burst_symbols) {
-                for (int i = 0; i < sess->burst_count_needed; i++) {
+                for (int i = 0; i < (int)sess->burst_count_needed; i++) {
                     if (sess->burst_symbols[i]) free(sess->burst_symbols[i]);
                 }
                 free(sess->burst_symbols);
@@ -607,7 +594,7 @@ static void on_server_recv(uv_udp_t *h,
         }
 
         int offset = seq - sess->burst_seq_start;
-        if (offset >= 0 && offset < sess->burst_count_needed && !sess->burst_symbols[offset]) {
+        if (offset >= 0 && offset < (int)sess->burst_count_needed && !sess->burst_symbols[offset]) {
             if (payload_len != sess->burst_symbol_len) {
                 LOG_ERR("FEC: symbol size mismatch (%zu vs %zu)\n", payload_len, sess->burst_symbol_len);
                 return;
@@ -619,10 +606,6 @@ static void on_server_recv(uv_udp_t *h,
             }
         }
 
-        /* Enough symbols to decode? (Simplified: wait for K symbols or more) */
-        /* For RaptorQ, we need K symbols. chunk_total is K+R. */
-        /* Let's assume K = chunk_total - fec_k. But chunk_total is actually the total sent. */
-        /* In our client, total = k + r. */
         int k_est = sess->burst_count_needed - (int)sess->cl_fec_k;
         if (k_est < 1) k_est = 1;
 
@@ -632,75 +615,82 @@ static void on_server_recv(uv_udp_t *h,
             fec.symbol_len   = sess->burst_symbol_len;
             fec.total_count  = sess->burst_count_needed;
 
-            /* Rough estimation of original len based on symbol count */
             size_t orig_len_est = (size_t)k_est * DNSTUN_CHUNK_PAYLOAD;
-
             codec_result_t fdec = codec_fec_decode(&fec, orig_len_est);
             if (!fdec.error) {
                 const uint8_t *dec_in = fdec.data;
                 size_t         dec_len = fdec.len;
                 codec_result_t dret = {0};
+                codec_result_t zdec = {0};
 
-                /* 1. DECRYPT (Optional) */
-                if (hdr.flags & 0x01) {
+                if (hdr.flags & CHUNK_FLAG_ENCRYPTED) {
                     dret = codec_decrypt(fdec.data, fdec.len, g_cfg.psk);
                     if (!dret.error) {
                         dec_in = dret.data;
                         dec_len = dret.len;
                     } else {
                         LOG_ERR("Decryption failed\n");
-                        goto next_burst;
+                        goto cleanup_burst_results;
                     }
                 }
 
-                /* 2. DECOMPRESS (0 = auto-detect size via decompress_bound) */
-                codec_result_t zdec = codec_decompress(dec_in, dec_len, 0);
+                zdec = codec_decompress(dec_in, dec_len, 0);
                 if (!zdec.error) {
-                    /* SUCCESS: Forward reassembled, decrypted, decompressed packet */
                     if (!sess->tcp_connected) {
-                        /* Fix #11: SOCKS5 CONNECT is parsed ONLY from the fully
-                           decompressed + decrypted data.  The duplicate raw-payload
-                           parse path below is removed to avoid inconsistency. */
                         const uint8_t *p = zdec.data;
                         size_t l = zdec.len;
                         if (l >= 10 && p[0] == 0x05 && p[1] == 0x01) {
                             char target_host[256] = {0};
                             uint16_t target_port = 0;
                             uint8_t atype = p[3];
-                            
-                            if (atype == 0x01) { /* IPv4 */
+                            if (atype == 0x01) {
                                 snprintf(target_host, sizeof(target_host), "%d.%d.%d.%d", p[4], p[5], p[6], p[7]);
                                 target_port = (uint16_t)((p[8]<<8)|p[9]);
-                            } else if (atype == 0x03) { /* Domain */
+                            } else if (atype == 0x03) {
                                 uint8_t dlen = p[4];
-                                /* Fix #5: bounds check before reading domain bytes */
                                 if ((size_t)(5 + dlen + 2) <= l && dlen < 255) {
                                     memcpy(target_host, p + 5, dlen);
                                     target_host[dlen] = '\0';
                                     target_port = (uint16_t)((p[5+dlen]<<8)|p[6+dlen]);
                                 }
                             }
-                            
                             if (target_host[0] && target_port > 0) {
                                 struct sockaddr_in up_addr;
                                 uv_ip4_addr(target_host, target_port, &up_addr);
                                 connect_req_t *cr = calloc(1, sizeof(*cr));
                                 cr->session_idx = sidx;
-                                size_t hdr_sz = (atype == 0x01) ? 10 : (6 + p[4]);
+                                size_t hdr_sz = (atype == 0x01) ? 10 : (5 + p[4] + 2);
                                 if (l > hdr_sz) {
                                     cr->payload_len = l - hdr_sz;
                                     cr->payload = malloc(cr->payload_len);
                                     memcpy(cr->payload, p + hdr_sz, cr->payload_len);
                                 }
-                                LOG_INFO("Connecting upstream for session %d to %s:%d\n",
-                                         sidx, target_host, target_port);
+                                LOG_INFO("Connecting upstream for session %d to %s:%d\n", sidx, target_host, target_port);
                                 uv_tcp_init(g_loop, &sess->upstream_tcp);
-                                /* Enable TCP_NODELAY to minimize latency for interactive traffic */
                                 uv_tcp_nodelay(&sess->upstream_tcp, 1);
                                 uv_tcp_connect(&cr->connect, &sess->upstream_tcp, (const struct sockaddr*)&up_addr, on_upstream_connect);
                             }
                         }
                     } else {
+                        upstream_write_and_read(sidx, zdec.data, zdec.len);
+                    }
+                    codec_free_result(&zdec);
+                }
+            cleanup_burst_results:
+                if (dret.data) codec_free_result(&dret);
+                codec_free_result(&fdec);
+            }
+
+        next_burst:
+            /* Reset burst */
+            for (int i = 0; i < (int)sess->burst_count_needed; i++) {
+                if (sess->burst_symbols[i]) free(sess->burst_symbols[i]);
+            }
+            free(sess->burst_symbols);
+            sess->burst_symbols = NULL;
+            sess->burst_count_needed = 0;
+            sess->burst_received = 0;
+        }
                         upstream_write_and_read(sidx, zdec.data, zdec.len);
                     }
                     codec_free_result(&zdec);
