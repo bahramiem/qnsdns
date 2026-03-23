@@ -53,6 +53,10 @@ typedef struct dnstun_config {
     int      max_symbols_per_packet; /* Max symbols to aggregate (default: 16) */
     bool     auto_aggregate;        /* Auto-calculate optimal packing (default: true) */
 
+    /* [encoding] - Downstream encoding for server → client */
+    int      downstream_encoding;    /* 0=base64 (default), 1=hex */
+    size_t   downstream_buffer_size; /* Buffer size for downstream (default: 8192, max: 65536) */
+
     /* [domains] */
     char     domains[DNSTUN_MAX_DOMAINS][256];
     int      domain_count;

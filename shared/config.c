@@ -62,6 +62,10 @@ void config_defaults(dnstun_config_t *cfg, bool is_server) {
     cfg->max_symbols_per_packet = 16;      /* Max symbols to aggregate */
     cfg->auto_aggregate       = true;      /* Auto-calculate optimal packing */
 
+    /* encoding - Downstream encoding for server → client */
+    cfg->downstream_encoding   = DNSTUN_ENC_BASE64;  /* Default: base64 */
+    cfg->downstream_buffer_size = 8192;               /* Default: 8KB, max: 64KB */
+
     /* domains */
     cfg->dns_flux             = false;
     cfg->flux_period_sec      = 21600; /* 6 hours */

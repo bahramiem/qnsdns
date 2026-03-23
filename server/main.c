@@ -59,6 +59,9 @@ typedef struct srv_session {
     uint8_t   id[DNSTUN_SESSION_ID_LEN];
     bool      used;
 
+    /* 4-bit session ID (0-15, embedded in chunk header flags) */
+    uint8_t   session_id;
+
     /* upstream TCP */
     uv_tcp_t  upstream_tcp;
     bool      tcp_connected;
@@ -153,21 +156,23 @@ static void swarm_load(void) {
 /* ────────────────────────────────────────────── */
 /*  Session lookup / alloc                        */
 /* ────────────────────────────────────────────── */
-static int session_find(const uint8_t *id) {
+
+/* Find session by 4-bit session ID */
+static int session_find_by_id(uint8_t id) {
     for (int i = 0; i < SRV_MAX_SESSIONS; i++)
-        if (g_sessions[i].used &&
-            memcmp(g_sessions[i].id, id, DNSTUN_SESSION_ID_LEN) == 0)
+        if (g_sessions[i].used && g_sessions[i].session_id == id)
             return i;
     return -1;
 }
 
-static int session_alloc(const uint8_t *id) {
+/* Allocate new session with 4-bit session ID */
+static int session_alloc_by_id(uint8_t id) {
     for (int i = 0; i < SRV_MAX_SESSIONS; i++) {
         if (!g_sessions[i].used) {
             memset(&g_sessions[i], 0, sizeof(g_sessions[i]));
-            memcpy(g_sessions[i].id, id, DNSTUN_SESSION_ID_LEN);
-            g_sessions[i].used        = true;
-            g_sessions[i].last_active = time(NULL);
+            g_sessions[i].session_id   = id;
+            g_sessions[i].used         = true;
+            g_sessions[i].last_active  = time(NULL);
             g_stats.active_sessions++;
             return i;
         }
@@ -496,70 +501,76 @@ static void on_server_recv(uv_udp_t *h,
         return;
     }
 
-    /* Fix #22: copy raw bytes into a local struct to avoid unaligned pointer
-       cast (undefined behaviour on strictly-aligned architectures like ARM). */
+    /* Parse new compact 4-byte header */
     chunk_header_t hdr;
     memcpy(&hdr, raw, sizeof(hdr));
     const uint8_t  *payload = raw + sizeof(chunk_header_t);
     size_t          payload_len = (size_t)(rawlen - (ssize_t)sizeof(chunk_header_t));
 
-    bool is_poll = (hdr.flags & 0x08) != 0;
-    bool is_sync = false;
+    /* Extract fields from new compact header */
+    bool is_poll = (hdr.flags & CHUNK_FLAG_POLL) != 0;
+    bool is_encrypted = (hdr.flags & CHUNK_FLAG_ENCRYPTED) != 0;
+    uint8_t session_id = chunk_get_session_id(hdr.flags);
+    uint16_t seq = hdr.seq;
+    
+    /* chunk_info: high nibble = chunk_total-1, low nibble = fec_k */
+    uint8_t chunk_total = chunk_get_total(hdr.chunk_info);
+    uint8_t fec_k = chunk_get_fec_k(hdr.chunk_info);
 
+    bool is_sync = false;
     /* SYNC command: payload starts with "SYNC" (ASCII) */
     if (payload_len >= 4 && memcmp(payload, "SYNC", 4) == 0) is_sync = true;
 
-    /* Session lookup / allocate */
-    int sidx = session_find(hdr.session_id);
+    /* Session lookup / allocate by 4-bit session ID */
+    int sidx = session_find_by_id(session_id);
     if (sidx < 0) {
-        sidx = session_alloc(hdr.session_id);
+        sidx = session_alloc_by_id(session_id);
         if (sidx < 0) {
             LOG_ERR("Session table full\n");
             return;
         }
-        LOG_INFO("New session created: idx=%d, is_poll=%d, is_sync=%d, payload_len=%zu\n",
-                 sidx, is_poll, is_sync, payload_len);
+        LOG_INFO("New session created: idx=%d, sid=%u, is_poll=%d, is_sync=%d, payload_len=%zu\n",
+                 sidx, session_id, is_poll, is_sync, payload_len);
     } else {
-        LOG_DEBUG("Existing session: idx=%d, seq=%u, total=%u, payload_len=%zu\n",
-                  sidx, hdr.seq, hdr.chunk_total, payload_len);
+        LOG_DEBUG("Existing session: idx=%d, sid=%u, seq=%u, total=%u, payload_len=%zu\n",
+                  sidx, session_id, seq, chunk_total, payload_len);
     }
 
     srv_session_t *sess = &g_sessions[sidx];
     sess->last_active       = time(NULL);
     sess->client_addr       = *src;
-    sess->cl_downstream_mtu = hdr.downstream_mtu ? hdr.downstream_mtu : 512;
-    sess->cl_enc_format     = hdr.enc_format;
-    sess->cl_loss_pct       = hdr.loss_pct;
-    sess->cl_fec_k          = hdr.fec_k;
-    strncpy(sess->user_id, hdr.user_id, sizeof(sess->user_id)-1);
-    sess->user_id[sizeof(sess->user_id)-1] = '\0';
+    
+    /* MTU values from server config (no longer in header) */
+    sess->cl_downstream_mtu = DNSTUN_MAX_DOWNSTREAM_MTU;
+    sess->cl_enc_format     = 0; /* Will be determined by client request */
+    sess->cl_loss_pct       = 0;  /* No longer in header - could add later if needed */
+    sess->cl_fec_k          = fec_k;
 
-    /* Adaptive FEC: use the client's reported loss to add redundancy */
-    uint8_t fec_k = 0;
-    if (hdr.loss_pct > 0) {
-        double loss = hdr.loss_pct / 100.0;
+    /* Adaptive FEC based on loss rate if reported */
+    if (sess->cl_loss_pct > 0) {
+        double loss = sess->cl_loss_pct / 100.0;
         fec_k = (uint8_t)ceil(1.0 * loss / (1.0 - loss));
         if (fec_k > 64) fec_k = 64;
     }
     sess->cl_fec_k = fec_k;
 
     /* ── Handle FEC Burst Reassembly ──────────────────────────────────── */
-    if (hdr.chunk_total > 0) {
+    if (chunk_total > 0) {
         /* New burst or continuation? */
-        if (sess->burst_count_needed == 0 || hdr.seq < sess->burst_seq_start) {
+        if (sess->burst_count_needed == 0 || seq < sess->burst_seq_start) {
             /* Cleanup old */
             if (sess->burst_symbols) {
                 for (int i = 0; i < sess->burst_count_needed; i++) free(sess->burst_symbols[i]);
                 free(sess->burst_symbols);
             }
-            sess->burst_seq_start     = hdr.seq;
-            sess->burst_count_needed  = hdr.chunk_total;
+            sess->burst_seq_start     = seq;
+            sess->burst_count_needed  = chunk_total;
             sess->burst_received      = 0;
-            sess->burst_symbols       = calloc(hdr.chunk_total, sizeof(uint8_t*));
+            sess->burst_symbols       = calloc(chunk_total, sizeof(uint8_t*));
             sess->burst_symbol_len    = payload_len;
         }
 
-        int offset = hdr.seq - sess->burst_seq_start;
+        int offset = seq - sess->burst_seq_start;
         if (offset >= 0 && offset < sess->burst_count_needed && !sess->burst_symbols[offset]) {
             sess->burst_symbols[offset] = malloc(payload_len);
             memcpy(sess->burst_symbols[offset], payload, payload_len);
@@ -600,8 +611,8 @@ static void on_server_recv(uv_udp_t *h,
                     }
                 }
 
-                /* 2. DECOMPRESS */
-                codec_result_t zdec = codec_decompress(dec_in, dec_len, hdr.original_size);
+                /* 2. DECOMPRESS (0 = auto-detect size via decompress_bound) */
+                codec_result_t zdec = codec_decompress(dec_in, dec_len, 0);
                 if (!zdec.error) {
                     /* SUCCESS: Forward reassembled, decrypted, decompressed packet */
                     if (!sess->tcp_connected) {

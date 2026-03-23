@@ -28,6 +28,14 @@ codec_result_t codec_compress(const uint8_t *in, size_t inlen, int level) {
 
 codec_result_t codec_decompress(const uint8_t *in, size_t inlen, size_t original_size) {
     codec_result_t res = {0};
+    
+    /* If original_size is 0, use decompress bound for allocation */
+    if (original_size == 0) {
+        unsigned long long bound = ZSTD_decompressBound(in, inlen);
+        if (bound > 1024*1024) bound = 1024*1024; /* Cap at 1MB */
+        original_size = (size_t)bound;
+    }
+    
     res.data = malloc(original_size);
     if (!res.data) { res.error = true; return res; }
 
@@ -38,6 +46,11 @@ codec_result_t codec_decompress(const uint8_t *in, size_t inlen, size_t original
         res.error = true;
     } else {
         res.len = dsize;
+        /* Shrink buffer to actual size */
+        if (dsize < original_size) {
+            void *tmp = realloc(res.data, dsize);
+            if (tmp) res.data = tmp;
+        }
     }
     return res;
 }

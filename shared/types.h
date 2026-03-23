@@ -19,20 +19,30 @@
    Constants
 ────────────────────────────────────────────── */
 #define DNSTUN_MAX_RESOLVERS     4096
-#define DNSTUN_MAX_SESSIONS      1024
+#define DNSTUN_MAX_SESSIONS      16     /* 4-bit session ID: 0-15 */
 #define DNSTUN_MAX_DOMAINS       32
 #define DNSTUN_MAX_LABEL_LEN     63
 #define DNSTUN_MAX_QNAME_LEN     253
+
+/* Buffer sizes for large downstream MTU (up to 4096 bytes) */
+#define DNSTUN_MAX_DOWNSTREAM_MTU   4096
+#define DNSTUN_SERVER_BUFFER_SIZE   65536  /* 64KB */
+#define DNSTUN_CLIENT_BUFFER_SIZE   65536  /* 64KB */
+
 /* max payload bytes per DNS query
- * DNS QNAME limit is 253 bytes. After accounting for:
- * - chunk_header_t (32 bytes)
- * - base32 encoding overhead (32 * 8/5 = 52 bytes)
- * - QNAME prefix (seq.sid.tun.domain. ~35 bytes)
- * - base32 dotify overhead (~b32_len/57)
- * Safe max payload ≈ 93 bytes for typical domains */
-#define DNSTUN_CHUNK_PAYLOAD     93    /* max base32 payload bytes per DNS query */
+ * With new 4-byte header and base32 encoding:
+ * - chunk_header_t (4 bytes)
+ * - base32 encoding overhead (4 * 8/5 = 7 bytes)
+ * - QNAME prefix (~22 bytes)
+ * - base32 dotify overhead
+ * Safe max payload ≈ 137 bytes */
+#define DNSTUN_CHUNK_PAYLOAD     137    /* max base32 payload bytes per DNS query */
 #define DNSTUN_SESSION_ID_LEN    4
 #define DNSTUN_VERSION           1
+
+/* Downstream encoding types (for server → client) */
+#define DNSTUN_ENC_BASE64       0      /* Default */
+#define DNSTUN_ENC_HEX          1
 
 /* ──────────────────────────────────────────────
    Resolver Health States
@@ -115,25 +125,92 @@ typedef struct resolver {
 } resolver_t;
 
 /* ──────────────────────────────────────────────
-   DNS Tunnel chunk header (embedded in QNAME)
+   New Compact DNS Tunnel chunk header (4 bytes)
+   Used for upstream: Client → Server (Base32 in QNAME)
+────────────────────────────────────────────── */
+#pragma pack(push, 1)
+typedef struct {
+    uint8_t  flags;          /* bits 0-3: flags, bits 4-7: session_id (4 bits = 0-15) */
+    uint16_t seq;            /* sequence number (2 bytes) */
+    uint8_t  chunk_info;     /* high nibble: chunk_total-1, low nibble: fec_k */
+} chunk_header_t;            /* Total: 4 bytes */
+#pragma pack(pop)
+
+/* ──────────────────────────────────────────────
+   Server response header (2 bytes)
+   Used for downstream: Server → Client (Base64/Hex in TXT)
+────────────────────────────────────────────── */
+#pragma pack(push, 1)
+typedef struct {
+    uint8_t  flags;          /* bit 0: encoding_type (0=base64, 1=hex), bits 1-7: reserved */
+    uint8_t  session_id;     /* session ID (4 bits used, 0-15) */
+} server_response_header_t;   /* Total: 2 bytes */
+#pragma pack(pop)
+
+/* ──────────────────────────────────────────────
+   Handshake packet (5 bytes)
+   Sent once per resolver: Client → Server
+   Contains version and MTU info
 ────────────────────────────────────────────── */
 #pragma pack(push, 1)
 typedef struct {
     uint8_t  version;        /* protocol version */
-    uint8_t  flags;          /* bit0=encrypted, bit1=compressed, bit2=fec, bit3=poll */
-    uint8_t  session_id[DNSTUN_SESSION_ID_LEN];
-    uint16_t seq;            /* sequence number */
-    uint16_t chunk_total;    /* total chunks in this burst */
-    uint16_t original_size;  /* size before compression */
     uint16_t upstream_mtu;   /* client's upstream MTU */
-    uint16_t downstream_mtu; /* client-requested downstream MTU */
-    uint8_t  enc_format;     /* enc_format_t */
-    uint8_t  loss_pct;       /* loss rate 0-100 */
-    uint8_t  fec_k;          /* FEC redundancy count */
-    char     user_id[12];    /* User ID */
-    uint8_t  reserved;
-} chunk_header_t;
+    uint16_t downstream_mtu; /* requested downstream MTU */
+} handshake_packet_t;        /* Total: 5 bytes */
 #pragma pack(pop)
+
+/* ──────────────────────────────────────────────
+   Resolver MTU info (stored per resolver on server)
+────────────────────────────────────────────── */
+typedef struct {
+    uint32_t ip;             /* resolver IP */
+    uint16_t upstream_mtu;    /* stored from handshake */
+    uint16_t downstream_mtu; /* stored from handshake */
+    uint8_t  version;        /* protocol version */
+    bool     handshake_done;  /* true after first contact */
+    time_t   handshake_time; /* when handshake occurred */
+} resolver_mtu_info_t;
+
+/* Flag bit masks for chunk_header_t */
+#define CHUNK_FLAG_ENCRYPTED   0x01
+#define CHUNK_FLAG_COMPRESSED  0x02
+#define CHUNK_FLAG_FEC        0x04
+#define CHUNK_FLAG_POLL       0x08
+#define CHUNK_SESSION_MASK    0xF0
+#define CHUNK_SESSION_SHIFT   4
+
+/* Flag bit masks for server_response_header_t */
+#define RESP_ENC_MASK        0x01  /* 0=base64, 1=hex */
+
+/* Inline functions for header manipulation */
+static inline uint8_t chunk_get_session_id(uint8_t flags) {
+    return (flags & CHUNK_SESSION_MASK) >> CHUNK_SESSION_SHIFT;
+}
+
+static inline void chunk_set_session_id(uint8_t *flags, uint8_t sid) {
+    *flags = (*flags & ~CHUNK_SESSION_MASK) | ((sid << CHUNK_SESSION_SHIFT) & CHUNK_SESSION_MASK);
+}
+
+static inline uint8_t chunk_get_chunk_total(uint8_t chunk_info) {
+    return ((chunk_info >> 4) & 0x0F) + 1;
+}
+
+static inline uint8_t chunk_get_fec_k(uint8_t chunk_info) {
+    return chunk_info & 0x0F;
+}
+
+static inline void chunk_set_info(uint8_t *ci, uint8_t total, uint8_t k) {
+    *ci = (((total - 1) & 0x0F) << 4) | (k & 0x0F);
+}
+
+static inline uint8_t resp_get_encoding(uint8_t flags) {
+    return flags & RESP_ENC_MASK;
+}
+
+static inline void resp_set_encoding(uint8_t *flags, uint8_t enc) {
+    *flags = (*flags & ~RESP_ENC_MASK) | (enc & RESP_ENC_MASK);
+}
 
 /* ──────────────────────────────────────────────
    Chunk payload in-flight

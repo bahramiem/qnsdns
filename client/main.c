@@ -188,7 +188,8 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
                             const char *domain)
 {
     /* Encode header + payload into a single base32 blob */
-    uint8_t raw[sizeof(chunk_header_t) + DNSTUN_CHUNK_PAYLOAD + 4];
+    /* New header is 4 bytes, payload can be up to DNSTUN_CHUNK_PAYLOAD */
+    uint8_t raw[4 + DNSTUN_CHUNK_PAYLOAD];
     size_t  rawlen = 0;
     memcpy(raw + rawlen, hdr, sizeof(*hdr));   rawlen += sizeof(*hdr);
     if (payload && paylen > 0) {
@@ -198,42 +199,33 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
 
     /* Base32 encode the raw data (UPPERCASE for DNS compatibility)
      * Formula: base32 output = ceil(input_len * 8 / 5)
-     * For header(32) + payload(160) = 192 bytes: 192 * 8 / 5 = 308 bytes */
+     * For header(4) + payload(137) = 141 bytes: 141 * 8 / 5 = 226 bytes */
     #define BASE32_MAX_OUTPUT(max_input) (((max_input) * 8 + 4) / 5)
-    char b32_raw[BASE32_MAX_OUTPUT(sizeof(chunk_header_t) + DNSTUN_CHUNK_PAYLOAD + 4)];
+    char b32_raw[BASE32_MAX_OUTPUT(4 + DNSTUN_CHUNK_PAYLOAD)];
     size_t b32_len = base32_encode((uint8_t*)b32_raw, raw, rawlen);
 
     /* Use slipstream's inline_dotify to split into labels every 57 chars */
     /* Add extra space for dots: approximately raw_len/57 extra chars */
-    char b32_dotted[BASE32_MAX_OUTPUT(sizeof(chunk_header_t) + DNSTUN_CHUNK_PAYLOAD + 4) + 64];
+    char b32_dotted[BASE32_MAX_OUTPUT(4 + DNSTUN_CHUNK_PAYLOAD) + 64];
     memcpy(b32_dotted, b32_raw, b32_len);
     size_t dotted_len = inline_dotify(b32_dotted, sizeof(b32_dotted), b32_len);
 
-    /* Build QNAME like slipstream: <b32_dotted>.<domain> */
-    /* But we need to add seq and sid for session tracking */
-    char seq_hex[8];
-    snprintf(seq_hex, sizeof(seq_hex), "%04x", hdr->seq);
-
-    char sid_hex[DNSTUN_SESSION_ID_LEN * 2 + 1];
-    for (int i = 0; i < DNSTUN_SESSION_ID_LEN; i++)
-        snprintf(sid_hex + i*2, 3, "%02x", hdr->session_id[i]);
-
-    /* QNAME format: <seq>.<b32>.<sid>.tun.<domain>.
+    /* Build QNAME: <b32_dotted>.tun.<domain>.
+     * New compact header doesn't include session_id in QNAME - it's in the flags byte
      * CRITICAL: Must end with trailing dot for FQDN format!
-     * SPCDNS requires FQDN or it returns RCODE_NAME_ERROR (3)
      * 
-     * IMPORTANT: DNS QNAME maximum is 253 bytes. We need to ensure:
-     * seq(4) + b32_dotted + sid(8) + "tun"(3) + domain + dots + trailing(1) <= 253
+     * DNS QNAME maximum is 253 bytes. We need to ensure:
+     * b32_dotted + "tun"(3) + domain + dots + trailing(1) <= 253
      * 
-     * For domain ~15 chars: 4 + 8 + 3 + 15 + 1 = 31 overhead
-     * Max b32_dotted = 253 - 31 - (dots overhead ~b32_len/57) ≈ 200 chars
-     * Max base32 input ≈ 200 * 5 / 8 = 125 bytes
-     * For header 32 bytes, max payload ≈ 93 bytes
+     * For domain ~15 chars: 3 + 15 + 1 = 19 overhead
+     * Max b32_dotted = 253 - 19 - (dots overhead ~b32_len/57) ≈ 220 chars
+     * Max base32 input ≈ 220 * 5 / 8 = 137 bytes
+     * For header 4 bytes, max payload ≈ 133 bytes
      * 
      * DNSTUN_CHUNK_PAYLOAD is capped to ensure QNAME fits within DNS limits. */
     char qname[512];
-    int qname_len = snprintf(qname, sizeof(qname), "%s.%s.%s.tun.%s.",
-             seq_hex, b32_dotted, sid_hex, domain);
+    int qname_len = snprintf(qname, sizeof(qname), "%s.tun.%s.",
+             b32_dotted, domain);
 
     if (qname_len > DNSTUN_MAX_QNAME_LEN) {
         LOG_ERR("QNAME too long: %d bytes (max %d). Reduce DNSTUN_CHUNK_PAYLOAD.\n",
@@ -241,7 +233,7 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
         return -1;
     }
     
-    LOG_DEBUG("QNAME=%s (len=%d)\n", qname, qname_len);
+    LOG_DEBUG("QNAME=%s (len=%d, session=%d)\n", qname, qname_len, chunk_get_session_id(hdr->flags));
 
     /* Build DNS query structure like slipstream */
     dns_question_t question = {0};
@@ -503,15 +495,12 @@ static void fire_probe_ext(int idx, const uint8_t *payload, size_t paylen, const
     memcpy(&p->dest, &r->addr, sizeof(p->dest));
     p->dest.sin_port = htons(53);
 
-    /* Build a minimal POLL DNS query */
+    /* Build a minimal POLL DNS query (compact 4-byte header) */
     chunk_header_t hdr = {0};
-    hdr.version = DNSTUN_VERSION;
-    hdr.flags   = 0x08; /* poll flag */
-    make_session_id(hdr.session_id);
-    hdr.enc_format      = (uint8_t)r->enc;
-    hdr.downstream_mtu  = r->downstream_mtu;
-    hdr.upstream_mtu    = (uint16_t)paylen;
-    strncpy(hdr.user_id, g_cfg.user_id, sizeof(hdr.user_id));
+    hdr.flags   = CHUNK_FLAG_POLL;
+    chunk_set_session_id(&hdr.flags, 0); /* Polls use session 0 */
+    hdr.seq = 0;
+    hdr.chunk_info = 0; /* No FEC, single chunk */
 
     p->sendlen = sizeof(p->sendbuf);
     if (build_dns_query(p->sendbuf, &p->sendlen, &hdr, payload, paylen, domain) != 0) {
@@ -1039,15 +1028,12 @@ static size_t encode_aggregated_packet(uint8_t *out_buf, size_t out_size,
         
         size_t total_size = header_size + (symbols_packed * symbol_size);
         
-        /* Set chunk header with symbol count in flags */
+        /* Set chunk header with new compact 4-byte format */
         chunk_header_t *hdr = (chunk_header_t *)out_buf;
-        hdr->version = DNSTUN_VERSION;
         hdr->flags = 0;
         hdr->seq = seq;
-        hdr->chunk_total = (uint16_t)symbols_packed;  /* Store symbol count here */
-        hdr->original_size = (uint16_t)data_len;
-        hdr->upstream_mtu = mtu;
-        hdr->downstream_mtu = (uint16_t)symbols_packed;
+        /* chunk_info: high nibble = chunk_total-1, low nibble = fec_k (0 for now) */
+        chunk_set_info(&hdr->chunk_info, (uint8_t)symbols_packed, 0);
         
         LOG_DEBUG("[Agg] Packed %d symbols into %zu bytes (MTU=%u, efficiency=%.1f%%)\n",
                   symbols_packed, total_size, mtu,
@@ -1062,13 +1048,10 @@ static size_t encode_aggregated_packet(uint8_t *out_buf, size_t out_size,
         memcpy(payload, data, to_copy);
         
         chunk_header_t *hdr = (chunk_header_t *)out_buf;
-        hdr->version = DNSTUN_VERSION;
         hdr->flags = 0;
         hdr->seq = seq;
-        hdr->chunk_total = 1;  /* Single symbol */
-        hdr->original_size = (uint16_t)data_len;
-        hdr->upstream_mtu = mtu;
-        hdr->downstream_mtu = 1;
+        /* chunk_info: high nibble = 0 (chunk_total=1), low nibble = 0 (fec_k) */
+        hdr->chunk_info = 0;
         
         return header_size + to_copy;
     }
@@ -1081,7 +1064,7 @@ static int decode_aggregated_packet(uint8_t *symbols[], uint8_t sizes[],
     if (!packet || packet_len < sizeof(chunk_header_t) + 1) return 0;
     
     chunk_header_t *hdr = (chunk_header_t *)packet;
-    int symbol_count = hdr->chunk_total;
+    int symbol_count = chunk_get_total(hdr->chunk_info);  /* high nibble + 1 */
     if (symbol_count > max_symbols) symbol_count = max_symbols;
     if (symbol_count > DNSTUN_MAX_SYMBOLS_PER_PACKET) symbol_count = DNSTUN_MAX_SYMBOLS_PER_PACKET;
     
@@ -1857,23 +1840,21 @@ static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
 
     session_t *sess = &g_sessions[session_idx];
 
-    /* Build chunk header */
+    /* Build chunk header (new compact 4-byte format) */
     chunk_header_t hdr = {0};
-    hdr.version        = DNSTUN_VERSION;
-    hdr.flags          = (g_cfg.encryption ? 0x01 : 0x00) | 0x02; /* Real-world: always compressed */
-    if (paylen == 0) hdr.flags |= 0x08; /* poll flag */
-    if (total_symbols > 0) hdr.flags |= 0x04; /* fec flag */
-
-    memcpy(hdr.session_id, sess->id, DNSTUN_SESSION_ID_LEN);
-    hdr.seq            = seq;
-    hdr.chunk_total    = (uint16_t)total_symbols;
-    hdr.original_size  = (uint16_t)sess->send_len;
-    hdr.upstream_mtu   = r->upstream_mtu;
-    hdr.downstream_mtu = r->downstream_mtu;
-    hdr.enc_format     = (uint8_t)r->enc;
-    hdr.loss_pct       = (uint8_t)(r->loss_rate * 100.0);
-    hdr.fec_k          = (uint8_t)r->fec_k;
-    strncpy(hdr.user_id, g_cfg.user_id, sizeof(hdr.user_id));
+    hdr.flags          = (g_cfg.encryption ? CHUNK_FLAG_ENCRYPTED : 0) | CHUNK_FLAG_COMPRESSED;
+    if (paylen == 0) hdr.flags |= CHUNK_FLAG_POLL; /* poll flag */
+    if (total_symbols > 0) hdr.flags |= CHUNK_FLAG_FEC; /* fec flag */
+    
+    /* Session ID in bits 4-7 of flags */
+    chunk_set_session_id(&hdr.flags, (uint8_t)session_idx);
+    
+    hdr.seq = seq;
+    
+    /* chunk_info: high nibble = chunk_total-1, low nibble = fec_k */
+    uint8_t chunk_total = (uint8_t)(total_symbols > 0 ? total_symbols : 1);
+    uint8_t fec_k = (uint8_t)(r->fec_k > 15 ? 15 : r->fec_k);
+    chunk_set_info(&hdr.chunk_info, chunk_total, fec_k);
 
     int didx = rpool_flux_domain(&g_cfg);
     const char *domain = (g_cfg.domain_count > 0)
