@@ -327,6 +327,9 @@ typedef struct {
 /* ──────────────────────────────────────────────
    Active SOCKS5 session
 ────────────────────────────────────────────── */
+/* Resource limits to prevent memory exhaustion (10MB max per session buffer) */
+#define MAX_SESSION_BUFFER (10 * 1024 * 1024)
+
 typedef struct session {
     uint8_t   session_id;    /* 4-bit session ID (0-15), embedded in chunk header */
     char      target_host[256];

@@ -416,17 +416,47 @@ static void on_probe_recv(uv_udp_t *h, ssize_t nread,
                 /* Parse DNS packet to find OPT record (EDNS) or TXT record */
                 size_t offset = 12;
                 
-                /* Skip question section */
-                while (offset < (size_t)nread && resp[offset] != 0) {
-                    offset += resp[offset] + 1;
+                /* Skip question section with DNS pointer support */
+                while (offset < (size_t)nread) {
+                    uint8_t len = resp[offset];
+                    if (len == 0) {
+                        offset++;
+                        break;
+                    }
+                    /* DNS pointer: top 2 bits set (0xC0) - follow the pointer */
+                    if ((len & 0xC0) == 0xC0) {
+                        /* Pointer takes 2 bytes - verify bounds */
+                        if (offset + 2 > (size_t)nread) break;
+                        /* Follow pointer to get new offset */
+                        offset = ((len & 0x3F) << 8) | resp[offset + 1];
+                        break; /* After pointer, question section ends */
+                    }
+                    /* Regular label - verify bounds */
+                    if (offset + 1 + len > (size_t)nread) break;
+                    offset += 1 + len;
                 }
                 offset += 5; /* Skip null byte (1) + QTYPE (2) + QCLASS (2) */
+                if (offset > (size_t)nread) offset = (size_t)nread;
 
-                /* Parse answer and additional sections */
-                while (offset + 11 <= (size_t)nread) {
+                /* Parse answer and additional sections with pointer support */
+                size_t visited_count = 0;
+                const size_t MAX_VISITED = 128; /* Prevent infinite loops */
+                
+                while (offset + 11 <= (size_t)nread && visited_count < MAX_VISITED) {
+                    visited_count++;
+                    
                     uint8_t name = resp[offset];
                     uint16_t rtype = (resp[offset + 1] << 8) | resp[offset + 2];
                     uint16_t rdlen = (resp[offset + 9] << 8) | resp[offset + 10];
+                    
+                    /* DNS pointer in name field */
+                    if ((name & 0xC0) == 0xC0) {
+                        /* Verify pointer bounds and follow it */
+                        if (offset + 2 + 11 > (size_t)nread) break;
+                        offset = ((name & 0x3F) << 8) | resp[offset + 1];
+                        if (offset >= (size_t)nread) break;
+                        continue;
+                    }
                     
                     /* Root zone (name=0) indicates the start of a record */
                     if (name == 0) {
@@ -442,6 +472,8 @@ static void on_probe_recv(uv_udp_t *h, ssize_t nread,
                         }
                     }
                     
+                    /* Verify RDLEN doesn't overflow buffer */
+                    if (offset + 11 + rdlen > (size_t)nread) break;
                     offset += 11 + rdlen;
                 }
 
@@ -1551,11 +1583,28 @@ static void socks5_handle_data(socks5_client_t *c,
         session_t *sess = &g_sessions[c->session_idx];
         sess->last_active = time(NULL);
 
-        /* Grow send buffer */
+        /* Grow send buffer with resource limit check */
         size_t new_len = sess->send_len + len;
         if (new_len > sess->send_cap) {
+            /* Enforce maximum buffer size to prevent memory exhaustion */
+            if (sess->send_len >= MAX_SESSION_BUFFER) {
+                LOG_ERR("Session %d: send buffer limit reached (%zu bytes)\n",
+                        c->session_idx, sess->send_len);
+                /* Drop oldest data to make room */
+                size_t drop_len = (len > sess->send_len) ? sess->send_len : len;
+                memmove(sess->send_buf, sess->send_buf + drop_len, sess->send_len - drop_len);
+                sess->send_len -= drop_len;
+                new_len = sess->send_len + len;
+            }
             size_t new_cap = new_len + 4096;
-            sess->send_buf = realloc(sess->send_buf, new_cap);
+            /* Cap at MAX_SESSION_BUFFER to prevent unbounded growth */
+            if (new_cap > MAX_SESSION_BUFFER) new_cap = MAX_SESSION_BUFFER;
+            uint8_t *new_buf = realloc(sess->send_buf, new_cap);
+            if (!new_buf) {
+                LOG_ERR("Session %d: failed to grow send buffer\n", c->session_idx);
+                return;
+            }
+            sess->send_buf = new_buf;
             sess->send_cap = new_cap;
         }
         memcpy(sess->send_buf + sess->send_len, data, len);
@@ -1597,6 +1646,9 @@ static void on_socks5_connection(uv_stream_t *server, int status) {
 
     uv_tcp_init(g_loop, &c->tcp);
     c->tcp.data = c;
+
+    /* Enable TCP_NODELAY to minimize latency for interactive traffic */
+    uv_tcp_nodelay(&c->tcp, 1);
 
     if (uv_accept(server, (uv_stream_t*)&c->tcp) == 0) {
         uv_read_start((uv_stream_t*)&c->tcp, on_socks5_alloc, on_socks5_read);
@@ -1738,8 +1790,26 @@ static void on_dns_recv(uv_udp_t *h,
                                 session_t *s = &g_sessions[sidx];
                                 size_t need = s->recv_len + ans->txt.len;
                                 if (need > s->recv_cap) {
-                                    s->recv_buf = realloc(s->recv_buf, need + 4096);
-                                    s->recv_cap = need + 4096;
+                                    /* Enforce maximum buffer size to prevent memory exhaustion */
+                                    if (s->recv_len >= MAX_SESSION_BUFFER) {
+                                        LOG_ERR("Session %d: recv buffer limit reached (%zu bytes), dropping old data\n",
+                                                sidx, s->recv_len);
+                                        /* Drop oldest data to make room */
+                                        memmove(s->recv_buf, s->recv_buf + ans->txt.len, 
+                                                s->recv_len - ans->txt.len);
+                                        s->recv_len -= ans->txt.len;
+                                        need = s->recv_len + ans->txt.len;
+                                    }
+                                    size_t new_cap = need + 4096;
+                                    /* Cap at MAX_SESSION_BUFFER to prevent unbounded growth */
+                                    if (new_cap > MAX_SESSION_BUFFER) new_cap = MAX_SESSION_BUFFER;
+                                    uint8_t *new_buf = realloc(s->recv_buf, new_cap);
+                                    if (!new_buf) {
+                                        LOG_ERR("Session %d: failed to grow recv buffer\n", sidx);
+                                        continue;
+                                    }
+                                    s->recv_buf = new_buf;
+                                    s->recv_cap = new_cap;
                                 }
                                 memcpy(s->recv_buf + s->recv_len,
                                        ans->txt.text, ans->txt.len);

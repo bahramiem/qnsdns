@@ -46,6 +46,9 @@ typedef struct {
 } buffer_pool_t;
 
 static buffer_pool_t g_pool = {0};
+static uv_once_t g_pool_init_once = UV_ONCE_INIT;
+static uv_once_t g_rq_api_init_once = UV_ONCE_INIT;
+static struct RFC6330_v1 *g_rq_api = NULL;
 
 /* Get the appropriate pool for a given size */
 static buffer_node_t** get_pool_for_size(size_t size) {
@@ -63,9 +66,8 @@ static size_t get_bucket_size(size_t requested) {
     return BUFFER_POOL_XL;
 }
 
-/* Initialize buffer pool */
-static int buffer_pool_init(void) {
-    if (g_pool.init_done) return 0;
+/* Thread-safe buffer pool initialization (called via uv_once) */
+static void buffer_pool_init_impl(void) {
     uv_mutex_init(&g_pool.lock);
     
     /* Pre-allocate 64 buffers per size class = 256 buffers total */
@@ -103,7 +105,9 @@ static int buffer_pool_init(void) {
 
 /* Acquire a buffer from the pool (returns NULL if pool empty) */
 static uint8_t* buffer_pool_acquire(size_t size) {
-    if (!g_pool.init_done) buffer_pool_init();
+    /* Thread-safe one-time initialization */
+    uv_once(&g_pool_init_once, buffer_pool_init_impl);
+    (void)g_pool.init_done; /* suppress unused warning */
     
     size_t bucket_size = get_bucket_size(size);
     buffer_node_t **pool = get_pool_for_size(size);
@@ -124,7 +128,8 @@ static uint8_t* buffer_pool_acquire(size_t size) {
 /* Release a buffer back to the pool */
 static void buffer_pool_release(uint8_t *data, size_t size) {
     if (!data) return;
-    if (!g_pool.init_done) buffer_pool_init();
+    /* Thread-safe one-time initialization */
+    uv_once(&g_pool_init_once, buffer_pool_init_impl);
     
     size_t bucket_size = get_bucket_size(size);
     buffer_node_t **pool = get_pool_for_size(size);
@@ -146,7 +151,7 @@ static void buffer_pool_release(uint8_t *data, size_t size) {
 }
 
 /* Destroy buffer pool (call at shutdown) */
-static void buffer_pool_destroy(void) {
+static void buffer_pool_destroy_impl(void) {
     if (!g_pool.init_done) return;
     
     uv_mutex_lock(&g_pool.lock);
@@ -212,11 +217,10 @@ codec_result_t codec_decompress(const uint8_t *in, size_t inlen, size_t original
         res.error = true;
     } else {
         res.len = dsize;
-        /* Shrink buffer to actual size - use realloc if we need to shrink */
-        if (dsize < original_size && dsize > 0) {
-            void *tmp = realloc(res.data, dsize);
-            if (tmp) res.data = tmp;
-        }
+        /* NOTE: Do NOT shrink buffer with realloc.
+         * The buffer pool expects fixed-size buckets. Shrinking via realloc
+         * causes capacity mismatches when the buffer is returned to the pool.
+         * The extra space is simply unused but keeps pool integrity. */
     }
     return res;
 }
@@ -229,7 +233,10 @@ codec_result_t codec_encrypt(const uint8_t *in, size_t inlen, const char *psk) {
 
     /* Hash PSK to 32-byte key */
     unsigned char key[crypto_aead_chacha20poly1305_ietf_KEYBYTES];
-    crypto_generichash(key, sizeof(key), (const unsigned char*)psk, strlen(psk), NULL, 0);
+    if (crypto_generichash(key, sizeof(key), (const unsigned char*)psk, strlen(psk), NULL, 0) != 0) {
+        res.error = true;
+        return res;
+    }
 
     size_t out_max = inlen + crypto_aead_chacha20poly1305_ietf_NPUBBYTES + crypto_aead_chacha20poly1305_ietf_ABYTES;
     /* Try buffer pool first, fallback to malloc */
@@ -242,10 +249,18 @@ codec_result_t codec_encrypt(const uint8_t *in, size_t inlen, const char *psk) {
 
     randombytes_buf(nonce, crypto_aead_chacha20poly1305_ietf_NPUBBYTES);
 
-    crypto_aead_chacha20poly1305_ietf_encrypt(ciphertext, &clen,
+    int enc_ret = crypto_aead_chacha20poly1305_ietf_encrypt(ciphertext, &clen,
                                              in, (unsigned long long)inlen,
                                              NULL, 0,
                                              NULL, nonce, key);
+    
+    if (enc_ret != 0) {
+        /* Encryption failed - release the buffer */
+        buffer_pool_release(res.data, out_max);
+        res.data = NULL;
+        res.error = true;
+        return res;
+    }
 
     res.len = (size_t)clen + crypto_aead_chacha20poly1305_ietf_NPUBBYTES;
     return res;
@@ -260,7 +275,10 @@ codec_result_t codec_decrypt(const uint8_t *in, size_t inlen, const char *psk) {
 
     /* Hash PSK to 32-byte key */
     unsigned char key[crypto_aead_chacha20poly1305_ietf_KEYBYTES];
-    crypto_generichash(key, sizeof(key), (const unsigned char*)psk, strlen(psk), NULL, 0);
+    if (crypto_generichash(key, sizeof(key), (const unsigned char*)psk, strlen(psk), NULL, 0) != 0) {
+        res.error = true;
+        return res;
+    }
 
     const unsigned char *nonce = in;
     const unsigned char *ciphertext = in + crypto_aead_chacha20poly1305_ietf_NPUBBYTES;
@@ -287,10 +305,14 @@ codec_result_t codec_decrypt(const uint8_t *in, size_t inlen, const char *psk) {
 
 /* ── FEC (RaptorQ / RFC 6330) ────────────────────────────────────────────── */
 
+/* Thread-safe RaptorQ API initialization */
+static void get_rq_api_init(void) {
+    g_rq_api = (struct RFC6330_v1*) RFC6330_api(1);
+}
+
 static struct RFC6330_v1 *get_rq_api(void) {
-    static struct RFC6330_v1 *api = NULL;
-    if (!api) api = (struct RFC6330_v1*) RFC6330_api(1);
-    return api;
+    uv_once(&g_rq_api_init_once, get_rq_api_init);
+    return g_rq_api;
 }
 
 /*

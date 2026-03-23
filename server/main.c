@@ -643,6 +643,8 @@ static void on_server_recv(uv_udp_t *h,
                                 LOG_INFO("Connecting upstream for session %d to %s:%d\n",
                                          sidx, target_host, target_port);
                                 uv_tcp_init(g_loop, &sess->upstream_tcp);
+                                /* Enable TCP_NODELAY to minimize latency for interactive traffic */
+                                uv_tcp_nodelay(&sess->upstream_tcp, 1);
                                 uv_tcp_connect(&cr->connect, &sess->upstream_tcp, (const struct sockaddr*)&up_addr, on_upstream_connect);
                             }
                         }
