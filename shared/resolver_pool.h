@@ -40,9 +40,6 @@ void rpool_set_state(resolver_pool_t *pool, int idx, resolver_state_t s);
    Returns index, or -1 if none available. */
 int  rpool_next(resolver_pool_t *pool);
 
-/* Health check — Returns number of successes in last 30 samples */
-int  rpool_health_score(resolver_pool_t *pool, int idx);
-
 /* AIMD congestion window update */
 void rpool_on_ack(resolver_pool_t *pool, int idx, double rtt_ms);
 void rpool_on_loss(resolver_pool_t *pool, int idx);

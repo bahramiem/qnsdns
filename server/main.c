@@ -100,18 +100,9 @@ static uv_mutex_t g_swarm_lock;
 /* ────────────────────────────────────────────── */
 /*  Logging                                       */
 /* ────────────────────────────────────────────── */
-/* LOG_* macros route through tui.h's ring-buffer logger */
-static int srv_log_level_check(tui_log_level_t req) {
-    if (req == TUI_LOG_DEBUG && g_cfg.log_level < 2) return 0;
-    if (req == TUI_LOG_INFO  && g_cfg.log_level < 1) return 0;
-    return 1;
-}
-#undef LOG_INFO
-#undef LOG_DEBUG
-#undef LOG_ERR
-#define LOG_INFO(fmt, ...)  do { if (srv_log_level_check(TUI_LOG_INFO))  tui_log(g_tui_ctx, TUI_LOG_INFO,  fmt, ##__VA_ARGS__); } while(0)
-#define LOG_DEBUG(fmt, ...) do { if (srv_log_level_check(TUI_LOG_DEBUG)) tui_log(g_tui_ctx, TUI_LOG_DEBUG, fmt, ##__VA_ARGS__); } while(0)
-#define LOG_ERR(fmt, ...)   tui_log(g_tui_ctx, TUI_LOG_ERR, fmt, ##__VA_ARGS__)
+#define LOG_INFO(...)  do { if (g_cfg.log_level >= 1) fprintf(stdout, "[INFO]  " __VA_ARGS__); } while(0)
+#define LOG_DEBUG(...) do { if (g_cfg.log_level >= 2) fprintf(stdout, "[DEBUG] " __VA_ARGS__); } while(0)
+#define LOG_ERR(...)   fprintf(stderr, "[ERROR] " __VA_ARGS__)
 
 /* ────────────────────────────────────────────── */
 /*  Swarm management                              */
@@ -451,7 +442,7 @@ static void on_server_recv(uv_udp_t *h,
 
     const char *b32_payload = parts[1];
     /* Decode b32 payload → raw bytes (chunk_header + data) */
-    uint8_t raw[1024];
+    uint8_t raw[sizeof(chunk_header_t) + DNSTUN_CHUNK_PAYLOAD + 4];
     ssize_t rawlen = base32_decode(raw, b32_payload, strlen(b32_payload));
     if (rawlen < (ssize_t)sizeof(chunk_header_t)) {
         LOG_DEBUG("Base32 decode too short from %s\n", src_ip);
@@ -502,9 +493,6 @@ static void on_server_recv(uv_udp_t *h,
 
     /* ── Handle FEC Burst Reassembly ──────────────────────────────────── */
     if (hdr.chunk_total > 0) {
-        uint8_t pcount = hdr.pack_count == 0 ? 1 : hdr.pack_count;
-        size_t  slen   = payload_len / pcount;
-
         /* New burst or continuation? */
         if (sess->burst_count_needed == 0 || hdr.seq < sess->burst_seq_start) {
             /* Cleanup old */
@@ -516,16 +504,14 @@ static void on_server_recv(uv_udp_t *h,
             sess->burst_count_needed  = hdr.chunk_total;
             sess->burst_received      = 0;
             sess->burst_symbols       = calloc(hdr.chunk_total, sizeof(uint8_t*));
-            sess->burst_symbol_len    = slen;
+            sess->burst_symbol_len    = payload_len;
         }
 
-        for (int p = 0; p < pcount; p++) {
-            int offset = (hdr.seq + p) - sess->burst_seq_start;
-            if (offset >= 0 && offset < sess->burst_count_needed && !sess->burst_symbols[offset]) {
-                sess->burst_symbols[offset] = malloc(slen);
-                memcpy(sess->burst_symbols[offset], payload + (p * slen), slen);
-                sess->burst_received++;
-            }
+        int offset = hdr.seq - sess->burst_seq_start;
+        if (offset >= 0 && offset < sess->burst_count_needed && !sess->burst_symbols[offset]) {
+            sess->burst_symbols[offset] = malloc(payload_len);
+            memcpy(sess->burst_symbols[offset], payload, payload_len);
+            sess->burst_received++;
         }
 
         /* Enough symbols to decode? (Simplified: wait for K symbols or more) */
@@ -781,7 +767,7 @@ static void on_tty_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
 
 int main(int argc, char *argv[]) {
     const char *config_path = NULL;
-    static char auto_config_path[2048] = {0};
+    static char auto_config_path[1024] = {0};
     char domain_buf[512] = {0};
     char threads_str[16];
     char *slash;
@@ -823,11 +809,9 @@ int main(int argc, char *argv[]) {
         }
         if (!config_path) {
             /* Try relative to executable */
-            /* Reserve 32 bytes for the longest possible suffix "/../../.." + "/server.ini" */
-            char exe_path[sizeof(auto_config_path) - 32];
+            char exe_path[1024];
             size_t size = sizeof(exe_path);
             if (uv_exepath(exe_path, &size) == 0) {
-                exe_path[sizeof(exe_path) - 1] = '\0'; /* guarantee NUL */
                 char *eslash = strrchr(exe_path, '/');
 #ifdef _WIN32
                 char *ebslash = strrchr(exe_path, '\\');
@@ -837,8 +821,7 @@ int main(int argc, char *argv[]) {
                     *eslash = '\0';
                     const char *rel[] = {"", "/..", "/../..", "/../../.."};
                     for (int i = 0; i < 4; i++) {
-                        snprintf(auto_config_path, sizeof(auto_config_path),
-                                 "%s%s/server.ini", exe_path, rel[i]);
+                        snprintf(auto_config_path, sizeof(auto_config_path), "%s%s/server.ini", exe_path, rel[i]);
                         FILE *tf = fopen(auto_config_path, "r");
                         if (tf) {
                             fclose(tf);

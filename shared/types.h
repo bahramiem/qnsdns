@@ -23,7 +23,7 @@
 #define DNSTUN_MAX_DOMAINS       32
 #define DNSTUN_MAX_LABEL_LEN     63
 #define DNSTUN_MAX_QNAME_LEN     253
-#define DNSTUN_CHUNK_PAYLOAD     32   /* base symbol size for rateless aggregation */
+#define DNSTUN_CHUNK_PAYLOAD     160   /* max base32 payload bytes per DNS label block */
 #define DNSTUN_SESSION_ID_LEN    4
 #define DNSTUN_VERSION           1
 
@@ -78,12 +78,7 @@ typedef struct resolver {
     /* MTU */
     uint16_t           upstream_mtu;   /* max query payload bytes */
     uint16_t           downstream_mtu; /* max TXT response bytes */
-    uint16_t           mtu_low;        /* binary search current known good */
-    uint16_t           mtu_high;       /* binary search first known fail */
     bool               edns0_supported;
-    bool               hijacked;
-    uint32_t           health_window;  /* sliding window of success/fail (30 bits) */
-    int                health_cursor;
 
     /* RTT */
     double             rtt_ms;         /* last measured round-trip */
@@ -126,7 +121,7 @@ typedef struct {
     uint8_t  loss_pct;       /* loss rate 0-100 */
     uint8_t  fec_k;          /* FEC redundancy count */
     char     user_id[12];    /* User ID */
-    uint8_t  pack_count;     /* aggregated symbols in this chunk (0 = 1) */
+    uint8_t  reserved;
 } chunk_header_t;
 #pragma pack(pop)
 

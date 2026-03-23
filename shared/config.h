@@ -34,7 +34,6 @@ typedef struct dnstun_config {
     /* [tuning] */
     int      poll_interval_ms;  /* downstream POLL interval */
     int      fec_window;        /* chunks between FEC recalc */
-    int      fec_repair_rate;   /* fixed FEC % overhead, 0=auto adaptive */
     double   cwnd_init;         /* starting cong window */
     double   cwnd_max;          /* max cong window */
     int      idle_timeout_sec;

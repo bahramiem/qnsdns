@@ -123,8 +123,8 @@ fec_encoded_t codec_fec_encode(const uint8_t *in, size_t inlen, int k, int r) {
     struct RFC6330_v1 *api = get_rq_api();
     if (!api) return res;
 
-    /* Symbol size: target size for DNS chunk efficiency */
-    uint16_t T = DNSTUN_CHUNK_PAYLOAD;
+    /* Symbol size: target ~160 bytes for DNS chunk efficiency */
+    uint16_t T = 160;
 
     struct RFC6330_ptr *enc = api->Encoder(RQ_ENC_8, (void*)in, inlen, 4, T, 1024*1024);
     if (!enc) return res;

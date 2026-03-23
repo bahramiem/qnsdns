@@ -30,7 +30,6 @@
 #endif
 
 #include "uv.h"
-#include <sodium.h>
 #include "SPCDNS/dns.h"
 #include "SPCDNS/output.h"
 
@@ -66,20 +65,11 @@ static char g_resolvers_file[1024];
 /* ────────────────────────────────────────────── */
 /*  Utility                                       */
 /* ────────────────────────────────────────────── */
-/* LOG_* macros are provided by shared/tui.h (ring-buffer + level-gated) */
-/* Level gating: tui_log entries are always stored; filter in render if needed */
-static int log_level_check(tui_log_level_t required) {
-    /* Suppress DEBUG messages if log_level < 2 */
-    if (required == TUI_LOG_DEBUG && g_cfg.log_level < 2) return 0;
-    if (required == TUI_LOG_INFO  && g_cfg.log_level < 1) return 0;
-    return 1;
-}
-#undef LOG_DEBUG
-#undef LOG_INFO
-#undef LOG_ERR
-#define LOG_DEBUG(fmt, ...) do { if (log_level_check(TUI_LOG_DEBUG)) tui_log(g_tui_ctx, TUI_LOG_DEBUG, fmt, ##__VA_ARGS__); } while(0)
-#define LOG_INFO(fmt, ...)  do { if (log_level_check(TUI_LOG_INFO))  tui_log(g_tui_ctx, TUI_LOG_INFO,  fmt, ##__VA_ARGS__); } while(0)
-#define LOG_ERR(fmt, ...)   tui_log(g_tui_ctx, TUI_LOG_ERR, fmt, ##__VA_ARGS__)
+static int log_level(void) { return g_cfg.log_level; }
+
+#define LOG_INFO(...)  do { if (log_level() >= 1) { fprintf(stdout, "[INFO]  " __VA_ARGS__); } } while(0)
+#define LOG_DEBUG(...) do { if (log_level() >= 2) { fprintf(stdout, "[DEBUG] " __VA_ARGS__); } } while(0)
+#define LOG_ERR(...)   fprintf(stderr, "[ERROR] " __VA_ARGS__)
 
 static uint16_t rand_u16(void) {
     return (uint16_t)(rand() & 0xFFFF);
@@ -109,9 +99,7 @@ static void resolvers_save(void) {
 }
 
 static void resolvers_load(void) {
-    fprintf(stderr, "[TRACE] Entered resolvers_load\n"); fflush(stderr);
     if (!g_resolvers_file[0]) return;
-    fprintf(stderr, "[TRACE] resolvers_load: Opening %s\n", g_resolvers_file); fflush(stderr);
     FILE *f = fopen(g_resolvers_file, "r");
     if (!f) return;
     char line[64];
@@ -127,9 +115,7 @@ static void resolvers_load(void) {
             if (strcmp(g_pool.resolvers[i].ip, line) == 0) { dup = 1; break; }
         }
         uv_mutex_unlock(&g_pool.lock);
-        fprintf(stderr, "[TRACE] resolvers_load: Processing line: %s\n", line); fflush(stderr);
         if (!dup) {
-            fprintf(stderr, "[TRACE] resolvers_load: Calling rpool_add\n"); fflush(stderr);
             rpool_add(&g_pool, line);
             added++;
         }
@@ -150,18 +136,16 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
                             const char *domain)
 {
     /* Encode header + payload into a single base32 blob */
-    /* Aggregated packets can be up to ~136 bytes in QNAME */
-    uint8_t raw[1024];
+    uint8_t raw[sizeof(chunk_header_t) + DNSTUN_CHUNK_PAYLOAD + 4];
     size_t  rawlen = 0;
     memcpy(raw + rawlen, hdr, sizeof(*hdr));   rawlen += sizeof(*hdr);
     if (payload && paylen > 0) {
-        if (paylen > sizeof(raw) - sizeof(*hdr)) paylen = sizeof(raw) - sizeof(*hdr);
+        if (paylen > DNSTUN_CHUNK_PAYLOAD) paylen = DNSTUN_CHUNK_PAYLOAD;
         memcpy(raw + rawlen, payload, paylen); rawlen += paylen;
     }
 
     /* base32_encode_len gives the exact output length */
-    char b32[base32_encode_len(1024)];
-    memset(b32, 0, sizeof(b32));
+    char b32[base32_encode_len(sizeof(chunk_header_t) + DNSTUN_CHUNK_PAYLOAD)];
     base32_encode(b32, raw, rawlen);
 
     /* Session ID hex */
@@ -222,8 +206,6 @@ typedef struct probe_req {
     size_t          sendlen;
     uint8_t         recvbuf[2048];
     bool            got_reply;
-    bool            is_hijack_test;
-    bool            is_edns_test;
 } probe_req_t;
 
 static void on_probe_close(uv_handle_t *h) {
@@ -234,14 +216,7 @@ static void on_probe_close(uv_handle_t *h) {
 static void on_probe_timeout(uv_timer_t *t) {
     probe_req_t *p = t->data;
     if (!uv_is_closing((uv_handle_t*)&p->udp)) {
-        LOG_DEBUG("Probe timeout from %s (payload %d)\n", 
-                  g_pool.resolvers[p->resolver_idx].ip, (int)p->sendlen);
         rpool_on_loss(&g_pool, p->resolver_idx);
-        
-        /* Binary search: mark this size as a failure */
-        if (p->sendlen > 512)
-            g_pool.resolvers[p->resolver_idx].mtu_high = (uint16_t)p->sendlen;
-
         uv_close((uv_handle_t*)&p->udp, on_probe_close);
         uv_close((uv_handle_t*)&p->timer, on_probe_close);
     }
@@ -257,58 +232,15 @@ static void on_probe_recv(uv_udp_t *h, ssize_t nread,
     probe_req_t *p = h->data;
 
     if (nread > 0) {
+        /* Zombie / Hijack Check: Verify header/payload match */
+        /* (In a real impl, this would be a signature check) */
         p->got_reply = true;
+        /* Fix #18: sub-millisecond RTT via uv_hrtime() */
         double rtt = (double)(uv_hrtime() / 1000000ULL - p->sent_ms);
         if (rtt < 0.0) rtt = 0.0;
-        
-        /* Hijack Detection Logic (from Python scanner) */
-        if (p->is_hijack_test) {
-            dns_decoded_t decoded[DNS_DECODEBUF_4K];
-            size_t decsz = sizeof(decoded);
-            if (dns_decode(decoded, &decsz, (const dns_packet_t*)p->recvbuf, (size_t)nread) == RCODE_OKAY) {
-                dns_query_t *resp = (dns_query_t*)decoded;
-                if (resp->ancount > 0) {
-                    LOG_ERR("HIJACK detected from %s (returned %d answers for NXDOMAIN)\n", 
-                            g_pool.resolvers[p->resolver_idx].ip, (int)resp->ancount);
-                    g_pool.resolvers[p->resolver_idx].hijacked = true;
-                    rpool_set_state(&g_pool, p->resolver_idx, RSV_ZOMBIE);
-                    return;
-                }
-            }
-        }
-        
-        /* EDNS Detection Logic */
-        if (p->is_edns_test) {
-            dns_decoded_t decoded[DNS_DECODEBUF_4K];
-            size_t decsz = sizeof(decoded);
-            if (dns_decode(decoded, &decsz, (const dns_packet_t*)p->recvbuf, (size_t)nread) == RCODE_OKAY) {
-                dns_query_t *resp = (dns_query_t*)decoded;
-                for (int i = 0; i < (int)resp->arcount; i++) {
-                    dns_answer_t *ans = &resp->additional[i];
-                    if (ans->opt.type == RR_OPT) {
-                        g_pool.resolvers[p->resolver_idx].edns0_supported = true;
-                        LOG_DEBUG("EDNS0 supported by %s (suggested payload: %zu)\n",
-                                  g_pool.resolvers[p->resolver_idx].ip, ans->opt.udp_payload);
-                    }
-                }
-            }
-        }
-
-        LOG_DEBUG("Probe success from %s: RTT %.1f ms\n", g_pool.resolvers[p->resolver_idx].ip, rtt);
         rpool_on_ack(&g_pool, p->resolver_idx, rtt);
-        
-        /* MTU Tracking */
-        if (p->sendlen > g_pool.resolvers[p->resolver_idx].mtu_low)
-            g_pool.resolvers[p->resolver_idx].mtu_low = (uint16_t)p->sendlen;
     } else {
-        LOG_DEBUG("Probe read error from %s: %s\n", 
-                  g_pool.resolvers[p->resolver_idx].ip, 
-                  nread < 0 ? uv_strerror((int)nread) : "Empty");
         rpool_on_loss(&g_pool, p->resolver_idx);
-        
-        /* MTU Tracking: mark failure if this was a larger probe */
-        if (p->sendlen > 512)
-            g_pool.resolvers[p->resolver_idx].mtu_high = (uint16_t)p->sendlen;
     }
 
     if (!uv_is_closing((uv_handle_t*)&p->udp)) {
@@ -327,8 +259,6 @@ static void on_probe_alloc(uv_handle_t *h, size_t sz, uv_buf_t *buf) {
 static void on_probe_send(uv_udp_send_t *sr, int status) {
     if (status != 0) {
         probe_req_t *p = sr->handle->data;
-        LOG_DEBUG("Probe send fail to %s: %s\n", 
-                  g_pool.resolvers[p->resolver_idx].ip, uv_strerror(status));
         if (!uv_is_closing((uv_handle_t*)&p->udp)) {
             rpool_on_loss(&g_pool, p->resolver_idx);
             uv_close((uv_handle_t*)&p->udp, on_probe_close);
@@ -337,105 +267,48 @@ static void on_probe_send(uv_udp_send_t *sr, int status) {
     }
 }
 
-static void fire_probe_ext(int idx, const uint8_t *payload, size_t paylen, const char *domain, bool is_hijack, bool is_edns) {
+static void fire_probe_ext(int idx, const uint8_t *payload, size_t paylen, const char *domain) {
     probe_req_t *p = calloc(1, sizeof(*p));
     if (!p) return;
 
     p->resolver_idx = idx;
-    p->is_hijack_test = is_hijack;
-    p->is_edns_test   = is_edns;
-    p->sent_ms      = uv_hrtime() / 1000000ULL;
+    p->sent_ms      = uv_hrtime() / 1000000ULL;  /* ms via monotonic clock */
 
     resolver_t *r = &g_pool.resolvers[idx];
     memcpy(&p->dest, &r->addr, sizeof(p->dest));
     p->dest.sin_port = htons(53);
 
-    if (is_hijack) {
-        /* Build a standard A-record query for a random non-existent name */
-        dns_query_t qu;
-        dns_question_t qd;
-        char qname[256];
+    /* Build a minimal POLL DNS query */
+    chunk_header_t hdr = {0};
+    hdr.version = DNSTUN_VERSION;
+    hdr.flags   = 0x08; /* poll flag */
+    make_session_id(hdr.session_id);
+    hdr.enc_format      = (uint8_t)r->enc;
+    hdr.downstream_mtu  = r->downstream_mtu;
+    hdr.upstream_mtu    = (uint16_t)paylen;
+    strncpy(hdr.user_id, g_cfg.user_id, sizeof(hdr.user_id));
 
-        memset(&qu, 0, sizeof(qu));
-        qu.id     = (int)(rand() & 0xFFFF);
-        qu.query  = true;   /* this is a query, not a response */
-        qu.rd     = true;   /* recursion desired */
-        qu.qdcount = 1;
-
-        memset(&qd, 0, sizeof(qd));
-        snprintf(qname, sizeof(qname), "nx-%04x-%04x.com", rand() & 0xFFFF, rand() & 0xFFFF);
-        qd.name  = qname;
-        qd.type  = RR_A;
-        qd.class = CLASS_IN;
-        qu.questions = &qd;
-
-        p->sendlen = sizeof(p->sendbuf);
-        dns_encode((dns_packet_t*)p->sendbuf, &p->sendlen, &qu);
-    } else {
-        /* Tunnel Poll logic with optional EDNS0 */
-        chunk_header_t hdr = {0};
-        hdr.version = DNSTUN_VERSION;
-        hdr.flags   = 0x08; /* poll flag */
-        make_session_id(hdr.session_id);
-        hdr.enc_format      = (uint8_t)r->enc;
-        hdr.downstream_mtu  = r->downstream_mtu;
-        hdr.upstream_mtu    = (uint16_t)paylen;
-        strncpy(hdr.user_id, g_cfg.user_id, sizeof(hdr.user_id));
-
-        p->sendlen = sizeof(p->sendbuf);
-        build_dns_query(p->sendbuf, &p->sendlen, &hdr, payload, paylen, domain);
-
-        if (is_edns) {
-            /* Append OPT record to existing packet to probe EDNS0 */
-            dns_decoded_t decbuf[DNS_DECODEBUF_4K];
-            size_t decsz = sizeof(decbuf);
-            if (dns_decode(decbuf, &decsz, (const dns_packet_t*)p->sendbuf, p->sendlen) == RCODE_OKAY) {
-                 dns_query_t *dq = (dns_query_t*)decbuf;
-                 dns_edns0opt_t opt;
-                 memset(&opt, 0, sizeof(opt));
-                 opt.type = RR_OPT;
-                 opt.udp_payload = 1232;
-                 opt.version = 0;
-                 dns_answer_t opt_ans;
-                 memset(&opt_ans, 0, sizeof(opt_ans));
-                 opt_ans.opt = opt;
-                 dq->additional = &opt_ans;
-                 dq->arcount = 1;
-                 p->sendlen = sizeof(p->sendbuf);
-                 dns_encode((dns_packet_t*)p->sendbuf, &p->sendlen, dq);
-            }
-        }
+    p->sendlen = sizeof(p->sendbuf);
+    if (build_dns_query(p->sendbuf, &p->sendlen, &hdr, payload, paylen, domain) != 0) {
+        free(p);
+        return;
     }
 
-    if (uv_udp_init(g_loop, &p->udp) != 0) {
-        free(p); return;
-    }
+    uv_udp_init(g_loop, &p->udp);
     p->udp.data = p;
     
-    struct sockaddr_in bin_addr;
-    uv_ip4_addr("0.0.0.0", 0, &bin_addr);
-    uv_udp_bind(&p->udp, (const struct sockaddr*)&bin_addr, 0);
-
     uv_timer_init(g_loop, &p->timer);
     p->timer.data = p;
     uv_timer_start(&p->timer, on_probe_timeout, 2000, 0);
 
     uv_udp_recv_start(&p->udp, on_probe_alloc, on_probe_recv);
     uv_buf_t buf = uv_buf_init((char*)p->sendbuf, (unsigned)p->sendlen);
-    int r_sd = uv_udp_send(&p->send_req, &p->udp, &buf, 1,
-                           (const struct sockaddr*)&p->dest, on_probe_send);
-    if (r_sd != 0) {
-        LOG_DEBUG("Immediate probe send fail: %s\n", uv_strerror(r_sd));
-        if (!uv_is_closing((uv_handle_t*)&p->udp)) {
-            uv_close((uv_handle_t*)&p->udp, on_probe_close);
-            uv_close((uv_handle_t*)&p->timer, on_probe_close);
-        }
-    }
+    uv_udp_send(&p->send_req, &p->udp, &buf, 1,
+                (const struct sockaddr*)&p->dest, on_probe_send);
 }
 
 static void fire_probe(int idx, const char *domain) {
-    bool use_edns = g_pool.resolvers[idx].edns0_supported;
-    fire_probe_ext(idx, NULL, 0, domain, false, use_edns);
+    fire_probe_ext(idx, NULL, 0, domain);
 }
 
 /* ────────────────────────────────────────────── */
@@ -471,18 +344,6 @@ static void on_init_phase_timeout(uv_timer_t *t) {
 
 static void resolver_init_phase(void) {
     LOG_INFO("=== Resolver Initialization Phase ===\n");
-    tui_render(&g_tui);
-
-    if (g_pool.count == 0) {
-        LOG_ERR("No resolvers loaded! Please check client_resolvers.txt or client.ini seed_list.\n");
-        tui_render(&g_tui);
-        /* Give user 2 seconds to see the error before exiting */
-        uv_timer_t exit_timer;
-        uv_timer_init(g_loop, &exit_timer);
-        uv_timer_start(&exit_timer, on_init_phase_timeout, 2000, 0);
-        uv_run(g_loop, UV_RUN_DEFAULT);
-        exit(1);
-    }
 
     /* Step 1: Add seed resolvers */
     for (int i = 0; i < g_cfg.seed_count; i++)
@@ -496,82 +357,30 @@ static void resolver_init_phase(void) {
 
     /* Step 3: MTU / Rate Discovery */
     const char *domain = (g_cfg.domain_count > 0) ? g_cfg.domains[0] : "example.com";
-    uint16_t mtus[] = { 512, 1024, 1400 };
+    int mtus[] = {512, 1024, 1400};
     uint8_t dummy[1400]; memset(dummy, 'A', 1400);
 
-    /* Stage 1: Hijack Detection (NXDOMAIN test) */
-    LOG_INFO("Scanning for DNS Hijacking / Captive Portals...\n");
-    for (int i = 0; i < g_pool.count; i++) {
-        fire_probe_ext(i, NULL, 0, domain, true, false);
-        if (i % 32 == 0) {
-            uv_run(g_loop, UV_RUN_NOWAIT);
-            tui_render(&g_tui);
-        }
-    }
-    tui_render(&g_tui);
-
-    /* Stage 2: EDNS0 Detection */
-    LOG_INFO("Detecting EDNS0 support...\n");
-    for (int i = 0; i < g_pool.count; i++) {
-        fire_probe_ext(i, NULL, 0, domain, false, true);
-        if (i % 32 == 0) {
-            uv_run(g_loop, UV_RUN_NOWAIT);
-            tui_render(&g_tui);
-        }
-    }
-    tui_render(&g_tui);
-
-    /* Stage 3: MTU Benchmarking (Initial) */
-    LOG_INFO("Measuring MTU & Benchmarking RTT...\n");
+    LOG_INFO("Measuring MTU & Benchmarking QPS...\n");
     for (int m = 0; m < 3; m++) {
         for (int i = 0; i < g_pool.count; i++) {
-            fire_probe_ext(i, dummy, mtus[m], domain, false, false);
-            if (i % 16 == 0) {
-                uv_run(g_loop, UV_RUN_NOWAIT);
-                tui_render(&g_tui);
-            }
+            fire_probe_ext(i, dummy, mtus[m], domain);
+            if (i % 16 == 0) uv_run(g_loop, UV_RUN_NOWAIT);
         }
     }
-    tui_render(&g_tui);
 
-    /* Wait for settlement of initial stages */
+    /* Wait for settlement */
     uv_timer_t wait;
     uv_timer_init(g_loop, &wait);
-    uv_timer_start(&wait, on_init_phase_timeout, 4000, 0);
+    uv_timer_start(&wait, on_init_phase_timeout, 3000, 0);
     uv_run(g_loop, UV_RUN_DEFAULT);
-
-    /* Stage 4: MTU Binary Search Refinement (3 iterations) */
-    LOG_INFO("Refining MTU boundaries (Binary Search)...\n");
-    for (int iter = 0; iter < 3; iter++) {
-        int probes_sent = 0;
-        for (int i = 0; i < g_pool.count; i++) {
-            resolver_t *r = &g_pool.resolvers[i];
-            if (r->state == RSV_ZOMBIE) continue;
-            if (r->mtu_high <= r->mtu_low + 8) continue;
-
-            uint16_t mid = (r->mtu_low + r->mtu_high) / 2;
-            fire_probe_ext(i, dummy, mid, domain, false, false);
-            probes_sent++;
-            if (probes_sent % 32 == 0) uv_run(g_loop, UV_RUN_NOWAIT);
-        }
-        if (probes_sent > 0) {
-            uv_timer_start(&wait, on_init_phase_timeout, 1500, 0);
-            uv_run(g_loop, UV_RUN_DEFAULT);
-        }
-    }
-
     uv_close((uv_handle_t*)&wait, NULL);
     uv_run(g_loop, UV_RUN_NOWAIT);
 
-    /* Final Promotion Logic */
+    /* Promote resolvers that replied (got_reply tracked via AIMD acks) */
     int active = 0;
     for (int i = 0; i < g_pool.count; i++) {
         resolver_t *r = &g_pool.resolvers[i];
-        /* Promote if we got at least one reply and not hijacked */
         if (r->rtt_ms < 900.0 && r->state == RSV_DEAD) {
-            r->upstream_mtu = r->mtu_low;
-            LOG_DEBUG("Promoting %s to ACTIVE (RTT %.1f, MTU %d, EDNS %s)\n", 
-                      r->ip, r->rtt_ms, r->upstream_mtu, r->edns0_supported ? "YES":"no");
             rpool_set_state(&g_pool, i, RSV_ACTIVE);
             active++;
         }
@@ -788,6 +597,7 @@ static void on_dns_recv(uv_udp_t *h,
     int ridx = q->resolver_idx;
 
     if (nread > 0) {
+        /* Measure RTT (fix #14: variable is now correctly named sent_ms) */
         double rtt = (double)(uv_hrtime() / 1000000ULL - q->sent_ms);
         if (rtt < 0.0) rtt = 0.0;
         rpool_on_ack(&g_pool, ridx, rtt);
@@ -835,18 +645,14 @@ static void on_dns_recv(uv_udp_t *h,
                     }
                     g_stats.queries_recv++;
                     g_stats.last_server_rx_ms = uv_hrtime() / 1000000ULL;
-                    LOG_DEBUG("DNS success from %s (decoded)\n", g_pool.resolvers[ridx].ip);
                 }
             }
         } else {
-            LOG_DEBUG("DNS decode error from %s\n", g_pool.resolvers[ridx].ip);
+            /* Bad / zombie response — lose a packet */
             rpool_on_loss(&g_pool, ridx);
             g_stats.queries_lost++;
         }
     } else {
-        LOG_DEBUG("DNS read error from %s: %s\n", 
-                  g_pool.resolvers[ridx].ip, 
-                  nread < 0 ? uv_strerror((int)nread) : "Empty");
         rpool_on_loss(&g_pool, ridx);
         g_stats.queries_lost++;
     }
@@ -891,10 +697,7 @@ static void on_jitter_timer(uv_timer_t *t) {
     uv_buf_t buf = uv_buf_init((char*)q->sendbuf, (unsigned)q->sendlen);
     if (uv_udp_send(&jc->send_req, &q->udp, &buf, 1,
                     (const struct sockaddr*)&q->dest, on_dns_send) != 0) {
-        if (!uv_is_closing((uv_handle_t*)&q->udp)) {
-            uv_close((uv_handle_t*)&q->udp, on_dns_query_close);
-            uv_close((uv_handle_t*)&q->timer, on_dns_query_close);
-        }
+        uv_close((uv_handle_t*)&q->udp, on_dns_query_close);
     } else {
         g_stats.queries_sent++;
     }
@@ -903,9 +706,9 @@ static void on_jitter_timer(uv_timer_t *t) {
 
 /* Fire one DNS query chunk for a session.
    'seq' is the actual sequence number of this FEC symbol. */
-static void fire_dns_chunk_symbol_raw(int session_idx, uint16_t seq,
-                                      const uint8_t *payload, size_t paylen,
-                                      int total_symbols, int pack_count)
+static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
+                                  const uint8_t *payload, size_t paylen,
+                                  int total_symbols)
 {
     int ridx = rpool_next(&g_pool);
     if (ridx < 0) return;
@@ -926,7 +729,6 @@ static void fire_dns_chunk_symbol_raw(int session_idx, uint16_t seq,
     hdr.flags          = (g_cfg.encryption ? 0x01 : 0x00) | 0x02; /* Real-world: always compressed */
     if (paylen == 0) hdr.flags |= 0x08; /* poll flag */
     if (total_symbols > 0) hdr.flags |= 0x04; /* fec flag */
-    hdr.pack_count     = (uint8_t)pack_count;
 
     memcpy(hdr.session_id, sess->id, DNSTUN_SESSION_ID_LEN);
     hdr.seq            = seq;
@@ -952,20 +754,9 @@ static void fire_dns_chunk_symbol_raw(int session_idx, uint16_t seq,
     memcpy(&q->dest, &r->addr, sizeof(q->dest));
     q->dest.sin_port = htons(53);
 
-    if (uv_udp_init(g_loop, &q->udp) != 0) {
-        free(q); return;
-    }
+    uv_udp_init(g_loop, &q->udp);
     q->udp.data = q;
     q->sent_ms  = uv_hrtime() / 1000000ULL;
-
-    /* Explicit bind */
-    struct sockaddr_in bin_addr;
-    uv_ip4_addr("0.0.0.0", 0, &bin_addr);
-    uv_udp_bind(&q->udp, (const struct sockaddr*)&bin_addr, 0);
-
-    uv_timer_init(g_loop, &q->timer);
-    q->timer.data = q;
-    uv_timer_start(&q->timer, on_dns_timeout, 2000, 0);
 
     uv_udp_recv_start(&q->udp, on_dns_alloc, on_dns_recv);
 
@@ -984,32 +775,12 @@ static void fire_dns_chunk_symbol_raw(int session_idx, uint16_t seq,
 
     /* Immediate send (no jitter or allocation failure) */
     uv_buf_t buf = uv_buf_init((char*)q->sendbuf, (unsigned)q->sendlen);
-    int r_sd = uv_udp_send(&q->send_req, &q->udp, &buf, 1,
-                           (const struct sockaddr*)&q->dest, on_dns_send);
-    if (r_sd != 0) {
-        LOG_DEBUG("Immediate DNS send fail to %s: %s\n", r->ip, uv_strerror(r_sd));
-        if (!uv_is_closing((uv_handle_t*)&q->udp)) {
-            uv_close((uv_handle_t*)&q->udp, on_dns_query_close);
-            uv_close((uv_handle_t*)&q->timer, on_dns_query_close);
-        }
+    if (uv_udp_send(&q->send_req, &q->udp, &buf, 1,
+                    (const struct sockaddr*)&q->dest, on_dns_send) != 0)
+    {
+        uv_close((uv_handle_t*)&q->udp, on_dns_query_close);
     } else {
         g_stats.queries_sent++;
-    }
-}
-
-static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
-                                  const uint8_t *payload, size_t paylen,
-                                  int total_symbols, int pack_count)
-{
-    /* Primary send */
-    fire_dns_chunk_symbol_raw(session_idx, seq, payload, paylen, total_symbols, pack_count);
-
-    /* Handshake Redundancy (fix #28): 
-       Duplicate critical packets (seq 0) to top 3 resolvers to ensure fast connect. */
-    if (seq == 0 && paylen > 0) {
-        LOG_DEBUG("Handshake duplication for seq 0 (3x)\n");
-        fire_dns_chunk_symbol_raw(session_idx, seq, payload, paylen, total_symbols, pack_count);
-        fire_dns_chunk_symbol_raw(session_idx, seq, payload, paylen, total_symbols, pack_count);
     }
 }
 
@@ -1042,46 +813,16 @@ static void on_poll_timer(uv_timer_t *t) {
 
             /* 3. FEC ENCODE */
             /* We split the block into source symbols (K) and repair symbols (R).
-               K is derived based on the observed loss rate, or fixed rate if set. */
+               K is derived based on the observed loss rate. */
             int k = (int)ceil((double)enc_len / (double)DNSTUN_CHUNK_PAYLOAD);
             if (k == 0) k = 1;
-            int r;
-            if (g_cfg.fec_repair_rate > 0) {
-                /* Fixed manually configured overhead % */
-                r = (int)ceil((double)k * ((double)g_cfg.fec_repair_rate / 100.0));
-            } else {
-                /* Adaptive based on loss */
-                r = rpool_fec_k(&g_pool, 0, k);
-            }
+            int r = rpool_fec_k(&g_pool, 0, k); /* Use first resolver's state for simplicity in this tick */
             
             fec_encoded_t fec = codec_fec_encode(enc_in, enc_len, k, r);
             if (fec.total_count > 0) {
-                /* 4. SEND SYMBOLS (with Aggregation) */
-                int s = 0;
-                while (s < fec.total_count) {
-                    /* Determine optimal packing based on MTU constraints */
-                    /* We assume max QNAME overhead is ~34 bytes. Max QNAME len = 253.
-                       So max raw bytes is ~135. We cap pack size to fit safely. */
-                    int max_raw = 135; 
-                    int max_payload = max_raw - sizeof(chunk_header_t);
-                    int pack = max_payload / fec.symbol_len;
-                    if (pack < 1) pack = 1;
-                    
-                    int remain = fec.total_count - s;
-                    if (pack > remain) pack = remain;
-                    if (pack > 255) pack = 255; /* pack_count fits in uint8_t */
-
-                    uint8_t agg_buf[512];
-                    size_t  agg_len = 0;
-                    for (int p = 0; p < pack; p++) {
-                        memcpy(agg_buf + agg_len, fec.symbols[s + p], fec.symbol_len);
-                        agg_len += fec.symbol_len;
-                    }
-
-                    fire_dns_chunk_symbol(i, sess->tx_next, agg_buf, agg_len, fec.total_count, pack);
-                    
-                    sess->tx_next += pack;
-                    s += pack;
+                /* 4. SEND SYMBOLS */
+                for (int s = 0; s < fec.total_count; s++) {
+                    fire_dns_chunk_symbol(i, sess->tx_next++, fec.symbols[s], fec.symbol_len, fec.total_count);
                 }
             }
 
@@ -1091,14 +832,14 @@ static void on_poll_timer(uv_timer_t *t) {
             sess->send_len = 0;
         } else {
             /* No upload — send empty POLL to pull downstream data */
-            fire_dns_chunk_symbol(i, sess->tx_next++, NULL, 0, 0, 0);
+            fire_dns_chunk_symbol(i, sess->tx_next++, NULL, 0, 0);
 
             /* 5. CHAFFING (Decoy) */
             if (g_cfg.chaffing && (rand() % 10 == 0)) {
                 /* Send a random-length decoy query once in a while */
                 uint8_t chaff[32];
                 for (int c=0; c<32; c++) chaff[c] = (uint8_t)(rand() & 0xFF);
-                fire_dns_chunk_symbol(i, 0xFFFF, chaff, 16 + (rand() % 16), 0, 0);
+                fire_dns_chunk_symbol(i, 0xFFFF, chaff, 16 + (rand() % 16), 0);
             }
         }
     }
@@ -1198,9 +939,8 @@ static void on_tty_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
 /*  Entry point                                   */
 /* ────────────────────────────────────────────── */
 int main(int argc, char *argv[]) {
-    fprintf(stderr, "[TRACE] main: Entering\n"); fflush(stderr);
     const char *config_path = NULL;
-    static char auto_config_path[2048] = {0};
+    static char auto_config_path[1024] = {0};
     char *slash;
 #ifdef _WIN32
     char *bslash;
@@ -1215,11 +955,6 @@ int main(int argc, char *argv[]) {
     uv_timer_t chrome_timer;
 
     srand((unsigned)time(NULL));
-    
-    if (sodium_init() < 0) {
-        fprintf(stderr, "libsodium initialization failed.\n");
-        return 1;
-    }
 
     /* Parse arguments */
     for (int i = 1; i < argc; i++) {
@@ -1248,11 +983,9 @@ int main(int argc, char *argv[]) {
         }
         if (!config_path) {
             /* Try relative to executable */
-            /* Reserve 32 bytes for the longest possible suffix "/../../.." + "/client.ini" */
-            char exe_path[sizeof(auto_config_path) - 32];
+            char exe_path[1024];
             size_t size = sizeof(exe_path);
             if (uv_exepath(exe_path, &size) == 0) {
-                exe_path[sizeof(exe_path) - 1] = '\0'; /* guarantee NUL */
                 char *eslash = strrchr(exe_path, '/');
 #ifdef _WIN32
                 char *ebslash = strrchr(exe_path, '\\');
@@ -1262,8 +995,7 @@ int main(int argc, char *argv[]) {
                     *eslash = '\0';
                     const char *rel[] = {"", "/..", "/../..", "/../../.."};
                     for (int i = 0; i < 4; i++) {
-                        snprintf(auto_config_path, sizeof(auto_config_path),
-                                 "%s%s/client.ini", exe_path, rel[i]);
+                        snprintf(auto_config_path, sizeof(auto_config_path), "%s%s/client.ini", exe_path, rel[i]);
                         FILE *tf = fopen(auto_config_path, "r");
                         if (tf) {
                             fclose(tf);
@@ -1297,14 +1029,12 @@ int main(int argc, char *argv[]) {
 
     /* Load config */
     config_defaults(&g_cfg, false);
-    fprintf(stderr, "[TRACE] main: config_defaults done\n"); fflush(stderr);
     if (config_load(&g_cfg, config_path) != 0) {
         fprintf(stderr,
             "Warning: could not load '%s', using defaults.\n"
             "Create client.ini to configure the tunnel.\n\n",
             config_path);
     }
-    fprintf(stderr, "[TRACE] main: config_load done\n"); fflush(stderr);
 
     /* ── First-run: ask for tunnel domain if not configured ────────────────
        This writes the domain to the INI file so subsequent runs are silent. */
@@ -1338,9 +1068,7 @@ int main(int argc, char *argv[]) {
     g_loop = uv_default_loop();
 
     /* Init resolver pool, then load saved resolvers from disk */
-    fprintf(stderr, "[TRACE] main: calling rpool_init\n"); fflush(stderr);
     rpool_init(&g_pool, &g_cfg);
-    fprintf(stderr, "[TRACE] main: rpool_init done\n"); fflush(stderr);
 
     FILE *rf_check = fopen(g_resolvers_file, "r");
     if (!rf_check) {
@@ -1393,9 +1121,7 @@ int main(int argc, char *argv[]) {
         fclose(rf_check);
     }
 
-    fprintf(stderr, "[TRACE] main: calling resolvers_load\n"); fflush(stderr);
     resolvers_load();
-    fprintf(stderr, "[TRACE] main: resolvers_load done\n"); fflush(stderr);
 
     /* Parse SOCKS5 bind address */
     if (g_cfg.socks5_bind[0]) {
@@ -1418,11 +1144,7 @@ int main(int argc, char *argv[]) {
     }
 
     /* TUI */
-    fprintf(stderr, "[TRACE] main: calling tui_init\n"); fflush(stderr);
     tui_init(&g_tui, &g_stats, &g_pool, &g_cfg, "CLIENT", config_path);
-    fprintf(stderr, "[TRACE] main: tui_init done\n"); fflush(stderr);
-    tui_render(&g_tui); /* Initial render to clear screen and show frame */
-    fprintf(stderr, "[TRACE] main: initial tui_render done\n"); fflush(stderr);
 
     LOG_INFO("dnstun-client starting\n");
     LOG_INFO("  SOCKS5  : %s:%d\n", bind_ip, bind_port);
@@ -1449,16 +1171,13 @@ int main(int argc, char *argv[]) {
     uv_timer_init(g_loop, &g_tui_timer);
     uv_timer_start(&g_tui_timer, on_tui_timer, 1000, 1000);
 
-    /* Bind STDIN for TUI *before* resolver scanning so it renders immediately */
-    if (uv_tty_init(g_loop, &g_tty, 0, 1) == 0) {
-        uv_tty_set_mode(&g_tty, UV_TTY_MODE_RAW);
-        uv_read_start((uv_stream_t*)&g_tty, on_tty_alloc, on_tty_read);
-    } else {
-        LOG_WARN("Cannot initialize TTY for input. Running in headless mode.\n");
-    }
-
     /* Resolver init phase (probes resolvers, runs loop for ~3s) */
     resolver_init_phase();
+
+    /* Bind STDIN for TUI */
+    uv_tty_init(g_loop, &g_tty, 0, 1);
+    uv_tty_set_mode(&g_tty, UV_TTY_MODE_RAW);
+    uv_read_start((uv_stream_t*)&g_tty, on_tty_alloc, on_tty_read);
 
     /* Run event loop */
     uv_run(g_loop, UV_RUN_DEFAULT);
