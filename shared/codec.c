@@ -416,3 +416,24 @@ void codec_fec_free(fec_encoded_t *f) {
     free(f->symbols);
     memset(f, 0, sizeof(*f));
 }
+
+/* ── Buffer Pool Public API ────────────────────────────────────────────────
+   
+   IMPORTANT: Always use these functions to free codec results instead of
+   calling free() directly. This returns buffers to the pool for reuse.
+─────────────────────────────────────────────────────────────────────────── */
+
+/* Free a codec result, returning its buffer to the pool for reuse */
+void codec_free_result(codec_result_t *res) {
+    if (!res || !res->data) return;
+    buffer_pool_release(res->data, res->len);
+    res->data = NULL;
+    res->len = 0;
+    res->error = false;
+}
+
+/* Shutdown the buffer pool and free all pre-allocated buffers.
+   Call this at program exit to clean up. */
+void codec_pool_shutdown(void) {
+    buffer_pool_destroy();
+}

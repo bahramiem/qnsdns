@@ -50,4 +50,18 @@ codec_result_t codec_fec_decode(fec_encoded_t *encoded, size_t original_len);
 
 void codec_fec_free(fec_encoded_t *f);
 
+/* ──────────────────────────────────────────────
+   Buffer Pool Management
+   
+   The codec functions use an internal buffer pool to reduce
+   malloc/free overhead. Use these functions to properly return
+   buffers to the pool instead of calling free() directly.
+────────────────────────────────────────────── */
+
+/* Free a codec result, returning its buffer to the pool */
+void codec_free_result(codec_result_t *res);
+
+/* Shutdown the buffer pool (call at program exit) */
+void codec_pool_shutdown(void);
+
 #endif /* DNSTUN_CODEC_H */
