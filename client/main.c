@@ -636,6 +636,9 @@ static void resolver_init_phase(void) {
         if (results[i].longname_supported) {
             longname_ok++;
         } else {
+            /* Set failure reason for dead resolver */
+            strncpy(g_pool.resolvers[i].fail_reason, "long-QNAME reject", sizeof(g_pool.resolvers[i].fail_reason) - 1);
+            g_pool.resolvers[i].fail_reason[sizeof(g_pool.resolvers[i].fail_reason) - 1] = '\0';
             rpool_set_state(&g_pool, i, RSV_DEAD);
         }
     }
@@ -662,6 +665,9 @@ static void resolver_init_phase(void) {
         if (results[i].nxdomain_correct) {
             nxdomain_ok++;
         } else {
+            /* Set failure reason - fake resolver */
+            strncpy(g_pool.resolvers[i].fail_reason, "fake resolver", sizeof(g_pool.resolvers[i].fail_reason) - 1);
+            g_pool.resolvers[i].fail_reason[sizeof(g_pool.resolvers[i].fail_reason) - 1] = '\0';
             rpool_set_state(&g_pool, i, RSV_DEAD);
         }
     }
@@ -697,7 +703,9 @@ static void resolver_init_phase(void) {
             rpool_set_state(&g_pool, i, RSV_ACTIVE);
             active++;
         } else if (r->state == RSV_DEAD) {
-            /* Failed Phase 3 - keep as dead */
+            /* Failed Phase 3 - no EDNS/TXT support */
+            strncpy(r->fail_reason, "no EDNS/TXT support", sizeof(r->fail_reason) - 1);
+            r->fail_reason[sizeof(r->fail_reason) - 1] = '\0';
             rpool_set_state(&g_pool, i, RSV_DEAD);
         }
     }

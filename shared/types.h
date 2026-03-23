@@ -73,7 +73,7 @@ typedef struct resolver {
     char               ip[46];
 
     resolver_state_t   state;
-    enc_format_t       enc;
+    enc_format_t      enc;
 
     /* MTU */
     uint16_t           upstream_mtu;   /* max query payload bytes */
@@ -102,6 +102,9 @@ typedef struct resolver {
 
     /* Swarm */
     bool               from_swarm;     /* added by server swarm sync */
+
+    /* Scanner.py style test results */
+    char               fail_reason[64]; /* Reason for failure in resolver testing */
 } resolver_t;
 
 /* ──────────────────────────────────────────────

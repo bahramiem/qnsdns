@@ -40,6 +40,7 @@ int rpool_add(resolver_pool_t *pool, const char *ip) {
     memset(r, 0, sizeof(*r));
     strncpy(r->ip, ip, sizeof(r->ip)-1);
     uv_ip4_addr(ip, 53, &r->addr);
+    r->fail_reason[0] = '\0'; /* Clear failure reason */
     r->state          = RSV_DEAD; /* start in dead; testing promotes it */
     r->cwnd           = pool->cfg->cwnd_init;
     r->cwnd_max       = pool->cfg->cwnd_max;

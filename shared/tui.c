@@ -244,6 +244,7 @@ static void render_resolvers(tui_ctx_t *t) {
         double           loss_rate;
         uint32_t         fec_k;
         enc_format_t     enc;
+        char             fail_reason[64];
     } snap_t;
 
     snap_t snaps[24];
@@ -263,6 +264,8 @@ static void render_resolvers(tui_ctx_t *t) {
         snaps[shown].fec_k         = r->fec_k;
         snaps[shown].enc           = r->enc;
         strncpy(snaps[shown].ip, r->ip, sizeof(snaps[shown].ip) - 1);
+        strncpy(snaps[shown].fail_reason, r->fail_reason, sizeof(snaps[shown].fail_reason) - 1);
+        snaps[shown].fail_reason[sizeof(snaps[shown].fail_reason) - 1] = '\0';
         shown++;
     }
     uv_mutex_unlock(&pool->lock);
@@ -275,7 +278,7 @@ static void render_resolvers(tui_ctx_t *t) {
 
     for (int i = 0; i < shown; i++) {
         snap_t *s = &snaps[i];
-        printf("%-16s %s %5.0f %6.1f %5.0f %4d %5.1f %4u %s\n",
+        printf("%-16s %s %5.0f %6.1f %5.0f %4d %5.1f %4u %s",
                s->ip,
                state_str(s->state),
                s->cwnd,
@@ -285,6 +288,11 @@ static void render_resolvers(tui_ctx_t *t) {
                s->loss_rate * 100.0,
                s->fec_k,
                s->enc == ENC_BINARY ? "bin" : "b64");
+        /* Show failure reason for dead/zombie resolvers */
+        if ((s->state == RSV_DEAD || s->state == RSV_ZOMBIE) && s->fail_reason[0]) {
+            printf(" %s" ANSI_RED " [%s]" ANSI_RESET, "", s->fail_reason);
+        }
+        printf("\n");
     }
 
     hr(72, ANSI_CYAN);
