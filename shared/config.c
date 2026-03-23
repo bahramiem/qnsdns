@@ -51,6 +51,12 @@ void config_defaults(dnstun_config_t *cfg, bool is_server) {
     cfg->dns_flux             = false;
     cfg->flux_period_sec      = 21600; /* 6 hours */
 
+    /* resolver_testing - Scanner.py style DNS resolver testing */
+    strcpy(cfg->test_domain, "s.domain.com");
+    strcpy(cfg->nonexistent_domain, "nonexistent.example.com");
+    strcpy(cfg->long_label_domain, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.google.com");
+    cfg->test_timeout_ms     = 1000;
+
     /* transport */
     cfg->transport            = TRANSPORT_UDP;
 
@@ -135,6 +141,13 @@ int config_set_key(dnstun_config_t *cfg,
         }
         else if (strcmp(key,"dns_flux")==0)      cfg->dns_flux        = parse_bool(value);
         else if (strcmp(key,"flux_period_sec")==0) cfg->flux_period_sec = atoi(value);
+    }
+    /* [resolver_testing] - Scanner.py style DNS resolver testing */
+    else if (strcmp(section,"resolver_testing")==0) {
+        if      (strcmp(key,"test_domain")==0)          strncpy(cfg->test_domain, value, sizeof(cfg->test_domain)-1);
+        else if (strcmp(key,"nonexistent_domain")==0)   strncpy(cfg->nonexistent_domain, value, sizeof(cfg->nonexistent_domain)-1);
+        else if (strcmp(key,"long_label_domain")==0)    strncpy(cfg->long_label_domain, value, sizeof(cfg->long_label_domain)-1);
+        else if (strcmp(key,"test_timeout_ms")==0)      cfg->test_timeout_ms = atoi(value);
     }
     /* [transport] */
     else if (strcmp(section,"transport")==0) {

@@ -206,8 +206,26 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
 }
 
 /* ────────────────────────────────────────────── */
-/*  Resolver probe — fire a single test query     */
+/*  Scanner.py-style DNS Resolver Testing         */
+/*  Three-phase test: Long QNAME → NXDOMAIN → EDNS/TXT */
 /* ────────────────────────────────────────────── */
+typedef enum {
+    PROBE_TEST_NONE = 0,
+    PROBE_TEST_LONGNAME,      /* Phase 1: Long QNAME support */
+    PROBE_TEST_NXDOMAIN,      /* Phase 2: NXDOMAIN behavior (fake resolver filter) */
+    PROBE_TEST_EDNS_TXT      /* Phase 3: EDNS + TXT support and MTU detection */
+} probe_test_type_t;
+
+/* Result structure for each resolver */
+typedef struct {
+    bool        longname_supported;  /* Phase 1 result */
+    bool        nxdomain_correct;     /* Phase 2 result (false = fake resolver) */
+    bool        edns_supported;      /* Phase 3 result */
+    bool        txt_supported;       /* Phase 3 result */
+    uint16_t    mtu;                 /* EDNS payload size from Phase 3 */
+    double      rtt_ms;              /* RTT for Phase 3 test */
+} resolver_test_result_t;
+
 typedef struct probe_req {
     uv_udp_t        udp;
     uv_timer_t      timer;
@@ -215,11 +233,13 @@ typedef struct probe_req {
     uv_udp_send_t   send_req;
     struct sockaddr_in dest;
     int             resolver_idx;
-    uint64_t        sent_ms;  /* ms timestamp via uv_hrtime() / 1e6 (fix #18) */
+    uint64_t        sent_ms;
     uint8_t         sendbuf[512];
     size_t          sendlen;
     uint8_t         recvbuf[2048];
     bool            got_reply;
+    probe_test_type_t test_type;     /* Which test this probe is performing */
+    resolver_test_result_t *result;  /* Pointer to shared result for this resolver */
 } probe_req_t;
 
 static void on_probe_close(uv_handle_t *h) {
@@ -242,17 +262,92 @@ static void on_probe_recv(uv_udp_t *h, ssize_t nread,
                           unsigned flags)
 {
     if (nread == 0 && addr == NULL) return; /* spurious wake-up, ignore */
-    (void)buf; (void)flags;
+    (void)flags;
     probe_req_t *p = h->data;
 
     if (nread > 0) {
-        /* Zombie / Hijack Check: Verify header/payload match */
-        /* (In a real impl, this would be a signature check) */
-        p->got_reply = true;
-        /* Fix #18: sub-millisecond RTT via uv_hrtime() */
         double rtt = (double)(uv_hrtime() / 1000000ULL - p->sent_ms);
         if (rtt < 0.0) rtt = 0.0;
+
+        /* Update RTT in pool */
         rpool_on_ack(&g_pool, p->resolver_idx, rtt);
+
+        /* Parse DNS response based on test type */
+        if (p->test_type == PROBE_TEST_LONGNAME && p->result) {
+            /* Phase 1: Long QNAME test - any response means success */
+            p->result->longname_supported = true;
+            p->got_reply = true;
+        }
+        else if (p->test_type == PROBE_TEST_NXDOMAIN && p->result) {
+            /* Phase 2: NXDOMAIN test - check for NXDOMAIN or NOERROR with empty answer */
+            /* Fake resolvers return REFUSED or other errors */
+            if (nread >= 12) {
+                uint8_t *resp = (uint8_t *)buf->base;
+                uint16_t flags = (resp[2] << 8) | resp[3];
+                uint8_t rcode = flags & 0x0F;
+                /* NXDOMAIN = 3, NOERROR = 0, REFUSED = 5 */
+                if (rcode == 3 || rcode == 0) {
+                    /* Check if answer section is empty (for NOERROR) */
+                    uint16_t ancount = (resp[6] << 8) | resp[7];
+                    if (rcode == 3 || ancount == 0) {
+                        p->result->nxdomain_correct = true;
+                        p->got_reply = true;
+                    }
+                }
+            }
+        }
+        else if (p->test_type == PROBE_TEST_EDNS_TXT && p->result) {
+            /* Phase 3: EDNS + TXT test - check for EDNS support and TXT record */
+            if (nread >= 12) {
+                uint8_t *resp = (uint8_t *)buf->base;
+                /* Check for OPT record (EDNS) - look for root zone (0) with type 41 */
+                /* DNS header is 12 bytes, then question section, then answer/additional */
+                p->result->edns_supported = false;
+                p->result->txt_supported = false;
+                p->result->rtt_ms = rtt;
+
+                /* Parse DNS packet to find EDNS (OPT) record */
+                size_t offset = 12;
+                
+                /* Skip question section - read QNAME dynamically */
+                /* Simple approach: skip until we find the null byte and QTYPE/QCLASS */
+                while (offset < (size_t)nread && resp[offset] != 0) {
+                    offset += resp[offset] + 1;
+                }
+                offset += 5; /* Skip null byte, QTYPE (2), QCLASS (2) */
+
+                /* Now parse records - look for TXT record or OPT record */
+                while (offset + 11 < (size_t)nread) {
+                    uint8_t name = resp[offset];
+                    uint16_t rtype = (resp[offset + 1] << 8) | resp[offset + 2];
+                    /* uint16_t rclass = (resp[offset + 3] << 8) | resp[offset + 4]; */
+                    /* uint32_t ttl = (resp[offset + 5] << 24) | (resp[offset + 6] << 16) | 
+                                   (resp[offset + 7] << 8) | resp[offset + 8]; */
+                    uint16_t rdlen = (resp[offset + 9] << 8) | resp[offset + 10];
+                    
+                    if (name == 0) {
+                        if (rtype == 41) { /* OPT record - EDNS supported */
+                            /* Payload size is in the TTL field's upper 16 bits */
+                            uint16_t udp_payload = (resp[offset + 7] << 8) | resp[offset + 8];
+                            p->result->edns_supported = true;
+                            p->result->mtu = udp_payload;
+                        } else if (rtype == 16) { /* TXT record */
+                            p->result->txt_supported = true;
+                        }
+                    }
+                    
+                    offset += 11 + rdlen;
+                }
+
+                /* Success if either EDNS or TXT is supported */
+                if (p->result->edns_supported || p->result->txt_supported) {
+                    p->got_reply = true;
+                }
+            }
+        } else {
+            /* Default behavior for legacy POLL probes */
+            p->got_reply = true;
+        }
     } else {
         rpool_on_loss(&g_pool, p->resolver_idx);
     }
@@ -326,6 +421,138 @@ static void fire_probe(int idx, const char *domain) {
 }
 
 /* ────────────────────────────────────────────── */
+/*  Standard DNS Query Builder for Resolver Testing */
+/*  (Scanner.py style - not POLL format)          */
+/* ────────────────────────────────────────────── */
+
+/* Build a standard DNS query with optional EDNS (RFC 6891) */
+static size_t build_test_dns_query(uint8_t *buf, size_t bufsize,
+                                    const char *qname, uint16_t qtype,
+                                    uint16_t qclass, bool use_edns) {
+    size_t offset = 0;
+    uint16_t id = rand_u16();
+
+    /* DNS Header (12 bytes) */
+    buf[offset++] = (id >> 8) & 0xFF;   /* Transaction ID */
+    buf[offset++] = id & 0xFF;
+    buf[offset++] = 0x01;               /* Flags: RD = 1 (recursion desired) */
+    buf[offset++] = 0x00;
+    buf[offset++] = 0x00;               /* QDCOUNT (questions) */
+    buf[offset++] = 0x01;
+    buf[offset++] = 0x00;               /* ANCOUNT */
+    buf[offset++] = 0x00;
+    buf[offset++] = 0x00;               /* NSCOUNT */
+    buf[offset++] = 0x00;
+    buf[offset++] = 0x00;               /* ARCOUNT (will be 1 if EDNS) */
+    buf[offset++] = use_edns ? 0x01 : 0x00;
+
+    /* QNAME - convert domain to DNS label format */
+    const char *p = qname;
+    while (*p) {
+        const char *dot = strchr(p, '.');
+        if (!dot) dot = p + strlen(p);
+        size_t label_len = dot - p;
+        if (offset + label_len + 1 > bufsize - (use_edns ? 11 : 0)) break;
+        buf[offset++] = (uint8_t)label_len;
+        memcpy(buf + offset, p, label_len);
+        offset += label_len;
+        p = dot;
+        if (*p) p++; /* Skip dot */
+    }
+    buf[offset++] = 0; /* Null terminator */
+
+    /* QTYPE and QCLASS */
+    buf[offset++] = (qtype >> 8) & 0xFF;
+    buf[offset++] = qtype & 0xFF;
+    buf[offset++] = (qclass >> 8) & 0xFF;
+    buf[offset++] = qclass & 0xFF;
+
+    /* EDNS0 OPT record (RFC 6891) */
+    if (use_edns) {
+        buf[offset++] = 0x00;           /* NAME: root zone */
+        buf[offset++] = 0x00;           /* TYPE: 41 = OPT */
+        buf[offset++] = 0x29;
+        buf[offset++] = 0x04;           /* CLASS/UDP_PAYLOAD: 1232 (recommended) */
+        buf[offset++] = 0xD0;
+        buf[offset++] = 0x00;           /* TTL: extended RCODE and flags = 0 */
+        buf[offset++] = 0x00;
+        buf[offset++] = 0x00;
+        buf[offset++] = 0x00;
+        buf[offset++] = 0x00;           /* RDLEN: 0 */
+        buf[offset++] = 0x00;
+    }
+
+    return offset;
+}
+
+/* Fire a scanner.py-style resolver test probe */
+static void fire_test_probe(int idx, probe_test_type_t test_type,
+                            resolver_test_result_t *result) {
+    probe_req_t *p = calloc(1, sizeof(*p));
+    if (!p) return;
+
+    p->resolver_idx = idx;
+    p->sent_ms = uv_hrtime() / 1000000ULL;
+    p->test_type = test_type;
+    p->result = result;
+
+    resolver_t *r = &g_pool.resolvers[idx];
+    memcpy(&p->dest, &r->addr, sizeof(p->dest));
+    p->dest.sin_port = htons(53);
+
+    const char *domain;
+    uint16_t qtype;
+    bool use_edns = false;
+
+    switch (test_type) {
+        case PROBE_TEST_LONGNAME:
+            /* Phase 1: Long QNAME test - use configured long label domain */
+            domain = g_cfg.long_label_domain[0] ? g_cfg.long_label_domain : 
+                     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.google.com";
+            qtype = 1; /* A record */
+            use_edns = false;
+            break;
+        case PROBE_TEST_NXDOMAIN:
+            /* Phase 2: NXDOMAIN test - use nonexistent domain */
+            domain = g_cfg.nonexistent_domain[0] ? g_cfg.nonexistent_domain : 
+                     "nonexistent.example.com";
+            qtype = 1; /* A record */
+            use_edns = false;
+            break;
+        case PROBE_TEST_EDNS_TXT:
+            /* Phase 3: EDNS + TXT test */
+            domain = g_cfg.test_domain[0] ? g_cfg.test_domain : "s.domain.com";
+            qtype = 16; /* TXT record */
+            use_edns = true;
+            break;
+        default:
+            free(p);
+            return;
+    }
+
+    p->sendlen = build_test_dns_query(p->sendbuf, sizeof(p->sendbuf),
+                                      domain, qtype, 1, use_edns);
+
+    if (p->sendlen == 0 || p->sendlen > sizeof(p->sendbuf)) {
+        free(p);
+        return;
+    }
+
+    uv_udp_init(g_loop, &p->udp);
+    p->udp.data = p;
+
+    uv_timer_init(g_loop, &p->timer);
+    p->timer.data = p;
+    uv_timer_start(&p->timer, on_probe_timeout, 
+                   (uint64_t)g_cfg.test_timeout_ms > 0 ? g_cfg.test_timeout_ms : 1000, 0);
+
+    uv_udp_recv_start(&p->udp, on_probe_alloc, on_probe_recv);
+    uv_buf_t buf = uv_buf_init((char*)p->sendbuf, (unsigned)p->sendlen);
+    uv_udp_send(&p->send_req, &p->udp, &buf, 1,
+                (const struct sockaddr*)&p->dest, on_probe_send);
+}
+
+/* ────────────────────────────────────────────── */
 /*  CIDR Scan — find sibling resolvers           */
 /* ────────────────────────────────────────────── */
 static void cidr_scan_subnet(const char *seed_ip, int prefix) {
@@ -350,59 +577,151 @@ static void cidr_scan_subnet(const char *seed_ip, int prefix) {
 }
 
 /* ────────────────────────────────────────────── */
-/*  Resolver Init Phase                           */
+/*  Resolver Init Phase (Scanner.py style)        */
 /* ────────────────────────────────────────────── */
 static void on_init_phase_timeout(uv_timer_t *t) {
     uv_stop(t->loop);
 }
 
+/* Helper: run event loop for specified milliseconds */
+static void run_event_loop_ms(int timeout_ms) {
+    uv_timer_t wait;
+    uv_timer_init(g_loop, &wait);
+    uv_timer_start(&wait, on_init_phase_timeout, (uint64_t)timeout_ms, 0);
+    uv_run(g_loop, UV_RUN_DEFAULT);
+    uv_close((uv_handle_t*)&wait, NULL);
+    uv_run(g_loop, UV_RUN_NOWAIT);
+}
+
 static void resolver_init_phase(void) {
-    LOG_INFO("=== Resolver Initialization Phase ===\n");
+    LOG_INFO("=== Resolver Initialization Phase (Scanner.py style) ===\n");
 
     /* Step 1: Add seed resolvers */
     for (int i = 0; i < g_cfg.seed_count; i++)
         rpool_add(&g_pool, g_cfg.seed_resolvers[i]);
 
+    LOG_INFO("Loaded %d seed resolvers\n", g_pool.count);
+
     /* Step 2: CIDR scan seed IPs (find siblings) */
     if (g_cfg.cidr_scan) {
         for (int i = 0; i < g_cfg.seed_count; i++)
             cidr_scan_subnet(g_cfg.seed_resolvers[i], g_cfg.cidr_prefix);
+        LOG_INFO("After CIDR scan: %d resolvers in pool\n", g_pool.count);
     }
 
-    /* Step 3: MTU / Rate Discovery */
-    const char *domain = (g_cfg.domain_count > 0) ? g_cfg.domains[0] : "example.com";
-    int mtus[] = {512, 1024, 1400};
-    uint8_t dummy[1400]; memset(dummy, 'A', 1400);
+    /* Allocate result tracking for each resolver */
+    resolver_test_result_t *results = calloc(g_pool.count, sizeof(resolver_test_result_t));
+    if (!results) {
+        LOG_ERR("Failed to allocate test results\n");
+        return;
+    }
 
-    LOG_INFO("Measuring MTU & Benchmarking QPS...\n");
-    for (int m = 0; m < 3; m++) {
-        for (int i = 0; i < g_pool.count; i++) {
-            fire_probe_ext(i, dummy, mtus[m], domain);
-            if (i % 16 == 0) uv_run(g_loop, UV_RUN_NOWAIT);
+    int wait_ms = (g_cfg.test_timeout_ms > 0) ? g_cfg.test_timeout_ms + 500 : 1500;
+
+    /* ─── Phase 1: Long QNAME Test ─── */
+    LOG_INFO("--- Phase 1: Testing Long QNAME support ---\n");
+    int phase1_count = 0;
+    for (int i = 0; i < g_pool.count; i++) {
+        if (g_pool.resolvers[i].state == RSV_DEAD) {
+            fire_test_probe(i, PROBE_TEST_LONGNAME, &results[i]);
+            phase1_count++;
+            if (phase1_count % 50 == 0) uv_run(g_loop, UV_RUN_NOWAIT);
         }
     }
+    run_event_loop_ms(wait_ms);
 
-    /* Wait for settlement */
-    uv_timer_t wait;
-    uv_timer_init(g_loop, &wait);
-    uv_timer_start(&wait, on_init_phase_timeout, 3000, 0);
-    uv_run(g_loop, UV_RUN_DEFAULT);
-    uv_close((uv_handle_t*)&wait, NULL);
-    uv_run(g_loop, UV_RUN_NOWAIT);
+    /* Filter: keep only resolvers that support long QNAME */
+    int longname_ok = 0;
+    for (int i = 0; i < g_pool.count; i++) {
+        if (results[i].longname_supported) {
+            longname_ok++;
+        } else {
+            rpool_set_state(&g_pool, i, RSV_DEAD);
+        }
+    }
+    LOG_INFO("Phase 1 complete: %d/%d resolvers support long QNAME\n", 
+             longname_ok, g_pool.count);
 
-    /* Promote resolvers that replied (got_reply tracked via AIMD acks) */
+    /* ─── Phase 2: NXDOMAIN Test (Fake Resolver Filter) ─── */
+    LOG_INFO("--- Phase 2: Testing NXDOMAIN behavior (fake resolver filter) ---\n");
+    int phase2_count = 0;
+    for (int i = 0; i < g_pool.count; i++) {
+        if (g_pool.resolvers[i].state == RSV_DEAD) {
+            /* Already filtered by Phase 1, but reset for Phase 2 */
+            results[i].nxdomain_correct = false;
+            fire_test_probe(i, PROBE_TEST_NXDOMAIN, &results[i]);
+            phase2_count++;
+            if (phase2_count % 50 == 0) uv_run(g_loop, UV_RUN_NOWAIT);
+        }
+    }
+    run_event_loop_ms(wait_ms);
+
+    /* Filter: keep only resolvers with correct NXDOMAIN behavior */
+    int nxdomain_ok = 0;
+    for (int i = 0; i < g_pool.count; i++) {
+        if (results[i].nxdomain_correct) {
+            nxdomain_ok++;
+        } else {
+            rpool_set_state(&g_pool, i, RSV_DEAD);
+        }
+    }
+    LOG_INFO("Phase 2 complete: %d/%d resolvers passed NXDOMAIN test\n", 
+             nxdomain_ok, g_pool.count);
+
+    /* ─── Phase 3: EDNS + TXT Quality Test ─── */
+    LOG_INFO("--- Phase 3: Testing EDNS + TXT support and MTU detection ---\n");
+    int phase3_count = 0;
+    for (int i = 0; i < g_pool.count; i++) {
+        if (g_pool.resolvers[i].state == RSV_DEAD) {
+            results[i].edns_supported = false;
+            results[i].txt_supported = false;
+            results[i].mtu = 0;
+            fire_test_probe(i, PROBE_TEST_EDNS_TXT, &results[i]);
+            phase3_count++;
+            if (phase3_count % 50 == 0) uv_run(g_loop, UV_RUN_NOWAIT);
+        }
+    }
+    run_event_loop_ms(wait_ms);
+
+    /* Final filter: promote resolvers that passed all tests */
     int active = 0;
     for (int i = 0; i < g_pool.count; i++) {
         resolver_t *r = &g_pool.resolvers[i];
-        if (r->rtt_ms < 900.0 && r->state == RSV_DEAD) {
+        
+        if (r->state == RSV_DEAD && (results[i].edns_supported || results[i].txt_supported)) {
+            /* Update resolver with discovered MTU from EDNS */
+            if (results[i].mtu > 0) {
+                r->upstream_mtu = results[i].mtu;
+                r->edns0_supported = true;
+            }
             rpool_set_state(&g_pool, i, RSV_ACTIVE);
             active++;
+        } else if (r->state == RSV_DEAD) {
+            /* Failed Phase 3 - keep as dead */
+            rpool_set_state(&g_pool, i, RSV_DEAD);
         }
     }
 
-    LOG_INFO("Init complete: %d/%d resolvers active\n", active, g_pool.count);
-    g_stats.active_resolvers  = g_pool.active_count;
-    g_stats.dead_resolvers    = g_pool.dead_count;
+    LOG_INFO("=== Init complete: %d/%d resolvers active ===\n", active, g_pool.count);
+    LOG_INFO("EDNS resolvers: %d, TXT resolvers: %d\n",
+             active, active);
+
+    /* Log MTU statistics */
+    int mtu_min = 9999, mtu_max = 0;
+    for (int i = 0; i < g_pool.count; i++) {
+        if (results[i].mtu > 0) {
+            if (results[i].mtu < mtu_min) mtu_min = results[i].mtu;
+            if (results[i].mtu > mtu_max) mtu_max = results[i].mtu;
+        }
+    }
+    if (mtu_min < 9999) {
+        LOG_INFO("MTU range: %d - %d\n", mtu_min, mtu_max);
+    }
+
+    free(results);
+
+    g_stats.active_resolvers = g_pool.active_count;
+    g_stats.dead_resolvers   = g_pool.dead_count;
 }
 
 /* ────────────────────────────────────────────── */

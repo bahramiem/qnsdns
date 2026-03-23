@@ -44,6 +44,12 @@ typedef struct dnstun_config {
     bool     dns_flux;          /* time-sliced domain rotation */
     int      flux_period_sec;   /* default 21600 (6h) */
 
+    /* [resolver_testing] - Scanner.py style DNS resolver testing */
+    char     test_domain[256];       /* Domain for EDNS/TXT tests (default: s.domain.com) */
+    char     nonexistent_domain[256]; /* Domain for NXDOMAIN test (default: nonexistent.example.com) */
+    char     long_label_domain[256];  /* Long label for QNAME test (default: 60x 'a' + .google.com) */
+    int      test_timeout_ms;         /* Timeout for DNS queries (default: 1000ms) */
+
     /* [transport] */
     transport_t transport;      /* UDP | DOH | DOT */
 
