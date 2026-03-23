@@ -67,9 +67,28 @@ static uv_timer_t       g_penalty_timer;    /* release penalties */
 static session_t        g_sessions[DNSTUN_MAX_SESSIONS];
 static int              g_session_count = 0;
 
-/* Shared DNS UDP socket (fix #22: avoid handle exhaustion) */
-static uv_udp_t         g_dns_udp;
+/* ────────────────────────────────────────────── */
+/*  Per-query UDP socket context (fix #22)       */
+/* ────────────────────────────────────────────── */
+typedef struct dns_query_ctx {
+    uint16_t         id;       /* Transaction ID */
+    uv_timer_t       timer;
+    int              closes;   /* for async cleanup */
+    uv_udp_t         udp;      /* Per-query UDP socket */
+    uv_udp_send_t    send_req;
+    struct sockaddr_in dest;
+    int              resolver_idx;
+    int              session_idx;
+    uint16_t         seq;
+    uint64_t         sent_ms;  /* renamed from sent_us: actually ms (fix #14) */
+    uint8_t          sendbuf[512]; /* Fix: was DNS_BUFFER_UDP which is only 64 bytes on 64-bit systems */
+    size_t           sendlen;
+} dns_query_ctx_t;
+
+/* Per-query socket management (fix #22) */
 static dns_query_ctx_t *g_pending_queries[65536];
+static int              g_query_socket_count = 0;
+#define MAX_CONCURRENT_QUERY_SOCKETS 1024  /* Limit to avoid handle exhaustion */
 
 /* Persistent resolver list file */
 static char g_resolvers_file[1024];
@@ -1665,23 +1684,18 @@ static void on_socks5_connection(uv_stream_t *server, int status) {
 /* ────────────────────────────────────────────── */
 /*  DNS Reply handler — receive TXT from resolver */
 /* ────────────────────────────────────────────── */
-typedef struct dns_query_ctx {
-    uint16_t         id;       /* Transaction ID */
-    uv_timer_t       timer;
-    int              closes;   /* for async cleanup */
-    uv_udp_send_t    send_req;
-    struct sockaddr_in dest;
-    int              resolver_idx;
-    int              session_idx;
-    uint16_t         seq;
-    uint64_t         sent_ms;  /* renamed from sent_us: actually ms (fix #14) */
-    uint8_t          sendbuf[512]; /* Fix: was DNS_BUFFER_UDP which is only 64 bytes on 64-bit systems */
-    size_t           sendlen;
-} dns_query_ctx_t;
+/* dns_query_ctx_t is defined at line 73 */
 
 static void on_dns_query_close(uv_handle_t *h) {
     dns_query_ctx_t *q = h->data;
-    /* Only one handle to close (the timer) */
+    /* Close per-query UDP socket (fix #22) */
+    if (!uv_is_closing((uv_handle_t*)&q->udp)) {
+        uv_close((uv_handle_t*)&q->udp, NULL);
+    }
+    if (!uv_is_closing((uv_handle_t*)&q->timer)) {
+        uv_close((uv_handle_t*)&q->timer, NULL);
+    }
+    g_query_socket_count--;
     free(q);
 }
 
@@ -1689,9 +1703,21 @@ static void on_dns_timeout(uv_timer_t *t) {
     dns_query_ctx_t *q = t->data;
     if (g_pending_queries[q->id] == q) {
         g_pending_queries[q->id] = NULL;
+        g_query_socket_count--;
         rpool_on_loss(&g_pool, q->resolver_idx);
         g_stats.queries_lost++;
-        uv_close((uv_handle_t*)&q->timer, on_dns_query_close);
+        LOG_DEBUG("DNS query timeout: id=%u, resolver=%s\n", q->id, 
+                  g_pool.resolvers[q->resolver_idx].ip);
+        /* Close udp socket (will trigger on_dns_query_close which frees q) */
+        if (!uv_is_closing((uv_handle_t*)&q->udp)) {
+            uv_close((uv_handle_t*)&q->udp, on_dns_query_close);
+        } else {
+            /* UDP already closing, just close timer and free */
+            if (!uv_is_closing((uv_handle_t*)&q->timer)) {
+                uv_close((uv_handle_t*)&q->timer, NULL);
+            }
+            free(q);
+        }
     }
 }
 
@@ -1788,28 +1814,45 @@ static void session_add_downstream(int sidx, uint16_t seq, const uint8_t *data, 
     }
 }
 
+/* Per-query socket receive buffer (fix #22) */
+static uint8_t g_per_query_recv_buf[65536];
+
+static void on_dns_alloc(uv_handle_t *h, size_t sz, uv_buf_t *buf) {
+    (void)h; (void)sz;
+    buf->base = (char*)g_per_query_recv_buf;
+    buf->len  = sizeof(g_per_query_recv_buf);
+}
+
 static void on_dns_recv(uv_udp_t *h,
                         ssize_t nread,
                         const uv_buf_t *buf,
                         const struct sockaddr *addr,
                         unsigned flags)
 {
-    (void)h; (void)addr; (void)flags;
+    (void)addr; (void)flags;
     if (nread <= 0) return;
 
-    /* 1. Decode DNS structure (resp->id is the key) */
+    /* Per-query socket: get context from socket data (fix #22) */
+    dns_query_ctx_t *q = (dns_query_ctx_t*)h->data;
+    if (!q) return;
+
+    /* 1. Decode DNS structure */
     static uint8_t dec_buf[16384];
     size_t decsz = sizeof(dec_buf);
     dns_rcode_t rc = dns_decode((dns_decoded_t*)dec_buf, &decsz,
                                 (const dns_packet_t*)buf->base, (size_t)nread);
     
-    if (rc != RCODE_OKAY) return;
+    if (rc != RCODE_OKAY) {
+        LOG_ERR("DNS decode failed: rcode=%d\n", rc);
+        return;
+    }
     dns_query_t *resp = (dns_query_t*)dec_buf;
 
-    /* 2. Registry lookup */
-    if (resp->id >= 65536) return;
-    dns_query_ctx_t *q = g_pending_queries[resp->id];
-    if (!q) return;
+    /* 2. Validate response ID matches our query */
+    if (resp->id != q->id) {
+        LOG_DEBUG("DNS response ID mismatch: expected %u, got %u\n", q->id, resp->id);
+        return;
+    }
 
     /* Measure RTT and cleanup query */
     double rtt = (double)(uv_hrtime() / 1000000ULL - q->sent_ms);
@@ -1845,25 +1888,9 @@ static void on_dns_recv(uv_udp_t *h,
         }
     }
 
-    /* Cleanup context */
-    uv_close((uv_handle_t*)&q->timer, on_dns_query_close);
-}
-        } else {
-            /* Bad / zombie response — lose a packet */
-            LOG_ERR("DNS decode failed: rcode=%d from resolver %d\n", rc, ridx);
-            rpool_on_loss(&g_pool, ridx);
-            g_stats.queries_lost++;
-        }
-    } else {
-        LOG_ERR("DNS recv error: nread=%zd from resolver %d\n", nread, ridx);
-        rpool_on_loss(&g_pool, ridx);
-        g_stats.queries_lost++;
-    }
-
-    if (!uv_is_closing((uv_handle_t*)&q->udp)) {
-        uv_close((uv_handle_t*)&q->udp, on_dns_query_close);
-        uv_close((uv_handle_t*)&q->timer, on_dns_query_close);
-    }
+    /* Cleanup context - will close udp and timer in on_dns_query_close */
+    g_pending_queries[q->id] = NULL;
+    on_dns_query_close((uv_handle_t*)&q->timer);
 }
 
 static void on_dns_send(uv_udp_send_t *sr, int status) {
@@ -1877,13 +1904,6 @@ static void on_dns_send(uv_udp_send_t *sr, int status) {
             uv_close((uv_handle_t*)&q->timer, on_dns_query_close);
         }
     }
-}
-
-static uint8_t g_dns_recv_buf[65536]; /* shared receive buffer */
-static void on_dns_alloc(uv_handle_t *h, size_t sz, uv_buf_t *buf) {
-    (void)h; (void)sz;
-    buf->base = (char*)g_dns_recv_buf;
-    buf->len  = sizeof(g_dns_recv_buf);
 }
 
 /* ────────────────────────────────────────────── */
@@ -1901,7 +1921,11 @@ static void on_jitter_timer(uv_timer_t *t) {
     uv_buf_t buf = uv_buf_init((char*)q->sendbuf, (unsigned)q->sendlen);
     if (uv_udp_send(&jc->send_req, &q->udp, &buf, 1,
                     (const struct sockaddr*)&q->dest, on_dns_send) != 0) {
-        uv_close((uv_handle_t*)&q->udp, on_dns_query_close);
+        LOG_ERR("Jitter timer: uv_udp_send failed\n");
+        g_pending_queries[q->id] = NULL;
+        rpool_on_loss(&g_pool, q->resolver_idx);
+        g_stats.queries_lost++;
+        on_dns_query_close((uv_handle_t*)&q->udp);
     } else {
         g_stats.queries_sent++;
     }
@@ -1914,6 +1938,13 @@ static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
                                   const uint8_t *payload, size_t paylen,
                                   int total_symbols)
 {
+    /* Per-query socket limit check (fix #22) */
+    if (g_query_socket_count >= MAX_CONCURRENT_QUERY_SOCKETS) {
+        LOG_DEBUG("fire_dns_chunk_symbol: socket limit reached (%d), dropping query\n",
+                  g_query_socket_count);
+        return;
+    }
+
     int ridx = rpool_next(&g_pool);
     if (ridx < 0) {
         LOG_ERR("fire_dns_chunk_symbol: no active resolver available (session_idx=%d, seq=%u)\n",
@@ -1930,6 +1961,10 @@ static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
     q->resolver_idx = ridx;
     q->session_idx  = session_idx;
     q->seq          = seq;
+
+    /* Per-query UDP socket initialization (fix #22) */
+    uv_udp_init(g_loop, &q->udp);
+    q->udp.data = q;
 
     session_t *sess = &g_sessions[session_idx];
 
@@ -1983,12 +2018,16 @@ static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
     }
     q->id = query_id;
     g_pending_queries[query_id] = q;
+    g_query_socket_count++;
     
     q->sent_ms  = uv_hrtime() / 1000000ULL;
 
     uv_timer_init(g_loop, &q->timer);
     q->timer.data = q;
     uv_timer_start(&q->timer, on_dns_timeout, 5000, 0);  /* 5 second timeout */
+
+    /* Start receiving on per-query socket (fix #22) */
+    uv_udp_recv_start(&q->udp, on_dns_alloc, on_dns_recv);
 
     /* Anti-DPI Jitter (fix #10): defer the UDP send by 0-50 ms. */
     if (g_cfg.jitter) {
@@ -2003,17 +2042,18 @@ static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
         }
     }
 
-    /* Immediate send (no jitter or allocation failure) */
+    /* Immediate send (no jitter or allocation failure) - use per-query socket */
     uv_buf_t buf = uv_buf_init((char*)q->sendbuf, (unsigned)q->sendlen);
     q->send_req.data = q;
-    int send_rc = uv_udp_send(&q->send_req, &g_dns_udp, &buf, 1,
+    int send_rc = uv_udp_send(&q->send_req, &q->udp, &buf, 1,
                               (const struct sockaddr*)&q->dest, on_dns_send);
     if (send_rc != 0) {
         LOG_ERR("uv_udp_send failed: %s (resolver=%s)\n", uv_strerror(send_rc), r->ip);
         g_pending_queries[q->id] = NULL;
-        uv_close((uv_handle_t*)&q->timer, on_dns_query_close);
+        g_query_socket_count--;
+        on_dns_query_close((uv_handle_t*)&q->udp);
     } else {
-        LOG_DEBUG("DNS query sent to %s:%d (len=%zu, id=%u)\n",
+        LOG_DEBUG("DNS query sent to %s:%d (len=%zu, id=%u) via per-query socket\n",
                   r->ip, ntohs(q->dest.sin_port), q->sendlen, q->id);
         g_stats.queries_sent++;
     }
@@ -2413,9 +2453,7 @@ int main(int argc, char *argv[]) {
     uv_timer_init(g_loop, &g_penalty_timer);
     uv_timer_start(&g_penalty_timer, on_penalty_timer, 5000, 5000);
 
-    /* Initialize shared DNS UDP socket */
-    uv_udp_init(g_loop, &g_dns_udp);
-    uv_udp_recv_start(&g_dns_udp, on_dns_alloc, on_dns_recv);
+    /* Per-query UDP sockets are created dynamically in fire_dns_chunk_symbol (fix #22) */
 
     uv_timer_init(g_loop, &g_recovery_timer);
     uv_timer_start(&g_recovery_timer, on_recovery_timer, 1000, 1000);
