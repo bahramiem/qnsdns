@@ -222,9 +222,9 @@ typedef struct probe_req {
     struct sockaddr_in dest;
     int             resolver_idx;
     uint64_t        sent_ms;
-    uint8_t         sendbuf[8192];
+    uint8_t         sendbuf[MAX_UDP_PACKET_SIZE];
     size_t          sendlen;
-    uint8_t         recvbuf[8192];
+    uint8_t         recvbuf[MAX_UDP_PACKET_SIZE];
     bool            got_reply;
     scanner_stage_t stage;
 } probe_req_t;
@@ -259,7 +259,7 @@ static void on_probe_recv(uv_udp_t *h, ssize_t nread,
 
     if (nread > 0) {
         /* Decode DNS response to check RCODE */
-        dns_decoded_t decoded[DNS_DECODEBUF_16k];
+        dns_decoded_t decoded[DNS_DECODEBUF_16K];
         size_t decsz = sizeof(decoded);
         if (dns_decode(decoded, &decsz, (const dns_packet_t*)buf->base, (size_t)nread) == RCODE_OKAY) {
             dns_query_t *resp = (dns_query_t*)decoded;
@@ -684,9 +684,9 @@ typedef struct dns_query_ctx {
     int              session_idx;
     uint16_t         seq;
     uint64_t         sent_ms;  /* renamed from sent_us: actually ms (fix #14) */
-    uint8_t          sendbuf[DNS_BUFFER_UDP];
+    uint8_t          sendbuf[MAX_UDP_PACKET_SIZE];
     size_t           sendlen;
-    uint8_t          recvbuf[DNS_BUFFER_UDP];
+    uint8_t          recvbuf[MAX_UDP_PACKET_SIZE];
 } dns_query_ctx_t;
 
 static void on_dns_query_close(uv_handle_t *h) {
@@ -722,7 +722,7 @@ static void on_dns_recv(uv_udp_t *h,
         rpool_on_ack(&g_pool, ridx, rtt);
 
         /* Decode DNS response */
-        dns_decoded_t decoded[DNS_DECODEBUF_16k];
+        dns_decoded_t decoded[DNS_DECODEBUF_16K];
         size_t decsz = sizeof(decoded);
         if (dns_decode(decoded, &decsz,
                        (const dns_packet_t*)buf->base,

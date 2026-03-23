@@ -350,7 +350,7 @@ static int build_txt_reply(uint8_t *outbuf, size_t *outlen,
 typedef struct {
     uv_udp_send_t    send_req;
     struct sockaddr_in dest;
-    uint8_t          reply_buf[DNS_BUFFER_UDP];
+    uint8_t          reply_buf[MAX_UDP_PACKET_SIZE];
     size_t           reply_len;
 } udp_reply_t;
 
@@ -405,7 +405,7 @@ static void on_server_recv(uv_udp_t *h,
     swarm_record_ip(src_ip);
 
     /* Decode DNS query */
-    dns_decoded_t decoded[DNS_DECODEBUF_16k];
+    dns_decoded_t decoded[DNS_DECODEBUF_16K];
     size_t decsz = sizeof(decoded);
     if (dns_decode(decoded, &decsz,
                    (const dns_packet_t*)buf->base,
