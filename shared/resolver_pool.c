@@ -20,7 +20,10 @@ void rpool_destroy(resolver_pool_t *pool) {
 
 /* ── Add resolver ───────────────────────────────────────────────────────────*/
 int rpool_add(resolver_pool_t *pool, const char *ip) {
+    fprintf(stderr, "[TRACE] rpool_add: Entering for %s\n", ip); fflush(stderr);
+    fprintf(stderr, "[TRACE] rpool_add: Locking mutex\n"); fflush(stderr);
     uv_mutex_lock(&pool->lock);
+    fprintf(stderr, "[TRACE] rpool_add: Mutex locked\n"); fflush(stderr);
 
     if (pool->count >= DNSTUN_MAX_RESOLVERS) {
         uv_mutex_unlock(&pool->lock);

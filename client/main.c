@@ -109,27 +109,45 @@ static void resolvers_save(void) {
 }
 
 static void resolvers_load(void) {
-    if (!g_resolvers_file[0]) return;
+    fprintf(stderr, "[TRACE] Entered resolvers_load\n"); fflush(stderr);
+    if (!g_resolvers_file[0]) {
+        fprintf(stderr, "[TRACE] resolvers_load: g_resolvers_file is empty\n"); fflush(stderr);
+        return;
+    }
+    fprintf(stderr, "[TRACE] resolvers_load: Opening %s\n", g_resolvers_file); fflush(stderr);
     FILE *f = fopen(g_resolvers_file, "r");
-    if (!f) return;
+    if (!f) {
+        fprintf(stderr, "[TRACE] resolvers_load: Failed to open %s\n", g_resolvers_file); fflush(stderr);
+        return;
+    }
     char line[64];
     int added = 0;
+    int line_num = 0;
     while (fgets(line, sizeof(line), f)) {
+        line_num++;
         line[strcspn(line, "\r\n")] = '\0';
         /* Skip blanks and comments */
         if (!line[0] || line[0] == '#') continue;
+        
+        fprintf(stderr, "[TRACE] resolvers_load: Line %d: '%s'\n", line_num, line); fflush(stderr);
+
         /* Don't re-add if already in pool (from seed_list) */
         int dup = 0;
+        fprintf(stderr, "[TRACE] resolvers_load: Locking pool\n"); fflush(stderr);
         uv_mutex_lock(&g_pool.lock);
         for (int i = 0; i < g_pool.count; i++) {
             if (strcmp(g_pool.resolvers[i].ip, line) == 0) { dup = 1; break; }
         }
         uv_mutex_unlock(&g_pool.lock);
+        fprintf(stderr, "[TRACE] resolvers_load: Unlocked pool (dup=%d)\n", dup); fflush(stderr);
+
         if (!dup) {
+            fprintf(stderr, "[TRACE] resolvers_load: Calling rpool_add(%s)\n", line); fflush(stderr);
             rpool_add(&g_pool, line);
             added++;
         }
     }
+    fprintf(stderr, "[TRACE] resolvers_load: Closing file\n"); fflush(stderr);
     fclose(f);
     if (added > 0)
         LOG_INFO("Loaded %d resolvers from %s\n", added, g_resolvers_file);
