@@ -2,7 +2,7 @@
 #include <string.h>
 #include <ctype.h>
 
-static const char B32_ALPHA[] = "abcdefghijklmnopqrstuvwxyz234567";
+static const char B32_ALPHA[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 
 static int b32_val(char c) {
     c = tolower((unsigned char)c);
