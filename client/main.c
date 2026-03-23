@@ -178,6 +178,8 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
     snprintf(qname, sizeof(qname), "%s.%s.%s.tun.%s",
              seq_hex, b32_dotted, sid_hex, domain);
 
+    LOG_DEBUG("build_dns_query: QNAME=%s (len=%zu)\n", qname, strlen(qname));
+
     /* Encode into DNS TXT query packet */
     dns_question_t question = {0};
     question.name  = qname;
@@ -193,7 +195,10 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
 
     size_t sz = *outlen;
     dns_rcode_t rc = dns_encode((dns_packet_t*)outbuf, &sz, &query);
-    if (rc != RCODE_OKAY) return -1;
+    if (rc != RCODE_OKAY) {
+        LOG_ERR("dns_encode failed: rcode=%d for QNAME=%s\n", rc, qname);
+        return -1;
+    }
     
     /* EDNS0: Add OPT RR if needed (simplified: always try 4096 if enabled) */
     if (g_cfg.transport == 0) { /* UDP only */
@@ -983,6 +988,21 @@ static void on_dns_recv(uv_udp_t *h,
     int ridx = q->resolver_idx;
 
     if (nread > 0) {
+        /* DEBUG: Log response source and size */
+        char src_ip[46] = "unknown";
+        if (addr) {
+            uv_inet_ntop(AF_INET, &((const struct sockaddr_in*)addr)->sin_addr, src_ip, sizeof(src_ip));
+        }
+        LOG_DEBUG("DNS response from %s: %zd bytes (resolver_idx=%d, session=%d, seq=%u)\n",
+                  src_ip, nread, ridx, q->session_idx, q->seq);
+
+        /* DEBUG: Print response header bytes */
+        LOG_DEBUG("Response header: ");
+        for (size_t i = 0; i < (nread < 16 ? nread : 16); i++) {
+            fprintf(stderr, "%02x ", (unsigned char)buf->base[i]);
+        }
+        fprintf(stderr, "\n");
+
         /* Measure RTT (fix #14: variable is now correctly named sent_ms) */
         double rtt = (double)(uv_hrtime() / 1000000ULL - q->sent_ms);
         if (rtt < 0.0) rtt = 0.0;
@@ -991,15 +1011,25 @@ static void on_dns_recv(uv_udp_t *h,
         /* Decode DNS response */
         dns_decoded_t decoded[DNS_DECODEBUF_4K];
         size_t decsz = sizeof(decoded);
-        if (dns_decode(decoded, &decsz,
+        dns_rcode_t rc = dns_decode(decoded, &decsz,
                        (const dns_packet_t*)buf->base,
-                       (size_t)nread) == RCODE_OKAY)
+                       (size_t)nread);
+        if (rc == RCODE_OKAY)
         {
             dns_query_t *resp = (dns_query_t*)decoded;
+            LOG_DEBUG("DNS decode OK: id=%d, rcode=%d, ancount=%d\n",
+                      resp->id, resp->rcode, resp->ancount);
             /* Walk answer section for TXT records */
             for (int i = 0; i < (int)resp->ancount; i++) {
                 dns_answer_t *ans = &resp->answers[i];
+                LOG_DEBUG("Answer %d: type=%d (TXT=%d), len=%d\n",
+                          i, ans->generic.type, RR_TXT, ans->txt.len);
                 if (ans->generic.type == RR_TXT && ans->txt.len > 0) {
+                    LOG_DEBUG("TXT record content (%d bytes): ", ans->txt.len);
+                    for (size_t j = 0; j < (ans->txt.len < 32 ? ans->txt.len : 32); j++) {
+                        fprintf(stderr, "%02x ", (unsigned char)ans->txt.text[j]);
+                    }
+                    fprintf(stderr, "\n");
                     /* Check if this is a SYNC response (comma-separated IPs) */
                     if (ans->txt.len > 7 && strchr(ans->txt.text, ',')) {
                         char *ips = strndup(ans->txt.text, ans->txt.len);
@@ -1035,10 +1065,12 @@ static void on_dns_recv(uv_udp_t *h,
             }
         } else {
             /* Bad / zombie response — lose a packet */
+            LOG_ERR("DNS decode failed: rcode=%d from resolver %d\n", rc, ridx);
             rpool_on_loss(&g_pool, ridx);
             g_stats.queries_lost++;
         }
     } else {
+        LOG_ERR("DNS recv error: nread=%zd from resolver %d\n", nread, ridx);
         rpool_on_loss(&g_pool, ridx);
         g_stats.queries_lost++;
     }
@@ -1145,6 +1177,19 @@ static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
 
     memcpy(&q->dest, &r->addr, sizeof(q->dest));
     q->dest.sin_port = htons(53);
+
+    /* DEBUG: Log destination and packet info */
+    char dest_ip[46];
+    uv_inet_ntop(AF_INET, &q->dest.sin_addr, dest_ip, sizeof(dest_ip));
+    LOG_DEBUG("Sending to resolver %s at %s:%d (packet len=%zu)\n",
+              r->ip, dest_ip, ntohs(q->dest.sin_port), q->sendlen);
+
+    /* DEBUG: Print first 32 bytes of DNS packet for verification */
+    LOG_DEBUG("DNS packet header (first 32 bytes): ");
+    for (size_t i = 0; i < (q->sendlen < 32 ? q->sendlen : 32); i++) {
+        fprintf(stderr, "%02x ", q->sendbuf[i]);
+    }
+    fprintf(stderr, "\n");
 
     uv_udp_init(g_loop, &q->udp);
     q->udp.data = q;
