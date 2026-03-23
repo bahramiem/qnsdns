@@ -196,6 +196,9 @@ static inline uint8_t chunk_get_chunk_total(uint8_t chunk_info) {
     return ((chunk_info >> 4) & 0x0F) + 1;
 }
 
+/* Alias for chunk_get_chunk_total */
+#define chunk_get_total(chunk_info) chunk_get_chunk_total(chunk_info)
+
 static inline uint8_t chunk_get_fec_k(uint8_t chunk_info) {
     return chunk_info & 0x0F;
 }

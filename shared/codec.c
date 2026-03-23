@@ -29,11 +29,10 @@ codec_result_t codec_compress(const uint8_t *in, size_t inlen, int level) {
 codec_result_t codec_decompress(const uint8_t *in, size_t inlen, size_t original_size) {
     codec_result_t res = {0};
     
-    /* If original_size is 0, use decompress bound for allocation */
+    /* If original_size is 0, use a reasonable maximum buffer size */
     if (original_size == 0) {
-        unsigned long long bound = ZSTD_decompressBound(in, inlen);
-        if (bound > 1024*1024) bound = 1024*1024; /* Cap at 1MB */
-        original_size = (size_t)bound;
+        /* Use 10x compression ratio estimate, capped at 1MB */
+        original_size = (inlen > 102400) ? 1024*1024 : inlen * 10;
     }
     
     res.data = malloc(original_size);
