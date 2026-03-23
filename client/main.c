@@ -281,6 +281,8 @@ static void on_probe_recv(uv_udp_t *h, ssize_t nread,
                 if (rtt < 0.0) rtt = 0.0;
                 rpool_on_ack(&g_pool, p->resolver_idx, rtt);
             } else {
+                tui_log(&g_tui, "Probe failed Stage %d (RCODE %d) for %s", 
+                        p->stage + 1, rcode, g_pool.resolvers[p->resolver_idx].ip);
                 rpool_on_loss(&g_pool, p->resolver_idx);
             }
         }
@@ -447,6 +449,7 @@ static void resolver_init_phase(void) {
 
     for (int s = 0; s < 3; s++) {
         LOG_INFO("--- Stage %d: %s ---\n", s + 1, stage_names[s]);
+        tui_log(&g_tui, "Starting Scanner Stage %d: %s", s + 1, stage_names[s]);
         
         /* Persistent trackers for stage eligibility */
         static bool eligible[DNSTUN_MAX_RESOLVERS];
@@ -482,6 +485,7 @@ static void resolver_init_phase(void) {
         }
 
         LOG_INFO("Stage %d complete (%d probes fired)\n", s + 1, fired);
+        tui_log(&g_tui, "Stage %d complete (%d probes)", s + 1, fired);
     }
 
     /* Final Promotion */
@@ -495,6 +499,7 @@ static void resolver_init_phase(void) {
     }
 
     LOG_INFO("Init complete: %d/%d resolvers active\n", active, g_pool.count);
+    tui_log(&g_tui, "Init phase complete. %d active resolvers.", active);
     g_stats.active_resolvers  = g_pool.active_count;
     g_stats.dead_resolvers    = g_pool.dead_count;
 }
@@ -559,6 +564,12 @@ static void socks5_handle_data(socks5_client_t *c,
                 session_idx = i;
                 break;
             }
+        }
+        if (session_idx >= 0) {
+            c->session_idx = session_idx;
+            c->state = 2; /* Tunnel mode */
+            tui_log(&g_tui, "New SOCKS5 session [%d] for %s", session_idx, g_sessions[session_idx].target_host);
+            /* Send success reply */
         }
         if (session_idx < 0) {
             uint8_t err[10] = {0x05,0x05,0x00,0x01,0,0,0,0,0,0};

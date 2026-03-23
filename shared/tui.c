@@ -4,6 +4,8 @@
 #include <string.h>
 #include <stdint.h>
 #include <ctype.h>
+#include <stdarg.h>
+#include <time.h>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -42,6 +44,41 @@ static const char *state_str(resolver_state_t s) {
         case RSV_ZOMBIE:  return ANSI_RED    "ZOMBIE " ANSI_RESET;
         case RSV_TESTING: return ANSI_CYAN   "TESTING" ANSI_RESET;
         default:          return "UNKNOWN";
+    }
+}
+
+void tui_log(tui_ctx_t *t, const char *fmt, ...) {
+    if (!t || !t->stats) return;
+    tui_stats_t *s = t->stats;
+    
+    char msg[128];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(msg, sizeof(msg), fmt, args);
+    va_end(args);
+
+    time_t now = time(NULL);
+    struct tm *tm = localtime(&now);
+    char ts[16];
+    strftime(ts, sizeof(ts), "%H:%M:%S", tm);
+
+    int idx = s->log_tail;
+    snprintf(s->logs[idx], sizeof(s->logs[idx]), "[%s] %s", ts, msg);
+    
+    s->log_tail = (s->log_tail + 1) % 20;
+    if (s->log_count < 20) s->log_count++;
+}
+
+static void render_log_footer(tui_ctx_t *t, int lines) {
+    tui_stats_t *s = t->stats;
+    if (s->log_count == 0) return;
+    
+    hr(72, ANSI_CYAN);
+    printf(ANSI_BOLD " Recent Logs:" ANSI_RESET "\n");
+    
+    for (int i = 1; i <= lines && i <= s->log_count; i++) {
+        int idx = (s->log_tail - i + 20) % 20;
+        printf("  %s\n", s->logs[idx]);
     }
 }
 
@@ -128,7 +165,8 @@ static void render_stats(tui_ctx_t *t) {
     }
 
     hr(72, ANSI_CYAN);
-    printf(ANSI_BOLD " [1] Stats   [2] Resolvers   [3] Config   [q] Quit\n" ANSI_RESET);
+    printf(ANSI_BOLD " [1] Stats   [2] Resolvers   [3] Config   [4] Debug   [q] Quit\n" ANSI_RESET);
+    render_log_footer(t, 2);
 }
 
 /* ── Panel 1: Resolver table ────────────────────────────────────────────────*/
@@ -221,10 +259,12 @@ static void render_resolvers(tui_ctx_t *t) {
     }
 
     hr(72, ANSI_CYAN);
-    printf(ANSI_BOLD " [1] Stats   [2] Resolvers   [3] Config   "
+    printf(ANSI_BOLD " [1] Stats   [2] Resolvers   [3] Config   [4] Debug   "
            ANSI_CYAN "[r]" ANSI_RESET ANSI_BOLD " Add Resolver   [q] Quit\n" ANSI_RESET);
     if (t->input_mode)
         render_input_bar(t);
+    else
+        render_log_footer(t, 2);
 }
 
 
@@ -264,10 +304,34 @@ static void render_config(tui_ctx_t *t) {
     printf(ANSI_RESET "\n");
 
     hr(72, ANSI_CYAN);
-    printf(ANSI_BOLD " [1] Stats   [2] Resolvers   [3] Config   [q] Quit\n" ANSI_RESET);
+    printf(ANSI_BOLD " [1] Stats   [2] Resolvers   [3] Config   [4] Debug   [q] Quit\n" ANSI_RESET);
 
     if (t->input_mode)
         render_input_bar(t);
+    else
+        render_log_footer(t, 2);
+}
+
+/* ── Panel 3: Debug Full Logs ───────────────────────────────────────────────*/
+static void render_debug(tui_ctx_t *t) {
+    printf(ANSI_BOLD ANSI_CYAN " ▌ SYSTEM DEBUG LOGS ▌\n" ANSI_RESET);
+    hr(72, ANSI_CYAN);
+    
+    tui_stats_t *s = t->stats;
+    if (s->log_count == 0) {
+        printf(" (No logs yet)\n");
+    } else {
+        for (int i = 0; i < s->log_count; i++) {
+            /* Circular buffer index from oldest to newest */
+            int idx = (s->log_tail - s->log_count + i + 20) % 20;
+            printf(" %s\n", s->logs[idx]);
+        }
+    }
+    
+    for (int i = s->log_count; i < 20; i++) printf("\n"); /* padding */
+
+    hr(72, ANSI_CYAN);
+    printf(ANSI_BOLD " [1] Stats   [2] Resolvers   [3] Config   [4] Debug   [q] Quit\n" ANSI_RESET);
 }
 
 /* ── Domain-edit callback ───────────────────────────────────────────────────*/
@@ -350,6 +414,7 @@ void tui_render(tui_ctx_t *t) {
         case 0: render_stats(t);     break;
         case 1: render_resolvers(t); break;
         case 2: render_config(t);    break;
+        case 3: render_debug(t);     break;
         default: render_stats(t);    break;
     }
     fflush(stdout);
@@ -398,6 +463,7 @@ void tui_handle_key(tui_ctx_t *t, int key) {
         case '1': t->panel = 0; break;
         case '2': t->panel = 1; break;
         case '3': t->panel = 2; break;
+        case '4': t->panel = 3; break;
         case 'q': t->running = 0; break;
 
         /* Config panel live toggles */
