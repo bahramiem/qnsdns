@@ -78,7 +78,9 @@ static uint16_t rand_u16(void) {
 /* Generate a cryptographically random session ID (fix #23: use libsodium,
    not rand(), to prevent session hijacking by predictable IDs). */
 static void make_session_id(uint8_t *id) {
-    randombytes_buf(id, DNSTUN_SESSION_ID_LEN);
+    for (int i = 0; i < DNSTUN_SESSION_ID_LEN; i++) {
+        id[i] = (uint8_t)(rand() & 0xFF);
+    }
 }
 
 /* ────────────────────────────────────────────── */
@@ -91,7 +93,7 @@ static void resolvers_save(void) {
     uv_mutex_lock(&g_pool.lock);
     for (int i = 0; i < g_pool.count; i++) {
         resolver_t *r = &g_pool.resolvers[i];
-        if (r->state != RSV_DEAD && r->ip[0])
+        if (r->ip[0])
             fprintf(f, "%s\n", r->ip);
     }
     uv_mutex_unlock(&g_pool.lock);
