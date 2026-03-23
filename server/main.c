@@ -100,9 +100,11 @@ static uv_mutex_t g_swarm_lock;
 /* ────────────────────────────────────────────── */
 /*  Logging                                       */
 /* ────────────────────────────────────────────── */
-#define LOG_INFO(...)  do { if (g_cfg.log_level >= 1) fprintf(stdout, "[INFO]  " __VA_ARGS__); } while(0)
-#define LOG_DEBUG(...) do { if (g_cfg.log_level >= 2) fprintf(stdout, "[DEBUG] " __VA_ARGS__); } while(0)
-#define LOG_ERR(...)   fprintf(stderr, "[ERROR] " __VA_ARGS__)
+static FILE *g_debug_log = NULL;
+
+#define LOG_INFO(...)  do { if (g_cfg.log_level >= 1) { fprintf(stdout, "[INFO]  " __VA_ARGS__); if (g_debug_log) fprintf(g_debug_log, "[INFO]  " __VA_ARGS__); } } while(0)
+#define LOG_DEBUG(...) do { if (g_cfg.log_level >= 2) { fprintf(stdout, "[DEBUG] " __VA_ARGS__); if (g_debug_log) fprintf(g_debug_log, "[DEBUG] " __VA_ARGS__); } } while(0)
+#define LOG_ERR(...)   do { fprintf(stderr, "[ERROR] " __VA_ARGS__); if (g_debug_log) fprintf(g_debug_log, "[ERROR] " __VA_ARGS__); } while(0)
 
 /* ────────────────────────────────────────────── */
 /*  Swarm management                              */
@@ -270,6 +272,11 @@ static void on_upstream_read(uv_stream_t *s, ssize_t nread,
     }
     memcpy(sess->upstream_buf + sess->upstream_len, buf->base, (size_t)nread);
     sess->upstream_len += (size_t)nread;
+    
+    /* Debug: log first 64 bytes received from upstream */
+    LOG_DEBUG("Session %d: received %zd bytes from upstream, first 64: '%.64s'\n",
+              sidx, nread, sess->upstream_buf + sess->upstream_len - nread);
+    
     free(buf->base);
 
     g_stats.rx_total += (size_t)nread;
@@ -699,6 +706,10 @@ static void on_server_recv(uv_udp_t *h,
         size_t sz = sess->upstream_len;
         if (sz > mtu) sz = mtu;
 
+        /* Debug: log first 64 bytes being sent */
+        LOG_DEBUG("Session %d: sending %zu bytes to client, first 64: '%.64s'\n",
+                  sidx, sz, (char*)sess->upstream_buf);
+
         if (build_txt_reply(reply, &rlen, query_id, qname,
                             sess->upstream_buf, sz, mtu) == 0)
         {
@@ -892,6 +903,15 @@ int main(int argc, char *argv[]) {
             "Warning: could not load '%s', using defaults.\n"
             "Create server.ini to configure the server.\n\n",
             config_path);
+    }
+
+    /* Open debug log file */
+    g_debug_log = fopen("/tmp/qnsdns_server.log", "a");
+    if (g_debug_log) {
+        fprintf(g_debug_log, "\n=== Server started at ");
+        time_t now = time(NULL);
+        fprintf(g_debug_log, "%s", ctime(&now));
+        fflush(g_debug_log);
     }
 
     /* ── First-run: ask for tunnel domain if not configured ── */

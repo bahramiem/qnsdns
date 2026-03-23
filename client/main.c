@@ -70,14 +70,17 @@ static int              g_session_count = 0;
 /* Persistent resolver list file */
 static char g_resolvers_file[1024];
 
+/* Debug log file */
+static FILE *g_debug_log = NULL;
+
 /* ────────────────────────────────────────────── */
 /*  Utility                                       */
 /* ────────────────────────────────────────────── */
 static int log_level(void) { return g_cfg.log_level; }
 
-#define LOG_INFO(...)  do { if (log_level() >= 1) { fprintf(stdout, "[INFO]  " __VA_ARGS__); } } while(0)
-#define LOG_DEBUG(...) do { if (log_level() >= 2) { fprintf(stdout, "[DEBUG] " __VA_ARGS__); } } while(0)
-#define LOG_ERR(...)   fprintf(stderr, "[ERROR] " __VA_ARGS__)
+#define LOG_INFO(...)  do { if (log_level() >= 1) { fprintf(stdout, "[INFO]  " __VA_ARGS__); if (g_debug_log) fprintf(g_debug_log, "[INFO]  " __VA_ARGS__); } } while(0)
+#define LOG_DEBUG(...) do { if (log_level() >= 2) { fprintf(stdout, "[DEBUG] " __VA_ARGS__); if (g_debug_log) fprintf(g_debug_log, "[DEBUG] " __VA_ARGS__); } } while(0)
+#define LOG_ERR(...)   do { fprintf(stderr, "[ERROR] " __VA_ARGS__); if (g_debug_log) fprintf(g_debug_log, "[ERROR] " __VA_ARGS__); } while(0)
 
 static uint16_t rand_u16(void) {
     return (uint16_t)(rand() & 0xFFFF);
@@ -1437,6 +1440,10 @@ static void on_socks5_write_done(uv_write_t *w, int status) {
 static void socks5_send(socks5_client_t *c, const uint8_t *data, size_t len) {
     uv_write_t *w = malloc(sizeof(*w) + len);
     if (!w) return;
+    
+    /* Debug: log first 64 bytes being sent */
+    LOG_DEBUG("SOCKS5 sending %zu bytes to client, first 64: '%.64s'\n", len, (char*)data);
+    
     /* Payload lives immediately after the write request in the same alloc. */
     uint8_t *copy = (uint8_t*)(w + 1);
     memcpy(copy, data, len);
@@ -1706,26 +1713,36 @@ static void on_dns_recv(uv_udp_t *h,
                         free(ips);
                         LOG_INFO("Swarm: synced new resolvers from server\n");
                     } else {
-                        /* Deliver payload to session recv buffer */
-                        int sidx = q->session_idx;
-                        if (sidx >= 0 && sidx < DNSTUN_MAX_SESSIONS
-                            && !g_sessions[sidx].closed)
-                        {
-                            session_t *s = &g_sessions[sidx];
-                            size_t need = s->recv_len + ans->txt.len;
-                            if (need > s->recv_cap) {
-                                s->recv_buf = realloc(s->recv_buf, need + 4096);
-                                s->recv_cap = need + 4096;
-                            }
-                            memcpy(s->recv_buf + s->recv_len,
-                                   ans->txt.text, ans->txt.len);
-                            s->recv_len += ans->txt.len;
-                            g_stats.rx_total += ans->txt.len;
-                            g_stats.rx_bytes_sec += ans->txt.len;
-                            
-                            /* Flush received data to SOCKS5 client */
-                            if (s->client_ptr) {
-                                socks5_flush_recv_buf((socks5_client_t*)s->client_ptr);
+                        /* Skip empty/ack packets (single null byte or empty) */
+                        if (ans->txt.len == 0 || (ans->txt.len == 1 && ans->txt.text[0] == '\0')) {
+                            LOG_DEBUG("Session %d: skipping empty/ack packet\n", q->session_idx);
+                        } else {
+                            /* Deliver payload to session recv buffer */
+                            int sidx = q->session_idx;
+                            if (sidx >= 0 && sidx < DNSTUN_MAX_SESSIONS
+                                && !g_sessions[sidx].closed)
+                            {
+                                session_t *s = &g_sessions[sidx];
+                                size_t need = s->recv_len + ans->txt.len;
+                                if (need > s->recv_cap) {
+                                    s->recv_buf = realloc(s->recv_buf, need + 4096);
+                                    s->recv_cap = need + 4096;
+                                }
+                                memcpy(s->recv_buf + s->recv_len,
+                                       ans->txt.text, ans->txt.len);
+                                s->recv_len += ans->txt.len;
+                                g_stats.rx_total += ans->txt.len;
+                                g_stats.rx_bytes_sec += ans->txt.len;
+                                
+                                /* Debug: log first 64 bytes of received data */
+                                LOG_DEBUG("Session %d received %zu bytes, first 64: '%.64s'\n",
+                                          sidx, ans->txt.len,
+                                          (char*)s->recv_buf + s->recv_len - ans->txt.len);
+                                
+                                /* Flush received data to SOCKS5 client */
+                                if (s->client_ptr) {
+                                    socks5_flush_recv_buf((socks5_client_t*)s->client_ptr);
+                                }
                             }
                         }
                     }
@@ -2149,6 +2166,15 @@ int main(int argc, char *argv[]) {
             "Warning: could not load '%s', using defaults.\n"
             "Create client.ini to configure the tunnel.\n\n",
             config_path);
+    }
+
+    /* Open debug log file */
+    g_debug_log = fopen("/tmp/qnsdns_client.log", "a");
+    if (g_debug_log) {
+        fprintf(g_debug_log, "\n=== Client started at ");
+        time_t now = time(NULL);
+        fprintf(g_debug_log, "%s", ctime(&now));
+        fflush(g_debug_log);
     }
 
     /* ── First-run: ask for tunnel domain if not configured ────────────────
