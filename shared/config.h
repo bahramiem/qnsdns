@@ -42,10 +42,16 @@ typedef struct dnstun_config {
     int      max_upload_mtu;       /* Maximum upload MTU to test (default: 512) */
     int      max_download_mtu;     /* Maximum download MTU to test (default: 1200) */
     int      min_upload_mtu;       /* Minimum acceptable upload MTU (default: 0) */
-    int      min_download_mtu;     /* Minimum acceptable download MTU (default: 0) */
-    int      mtu_test_retries;     /* Number of retries per MTU test (default: 2) */
-    int      mtu_test_timeout_ms;  /* Timeout for MTU test packets (default: 1000ms) */
-    int      mtu_test_parallelism; /* Parallel MTU tests (default: 10) */
+    int      min_download_mtu;      /* Minimum acceptable download MTU (default: 0) */
+    int      mtu_test_retries;      /* Number of retries per MTU test (default: 2) */
+    int      mtu_test_timeout_ms;   /* Timeout for MTU test packets (default: 1000ms) */
+    int      mtu_test_parallelism;   /* Parallel MTU tests (default: 10) */
+
+    /* [packet_aggregation] - Pack multiple symbols into one packet */
+    bool     packet_aggregation;    /* Enable packet aggregation (default: true) */
+    int      symbol_size;           /* Rateless symbol size (default: 64 bytes) */
+    int      max_symbols_per_packet; /* Max symbols to aggregate (default: 16) */
+    bool     auto_aggregate;        /* Auto-calculate optimal packing (default: true) */
 
     /* [domains] */
     char     domains[DNSTUN_MAX_DOMAINS][256];

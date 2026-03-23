@@ -40,6 +40,14 @@
 #include "shared/tui.h"
 #include "shared/codec.h"
 
+/* Utility macros */
+#ifndef max
+#define max(a,b) ((a) >= (b) ? (a) : (b))
+#endif
+#ifndef min
+#define min(a,b) ((a) <= (b) ? (a) : (b))
+#endif
+
 /* ────────────────────────────────────────────── */
 /*  Global state                                  */
 /* ────────────────────────────────────────────── */
@@ -894,6 +902,229 @@ static uint16_t find_max_downstream_mtu(int resolver_idx, uint16_t upstream_mtu)
 }
 
 /* ────────────────────────────────────────────── */
+/*  Packet Aggregation - Pack multiple symbols into one packet */
+/*  This maximizes payload utilization per transmission        */
+/* ────────────────────────────────────────────── */
+
+/* Calculate optimal symbols per packet based on MTU and symbol size */
+static int calc_symbols_per_packet(uint16_t mtu, int symbol_size) {
+    if (mtu <= 0 || symbol_size <= 0) return 1;
+    int max_symbols = mtu / symbol_size;
+    if (max_symbols < 1) max_symbols = 1;
+    if (max_symbols > g_cfg.max_symbols_per_packet) {
+        max_symbols = g_cfg.max_symbols_per_packet;
+    }
+    return max_symbols;
+}
+
+/* Initialize an aggregated packet with header */
+static void agg_packet_init(agg_packet_t *pkt, const chunk_header_t *hdr) {
+    if (!pkt) return;
+    memset(pkt, 0, sizeof(*pkt));
+    if (hdr) {
+        memcpy(&pkt->hdr, hdr, sizeof(pkt->hdr));
+    }
+    pkt->symbol_count = 0;
+    pkt->total_size = sizeof(chunk_header_t);
+    pkt->acked = false;
+    pkt->sent_at = 0;
+}
+
+/* Add a symbol to an aggregated packet */
+static bool agg_packet_add_symbol(agg_packet_t *pkt, const uint8_t *symbol, 
+                                  size_t symbol_size) {
+    if (!pkt || !symbol) return false;
+    if (pkt->symbol_count >= DNSTUN_MAX_SYMBOLS_PER_PACKET) return false;
+    if (symbol_size > DNSTUN_SYMBOL_SIZE) symbol_size = DNSTUN_SYMBOL_SIZE;
+    
+    memcpy(pkt->symbols[pkt->symbol_count], symbol, symbol_size);
+    pkt->symbol_sizes[pkt->symbol_count] = (uint8_t)symbol_size;
+    pkt->symbol_count++;
+    pkt->total_size += symbol_size;
+    
+    return true;
+}
+
+/* Get the optimal packet size for a given MTU */
+static size_t get_optimal_packet_size(uint16_t mtu, int symbol_size) {
+    if (!g_cfg.packet_aggregation) {
+        /* No aggregation - send single symbol */
+        return sizeof(chunk_header_t) + symbol_size;
+    }
+    
+    int symbols = calc_symbols_per_packet(mtu, symbol_size);
+    size_t optimal = sizeof(chunk_header_t) + (symbols * symbol_size);
+    
+    /* Don't exceed MTU */
+    if (optimal > mtu) {
+        optimal = mtu;
+    }
+    
+    return optimal;
+}
+
+/* Calculate packing efficiency (how well we fill the MTU) */
+static double calc_packing_efficiency(uint16_t mtu, size_t payload_size) {
+    if (mtu <= 0 || payload_size <= 0) return 0.0;
+    double efficiency = (double)payload_size / (double)mtu;
+    if (efficiency > 1.0) efficiency = 1.0;
+    return efficiency * 100.0;
+}
+
+/* Encode multiple symbols into a packet (aggregation) */
+static size_t encode_aggregated_packet(uint8_t *out_buf, size_t out_size,
+                                       const uint8_t *data, size_t data_len,
+                                       uint16_t mtu, uint16_t seq) {
+    if (!out_buf || !data || data_len == 0 || mtu == 0) return 0;
+    
+    int symbol_size = g_cfg.symbol_size > 0 ? g_cfg.symbol_size : DNSTUN_SYMBOL_SIZE;
+    size_t header_size = sizeof(chunk_header_t);
+    
+    if (out_size < header_size) return 0;
+    
+    /* Calculate how many symbols we can fit */
+    size_t payload_space = mtu - header_size;
+    int max_symbols = (int)(payload_space / symbol_size);
+    if (max_symbols < 1) max_symbols = 1;
+    if (max_symbols > g_cfg.max_symbols_per_packet) {
+        max_symbols = g_cfg.max_symbols_per_packet;
+    }
+    
+    /* Use aggregation if enabled */
+    if (g_cfg.packet_aggregation && max_symbols > 1) {
+        /* Aggregate multiple symbols */
+        uint8_t *payload = out_buf + header_size;
+        size_t offset = 0;
+        int symbols_packed = 0;
+        
+        /* Pack symbols until we fill the MTU or run out of data */
+        while (symbols_packed < max_symbols && offset < data_len) {
+            size_t remaining = data_len - offset;
+            size_t to_copy = (remaining > symbol_size) ? symbol_size : remaining;
+            
+            memcpy(payload + (symbols_packed * symbol_size), data + offset, to_copy);
+            
+            /* Zero-pad if necessary */
+            if (to_copy < symbol_size) {
+                memset(payload + (symbols_packed * symbol_size) + to_copy, 0, 
+                       symbol_size - to_copy);
+            }
+            
+            offset += to_copy;
+            symbols_packed++;
+        }
+        
+        size_t total_size = header_size + (symbols_packed * symbol_size);
+        
+        /* Set chunk header with symbol count in flags */
+        chunk_header_t *hdr = (chunk_header_t *)out_buf;
+        hdr->version = DNSTUN_VERSION;
+        hdr->flags = 0;
+        hdr->seq = seq;
+        hdr->chunk_total = (uint16_t)symbols_packed;  /* Store symbol count here */
+        hdr->original_size = (uint16_t)data_len;
+        hdr->upstream_mtu = mtu;
+        hdr->downstream_mtu = (uint16_t)symbols_packed;
+        
+        LOG_DEBUG("[Agg] Packed %d symbols into %zu bytes (MTU=%u, efficiency=%.1f%%)\n",
+                  symbols_packed, total_size, mtu,
+                  calc_packing_efficiency(mtu, total_size));
+        
+        return total_size;
+    } else {
+        /* No aggregation - send single symbol */
+        size_t to_copy = (data_len > symbol_size) ? symbol_size : data_len;
+        uint8_t *payload = out_buf + header_size;
+        
+        memcpy(payload, data, to_copy);
+        
+        chunk_header_t *hdr = (chunk_header_t *)out_buf;
+        hdr->version = DNSTUN_VERSION;
+        hdr->flags = 0;
+        hdr->seq = seq;
+        hdr->chunk_total = 1;  /* Single symbol */
+        hdr->original_size = (uint16_t)data_len;
+        hdr->upstream_mtu = mtu;
+        hdr->downstream_mtu = 1;
+        
+        return header_size + to_copy;
+    }
+}
+
+/* Decode aggregated packet and extract symbols */
+static int decode_aggregated_packet(uint8_t *symbols[], uint8_t sizes[],
+                                   const uint8_t *packet, size_t packet_len,
+                                   int max_symbols) {
+    if (!packet || packet_len < sizeof(chunk_header_t) + 1) return 0;
+    
+    chunk_header_t *hdr = (chunk_header_t *)packet;
+    int symbol_count = hdr->chunk_total;
+    if (symbol_count > max_symbols) symbol_count = max_symbols;
+    if (symbol_count > DNSTUN_MAX_SYMBOLS_PER_PACKET) symbol_count = DNSTUN_MAX_SYMBOLS_PER_PACKET;
+    
+    int symbol_size = g_cfg.symbol_size > 0 ? g_cfg.symbol_size : DNSTUN_SYMBOL_SIZE;
+    const uint8_t *payload = packet + sizeof(chunk_header_t);
+    size_t payload_len = packet_len - sizeof(chunk_header_t);
+    
+    for (int i = 0; i < symbol_count; i++) {
+        if (i * symbol_size < payload_len) {
+            if (symbols) {
+                memcpy(symbols[i], payload + (i * symbol_size), symbol_size);
+            }
+            if (sizes) {
+                sizes[i] = (uint8_t)((i + 1) * symbol_size <= payload_len) ? 
+                           symbol_size : (uint8_t)(payload_len - (i * symbol_size));
+            }
+        }
+    }
+    
+    LOG_DEBUG("[Agg] Decoded %d symbols from packet (len=%zu)\n", symbol_count, packet_len);
+    return symbol_count;
+}
+
+/* Get MTU statistics with aggregation info */
+static void log_aggregation_stats(void) {
+    if (!g_cfg.packet_aggregation) {
+        LOG_INFO("[Agg] Packet aggregation is disabled\n");
+        return;
+    }
+    
+    int symbol_size = g_cfg.symbol_size > 0 ? g_cfg.symbol_size : DNSTUN_SYMBOL_SIZE;
+    
+    LOG_INFO("[Agg] Packet Aggregation Statistics:\n");
+    LOG_INFO("  Symbol size: %d bytes\n", symbol_size);
+    LOG_INFO("  Max symbols/packet: %d\n", g_cfg.max_symbols_per_packet);
+    
+    /* Calculate stats per resolver */
+    int total_resolvers = 0;
+    int total_symbols = 0;
+    double total_efficiency = 0.0;
+    
+    uv_mutex_lock(&g_pool.lock);
+    for (int i = 0; i < g_pool.count; i++) {
+        resolver_t *r = &g_pool.resolvers[i];
+        if (r->state == RSV_ACTIVE && r->upstream_mtu > 0) {
+            int symbols = calc_symbols_per_packet(r->upstream_mtu, symbol_size);
+            size_t optimal_size = sizeof(chunk_header_t) + (symbols * symbol_size);
+            double efficiency = calc_packing_efficiency(r->upstream_mtu, optimal_size);
+            
+            total_resolvers++;
+            total_symbols += symbols;
+            total_efficiency += efficiency;
+            
+            LOG_DEBUG("  Resolver %s: MTU=%u, symbols=%d, efficiency=%.1f%%\n",
+                      r->ip, r->upstream_mtu, symbols, efficiency);
+        }
+    }
+    uv_mutex_unlock(&g_pool.lock);
+    
+    if (total_resolvers > 0) {
+        LOG_INFO("  Average symbols/packet: %.1f\n", (double)total_symbols / total_resolvers);
+        LOG_INFO("  Average efficiency: %.1f%%\n", total_efficiency / total_resolvers);
+    }
+}
+
+/* ────────────────────────────────────────────── */
 /*  CIDR Scan — find sibling resolvers           */
 /* ────────────────────────────────────────────── */
 static void cidr_scan_subnet(const char *seed_ip, int prefix) {
@@ -1162,6 +1393,9 @@ static void resolver_init_phase(void) {
     if (down_mtu_min < 9999) {
         LOG_INFO("Downstream MTU range: %d - %d\n", down_mtu_min, down_mtu_max);
     }
+
+    /* Log packet aggregation statistics */
+    log_aggregation_stats();
 
     /* Clean up any remaining MTU binary search state */
     for (int i = 0; i < g_pool.count; i++) {

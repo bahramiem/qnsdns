@@ -140,6 +140,32 @@ typedef struct {
 } chunk_t;
 
 /* ──────────────────────────────────────────────
+   Packet Aggregation - pack multiple symbols into one packet
+   This maximizes payload utilization per transmission
+────────────────────────────────────────────── */
+#define DNSTUN_SYMBOL_SIZE       64   /* Optimal rateless symbol size (bytes) */
+#define DNSTUN_MAX_SYMBOLS_PER_PACKET 16  /* Maximum symbols to aggregate */
+
+/* Aggregated packet - contains multiple symbols for one transmission */
+typedef struct {
+    chunk_header_t hdr;
+    uint8_t        symbols[DNSTUN_MAX_SYMBOLS_PER_PACKET][DNSTUN_SYMBOL_SIZE];
+    uint8_t        symbol_count;        /* Number of symbols in this packet */
+    uint8_t        symbol_sizes[DNSTUN_MAX_SYMBOLS_PER_PACKET]; /* Actual size per symbol */
+    size_t         total_size;         /* Total payload size */
+    bool           acked;
+    time_t         sent_at;
+} agg_packet_t;
+
+/* Symbol encoding state for aggregation */
+typedef struct {
+    uint8_t   symbol_id;        /* Current symbol ID */
+    uint8_t   buffer[DNSTUN_SYMBOL_SIZE]; /* Symbol encoding buffer */
+    uint16_t  source_block;     /* Source block number */
+    uint8_t   encoding_id;      /* Encoding type (systematic, random, etc.) */
+} symbol_encoder_t;
+
+/* ──────────────────────────────────────────────
    Active SOCKS5 session
 ────────────────────────────────────────────── */
 typedef struct session {

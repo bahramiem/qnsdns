@@ -56,6 +56,12 @@ void config_defaults(dnstun_config_t *cfg, bool is_server) {
     cfg->mtu_test_timeout_ms   = 1000;    /* Timeout for MTU test packets (ms) */
     cfg->mtu_test_parallelism  = 10;      /* Parallel MTU tests */
 
+    /* packet_aggregation - Pack multiple symbols into one packet */
+    cfg->packet_aggregation   = true;     /* Enable packet aggregation */
+    cfg->symbol_size          = 64;       /* Rateless symbol size */
+    cfg->max_symbols_per_packet = 16;      /* Max symbols to aggregate */
+    cfg->auto_aggregate       = true;      /* Auto-calculate optimal packing */
+
     /* domains */
     cfg->dns_flux             = false;
     cfg->flux_period_sec      = 21600; /* 6 hours */
@@ -144,6 +150,13 @@ int config_set_key(dnstun_config_t *cfg,
         else if (strcmp(key,"mtu_test_retries")==0)      cfg->mtu_test_retries    = atoi(value);
         else if (strcmp(key,"mtu_test_timeout_ms")==0)   cfg->mtu_test_timeout_ms = atoi(value);
         else if (strcmp(key,"mtu_test_parallelism")==0)  cfg->mtu_test_parallelism = atoi(value);
+    }
+    /* [packet_aggregation] - Pack multiple symbols into one packet */
+    else if (strcmp(section,"packet_aggregation")==0) {
+        if      (strcmp(key,"enabled")==0)              cfg->packet_aggregation = parse_bool(value);
+        else if (strcmp(key,"symbol_size")==0)            cfg->symbol_size = atoi(value);
+        else if (strcmp(key,"max_symbols_per_packet")==0) cfg->max_symbols_per_packet = atoi(value);
+        else if (strcmp(key,"auto_aggregate")==0)        cfg->auto_aggregate = parse_bool(value);
     }
     /* [domains] */
     else if (strcmp(section,"domains")==0) {
