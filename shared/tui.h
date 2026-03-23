@@ -39,6 +39,21 @@ typedef struct {
 } tui_client_snap_t;
 
 /* ──────────────────────────────────────────────
+   Debug log buffer
+────────────────────────────────────────────── */
+#define TUI_DEBUG_LINES 256
+#define TUI_DEBUG_LINE_SIZE 512
+
+typedef struct {
+    char     lines[TUI_DEBUG_LINES][TUI_DEBUG_LINE_SIZE];
+    uint64_t timestamps[TUI_DEBUG_LINES];  /* relative ms timestamp */
+    int      head;          /* next write position */
+    int      count;         /* total lines ever written */
+    int      auto_scroll;   /* 1 = auto-scroll to newest */
+    int      level;         /* 0=errors, 1=warnings, 2=info, 3=verbose */
+} tui_debug_buf_t;
+
+/* ──────────────────────────────────────────────
    TUI context
 ────────────────────────────────────────────── */
 typedef struct tui_ctx {
@@ -47,7 +62,7 @@ typedef struct tui_ctx {
     dnstun_config_t  *cfg;
     volatile int      running;
     volatile int      restart;
-    int               panel;        /* 0=stats, 1=resolvers, 2=config */
+    int               panel;        /* 0=stats, 1=resolvers, 2=config, 3=debug */
     const char       *config_path;  /* path to INI file for saving    */
 
     /* Inline text-input mode */
@@ -60,7 +75,17 @@ typedef struct tui_ctx {
 
     /* Callback for server to fetch active client sessions */
     int (*get_clients_cb)(tui_client_snap_t *out, int max_clients);
+
+    /* Debug screen */
+    tui_debug_buf_t   debug;
+    int               debug_scroll;     /* scroll offset for debug view */
 } tui_ctx_t;
+
+/* Debug API */
+void tui_debug_init(tui_ctx_t *t);
+void tui_debug_log(tui_ctx_t *t, int level, const char *fmt, ...);
+void tui_debug_clear(tui_ctx_t *t);
+void tui_debug_set_level(tui_ctx_t *t, int level);
 
 /* Init and run (called once per second from a timer or a dedicated thread) */
 void tui_init(tui_ctx_t *t, tui_stats_t *stats,

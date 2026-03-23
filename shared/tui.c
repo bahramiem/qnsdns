@@ -4,6 +4,8 @@
 #include <string.h>
 #include <stdint.h>
 #include <ctype.h>
+#include <stdarg.h>
+#include <time.h>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -22,6 +24,7 @@
 #define ANSI_MAGENTA   "\033[35m"
 #define ANSI_BLUE      "\033[34m"
 #define ANSI_WHITE     "\033[37m"
+#define ANSI_DIM       "\033[2m"
 #define ANSI_BG_BLACK  "\033[40m"
 #define ANSI_BG_BLUE   "\033[44m"
 #define ANSI_CLEAR     "\033[2J\033[H"
@@ -43,6 +46,70 @@ static const char *state_str(resolver_state_t s) {
         case RSV_TESTING: return ANSI_CYAN   "TESTING" ANSI_RESET;
         default:          return "UNKNOWN";
     }
+}
+
+/* Debug log level strings */
+static const char *debug_level_str(int level) {
+    switch (level) {
+        case 0: return ANSI_RED    "ERR"  ANSI_RESET;
+        case 1: return ANSI_YELLOW  "WRN"  ANSI_RESET;
+        case 2: return ANSI_GREEN   "INF"  ANSI_RESET;
+        case 3: return ANSI_CYAN    "DBG"  ANSI_RESET;
+        default: return "???";
+    }
+}
+
+/* ── Debug helpers ─────────────────────────────────────────────────────────*/
+void tui_debug_init(tui_ctx_t *t) {
+    memset(&t->debug, 0, sizeof(t->debug));
+    t->debug.level = 2;     /* default to INFO */
+    t->debug.auto_scroll = 1;
+    t->debug_scroll = 0;
+}
+
+void tui_debug_clear(tui_ctx_t *t) {
+    memset(&t->debug, 0, sizeof(t->debug));
+    t->debug.level = 2;
+    t->debug.auto_scroll = 1;
+    t->debug_scroll = 0;
+}
+
+void tui_debug_set_level(tui_ctx_t *t, int level) {
+    if (level >= 0 && level <= 3) {
+        t->debug.level = level;
+    }
+}
+
+void tui_debug_log(tui_ctx_t *t, int level, const char *fmt, ...) {
+    if (level > t->debug.level) return;
+    
+    va_list ap;
+    va_start(ap, fmt);
+    
+    int idx = t->debug.head % TUI_DEBUG_LINES;
+    
+    /* Get relative timestamp */
+    static uint64_t start_time = 0;
+    uint64_t now = uv_hrtime() / 1000000ULL;
+    if (start_time == 0) start_time = now;
+    uint64_t rel_ms = now - start_time;
+    
+    /* Format prefix: [+%06ums LEVEL] */
+    int prefix_len = snprintf(t->debug.lines[idx], TUI_DEBUG_LINE_SIZE,
+                              ANSI_BOLD "[+%07ums] %s " ANSI_RESET,
+                              (unsigned)(rel_ms % 10000000),
+                              debug_level_str(level));
+    
+    /* Format the rest with va_list */
+    vsnprintf(t->debug.lines[idx] + prefix_len,
+              TUI_DEBUG_LINE_SIZE - prefix_len - 1,
+              fmt, ap);
+    
+    t->debug.timestamps[idx] = rel_ms;
+    t->debug.head++;
+    if (t->debug.count < TUI_DEBUG_LINES) t->debug.count++;
+    
+    va_end(ap);
 }
 
 /* ── Input bar (shown at bottom when input_mode == 1) ───────────────────────*/
@@ -221,8 +288,8 @@ static void render_resolvers(tui_ctx_t *t) {
     }
 
     hr(72, ANSI_CYAN);
-    printf(ANSI_BOLD " [1] Stats   [2] Resolvers   [3] Config   "
-           ANSI_CYAN "[r]" ANSI_RESET ANSI_BOLD " Add Resolver   [q] Quit\n" ANSI_RESET);
+            printf(ANSI_BOLD " [1] Stats   [2] Resolvers   [3] Config   "
+           ANSI_CYAN "[4]" ANSI_RESET ANSI_BOLD " Debug   [r] Add Resolver   [q] Quit\n" ANSI_RESET);
     if (t->input_mode)
         render_input_bar(t);
 }
@@ -264,10 +331,66 @@ static void render_config(tui_ctx_t *t) {
     printf(ANSI_RESET "\n");
 
     hr(72, ANSI_CYAN);
-    printf(ANSI_BOLD " [1] Stats   [2] Resolvers   [3] Config   [q] Quit\n" ANSI_RESET);
+    printf(ANSI_BOLD " [1] Stats   [2] Resolvers   [3] Config   "
+           ANSI_CYAN "[4]" ANSI_RESET ANSI_BOLD " Debug   [q] Quit\n" ANSI_RESET);
 
     if (t->input_mode)
         render_input_bar(t);
+}
+
+/* ── Panel 3: Debug log ─────────────────────────────────────────────────────*/
+static void render_debug(tui_ctx_t *t) {
+    printf(ANSI_BOLD ANSI_CYAN " ▌ DEBUG OUTPUT (level=%d) ▌" ANSI_RESET "\n", t->debug.level);
+    hr(72, ANSI_CYAN);
+    
+    const char *level_names[] = { "ERR", "WRN", "INF", "DBG" };
+    printf(" [");
+    for (int i = 0; i <= 3; i++) {
+        if (i <= t->debug.level) {
+            printf(ANSI_GREEN "%s" ANSI_RESET, level_names[i]);
+        } else {
+            printf(ANSI_DIM "%s" ANSI_RESET, level_names[i]);
+        }
+        if (i < 3) printf("/");
+    }
+    printf("] Log levels   ");
+    printf("[" ANSI_CYAN "c" ANSI_RESET "] Clear   ");
+    printf("[" ANSI_CYAN "a" ANSI_RESET "] Auto-scroll %s\n",
+           t->debug.auto_scroll ? ANSI_GREEN "ON" ANSI_RESET : ANSI_RED "OFF" ANSI_RESET);
+    
+    hr(72, ANSI_CYAN);
+    
+    int total_lines = t->debug.count;
+    int visible_lines = 20;  /* adjust based on screen height */
+    
+    /* Calculate scroll window */
+    int start_idx;
+    int end_idx;
+    
+    if (t->debug.auto_scroll || t->debug_scroll == 0) {
+        /* Show newest entries */
+        start_idx = (total_lines > visible_lines) ? (total_lines - visible_lines) : 0;
+        end_idx = total_lines;
+    } else {
+        /* Show from scroll offset */
+        start_idx = t->debug_scroll;
+        end_idx = (start_idx + visible_lines < total_lines) ? 
+                  start_idx + visible_lines : total_lines;
+    }
+    
+    if (total_lines == 0) {
+        printf(ANSI_DIM " (no debug messages yet)" ANSI_RESET "\n");
+    } else {
+        for (int i = start_idx; i < end_idx; i++) {
+            int idx = (t->debug.head - total_lines + i) % TUI_DEBUG_LINES;
+            printf("%s\n", t->debug.lines[idx]);
+        }
+    }
+    
+    hr(72, ANSI_CYAN);
+    printf(ANSI_BOLD " [1] Stats   [2] Resolvers   [3] Config   "
+           ANSI_CYAN "[4]" ANSI_RESET ANSI_BOLD " Debug   [q] Quit\n" ANSI_RESET);
+    printf(ANSI_DIM " [↑/↓] Scroll   [0-3] Set level   [c] Clear   [a] Auto-scroll" ANSI_RESET "\n");
 }
 
 /* ── Domain-edit callback ───────────────────────────────────────────────────*/
@@ -330,6 +453,11 @@ void tui_init(tui_ctx_t *t, tui_stats_t *stats,
     t->config_path = config_path;
     strncpy(stats->mode, mode, sizeof(stats->mode)-1);
 
+    /* Initialize debug buffer */
+    t->debug.level = 2;        /* default INFO */
+    t->debug.auto_scroll = 1;
+    t->debug_scroll = 0;
+
 #ifdef _WIN32
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
     if (hOut != INVALID_HANDLE_VALUE) {
@@ -350,6 +478,7 @@ void tui_render(tui_ctx_t *t) {
         case 0: render_stats(t);     break;
         case 1: render_resolvers(t); break;
         case 2: render_config(t);    break;
+        case 3: render_debug(t);     break;
         default: render_stats(t);    break;
     }
     fflush(stdout);
@@ -398,6 +527,7 @@ void tui_handle_key(tui_ctx_t *t, int key) {
         case '1': t->panel = 0; break;
         case '2': t->panel = 1; break;
         case '3': t->panel = 2; break;
+        case '4': t->panel = 3; break;
         case 'q': t->running = 0; break;
 
         /* Config panel live toggles */
@@ -446,6 +576,31 @@ void tui_handle_key(tui_ctx_t *t, int key) {
 
         default: break;
     }
+
+    /* ── Debug panel specific keys (processed after main switch) ── */
+    if (t->panel == 3) {
+        switch (key) {
+            case 'c': tui_debug_clear(t); break;
+            case 'a':
+                t->debug.auto_scroll = !t->debug.auto_scroll;
+                if (t->debug.auto_scroll) t->debug_scroll = 0;
+                break;
+            case '0': case '1': case '2': case '3':
+                tui_debug_set_level(t, key - '0');
+                break;
+            case 'k': case 'H':  /* up */
+                if (!t->debug.auto_scroll && t->debug_scroll > 0) t->debug_scroll--;
+                break;
+            case 'j': case 'L':  /* down */
+                if (!t->debug.auto_scroll) {
+                    int max_scroll = (t->debug.count > 20) ? (t->debug.count - 20) : 0;
+                    if (t->debug_scroll < max_scroll) t->debug_scroll++;
+                }
+                break;
+            default: break;
+        }
+    }
+
     tui_render(t);
 }
 
