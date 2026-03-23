@@ -691,23 +691,6 @@ static void on_server_recv(uv_udp_t *h,
             sess->burst_count_needed = 0;
             sess->burst_received = 0;
         }
-                        upstream_write_and_read(sidx, zdec.data, zdec.len);
-                    }
-                    codec_free_result(&zdec);
-                }
-
-                if (!dret.error && dret.data) codec_free_result(&dret);
-                codec_free_result(&fdec);
-            }
-
-        next_burst:
-            /* Reset burst */
-            for (int i = 0; i < sess->burst_count_needed; i++) free(sess->burst_symbols[i]);
-            free(sess->burst_symbols);
-            sess->burst_symbols = NULL;
-            sess->burst_count_needed = 0;
-            sess->burst_received = 0;
-        }
     } else if (is_poll) {
         /* Handle empty poll normally to trigger downstream data push */
     }

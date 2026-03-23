@@ -2142,13 +2142,18 @@ static void fire_chrome_cover_traffic(uv_timer_t *t) {
 }
 
 /* ────────────────────────────────────────────── */
+/*  Penalty Timer — release expired penalties     */
+/* ────────────────────────────────────────────── */
+static void on_penalty_timer(uv_timer_t *t) {
+    (void)t;
+    rpool_release_penalties(&g_pool);
+}
+
+/* ────────────────────────────────────────────── */
 /*  Recovery Timer — probe dead resolvers         */
 /* ────────────────────────────────────────────── */
 static void on_recovery_timer(uv_timer_t *t) {
     (void)t;
-
-    /* Release expired penalties */
-    rpool_release_penalties(&g_pool);
 
     /* Probe some dead resolvers */
     int probes[64];

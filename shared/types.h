@@ -357,8 +357,9 @@ typedef struct session {
     size_t    recv_len;
     size_t    recv_cap;
 
-    /* downstream reordering */
-    uint16_t  rx_next;    /* expected receive seq */
+    /* sequencing */
+    uint16_t  tx_next;    /* next transmit seq (upstream) */
+    uint16_t  rx_next;    /* expected receive seq (downstream) */
     downstream_chunk_t *reorder_buf; /* optionally allocated for heavy loss/jitter */
 
     time_t    last_active;
