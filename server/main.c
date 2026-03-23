@@ -405,7 +405,7 @@ static void on_server_recv(uv_udp_t *h,
     swarm_record_ip(src_ip);
 
     /* Decode DNS query */
-    dns_decoded_t decoded[DNS_DECODEBUF_4K];
+    dns_decoded_t decoded[DNS_DECODEBUF_16k];
     size_t decsz = sizeof(decoded);
     if (dns_decode(decoded, &decsz,
                    (const dns_packet_t*)buf->base,
@@ -441,7 +441,7 @@ static void on_server_recv(uv_udp_t *h,
         if (strcmp(parts[i], "tun") == 0) { tun_idx = i; break; }
     }
 
-    if (tun_idx < 3) { /* Need at least seq, payload_1, sid */
+    if (tun_idx < 2) { /* Need at least seq and sid */
         LOG_DEBUG("Malformed QNAME from %s: %s\n", src_ip, qname);
         return;
     }

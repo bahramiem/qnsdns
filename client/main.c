@@ -259,7 +259,7 @@ static void on_probe_recv(uv_udp_t *h, ssize_t nread,
 
     if (nread > 0) {
         /* Decode DNS response to check RCODE */
-        dns_decoded_t decoded[DNS_DECODEBUF_4K];
+        dns_decoded_t decoded[DNS_DECODEBUF_16k];
         size_t decsz = sizeof(decoded);
         if (dns_decode(decoded, &decsz, (const dns_packet_t*)buf->base, (size_t)nread) == RCODE_OKAY) {
             dns_query_t *resp = (dns_query_t*)decoded;
@@ -722,7 +722,7 @@ static void on_dns_recv(uv_udp_t *h,
         rpool_on_ack(&g_pool, ridx, rtt);
 
         /* Decode DNS response */
-        dns_decoded_t decoded[DNS_DECODEBUF_4K];
+        dns_decoded_t decoded[DNS_DECODEBUF_16k];
         size_t decsz = sizeof(decoded);
         if (dns_decode(decoded, &decsz,
                        (const dns_packet_t*)buf->base,
