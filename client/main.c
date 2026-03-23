@@ -235,6 +235,72 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
     query.additional = &edns;
 
     size_t sz = *outlen;
+
+    /* DEBUG: Test with simple QNAME first */
+    char test_qname[256];
+    snprintf(test_qname, sizeof(test_qname), "test.%s", domain);
+    dns_question_t test_q = {0};
+    test_q.name = test_qname;
+    test_q.type = RR_TXT;
+    test_q.class = CLASS_IN;
+    dns_query_t test_query = {0};
+    test_query.id = rand_u16();
+    test_query.query = true;
+    test_query.opcode = OP_QUERY;
+    test_query.rd = true;
+    test_query.qdcount = 1;
+    test_query.questions = &test_q;
+    uint8_t test_buf[512];
+    size_t test_sz = sizeof(test_buf);
+    dns_rcode_t test_rc = dns_encode((dns_packet_t*)test_buf, &test_sz, &test_query);
+    fprintf(stderr, "[DEBUG] Simple QNAME 'test.%s': rcode=%d\n", domain, test_rc);
+
+    /* DEBUG: Test with QNAME ending in dot (FQDN) */
+    char test2_qname[256];
+    snprintf(test2_qname, sizeof(test2_qname), "test.%s.", domain);
+    dns_question_t test2_q = {0};
+    test2_q.name = test2_qname;
+    test2_q.type = RR_TXT;
+    test2_q.class = CLASS_IN;
+    dns_query_t test2_query = {0};
+    test2_query.id = rand_u16();
+    test2_query.query = true;
+    test2_query.opcode = OP_QUERY;
+    test2_query.rd = true;
+    test2_query.qdcount = 1;
+    test2_query.questions = &test2_q;
+    uint8_t test2_buf[512];
+    size_t test2_sz = sizeof(test2_buf);
+    dns_rcode_t test2_rc = dns_encode((dns_packet_t*)test2_buf, &test2_sz, &test2_query);
+    fprintf(stderr, "[DEBUG] FQDN QNAME 'test.%s.': rcode=%d\n", domain, test2_rc);
+
+    /* DEBUG: Print the actual QNAME bytes in hex */
+    fprintf(stderr, "[DEBUG] Problem QNAME bytes (%d): ", qname_len);
+    for (int i = 0; i < qname_len && i < 100; i++) {
+        fprintf(stderr, "%02x ", (unsigned char)qname[i]);
+    }
+    fprintf(stderr, "\n");
+
+    /* DEBUG: Check each label */
+    int label_idx = 0;
+    int label_start = 0;
+    fprintf(stderr, "[DEBUG] Labels:\n");
+    for (int i = 0; i <= qname_len; i++) {
+        if (qname[i] == '.' || qname[i] == '\0') {
+            int label_len = i - label_start;
+            fprintf(stderr, "  Label %d: len=%d, '", label_idx++, label_len);
+            for (int j = label_start; j < i && j < label_start + 20; j++) {
+                fprintf(stderr, "%c", qname[j]);
+            }
+            if (i - label_start > 20) fprintf(stderr, "...");
+            fprintf(stderr, "'\n");
+            if (label_len > 63) {
+                fprintf(stderr, "  ^^^ LABEL TOO LONG!\n");
+            }
+            label_start = i + 1;
+        }
+    }
+
     dns_rcode_t rc = dns_encode((dns_packet_t*)outbuf, &sz, &query);
     if (rc != RCODE_OKAY) {
         LOG_ERR("dns_encode failed: rcode=%d for QNAME=%s\n", rc, qname);
