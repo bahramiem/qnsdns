@@ -584,11 +584,19 @@ static void on_server_recv(uv_udp_t *h,
 
     /* ── Handle FEC Burst Reassembly ──────────────────────────────────── */
     if (chunk_total > 0) {
+        /* DoS Mitigation: Cap chunk_total and payload_len to sane limits */
+        if (chunk_total > 32 || payload_len > 2048) {
+            LOG_ERR("DoS: oversized FEC burst (total=%u, len=%zu)\n", chunk_total, payload_len);
+            return;
+        }
+
         /* New burst or continuation? */
         if (sess->burst_count_needed == 0 || seq < sess->burst_seq_start) {
             /* Cleanup old */
             if (sess->burst_symbols) {
-                for (int i = 0; i < sess->burst_count_needed; i++) free(sess->burst_symbols[i]);
+                for (int i = 0; i < sess->burst_count_needed; i++) {
+                    if (sess->burst_symbols[i]) free(sess->burst_symbols[i]);
+                }
                 free(sess->burst_symbols);
             }
             sess->burst_seq_start     = seq;
@@ -600,9 +608,15 @@ static void on_server_recv(uv_udp_t *h,
 
         int offset = seq - sess->burst_seq_start;
         if (offset >= 0 && offset < sess->burst_count_needed && !sess->burst_symbols[offset]) {
+            if (payload_len != sess->burst_symbol_len) {
+                LOG_ERR("FEC: symbol size mismatch (%zu vs %zu)\n", payload_len, sess->burst_symbol_len);
+                return;
+            }
             sess->burst_symbols[offset] = malloc(payload_len);
-            memcpy(sess->burst_symbols[offset], payload, payload_len);
-            sess->burst_received++;
+            if (sess->burst_symbols[offset]) {
+                memcpy(sess->burst_symbols[offset], payload, payload_len);
+                sess->burst_received++;
+            }
         }
 
         /* Enough symbols to decode? (Simplified: wait for K symbols or more) */

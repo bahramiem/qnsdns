@@ -1666,9 +1666,9 @@ static void on_socks5_connection(uv_stream_t *server, int status) {
 /*  DNS Reply handler — receive TXT from resolver */
 /* ────────────────────────────────────────────── */
 typedef struct dns_query_ctx {
-    uv_udp_t         udp;
+    uint16_t         id;       /* Transaction ID */
     uv_timer_t       timer;
-    int              closes;
+    int              closes;   /* for async cleanup */
     uv_udp_send_t    send_req;
     struct sockaddr_in dest;
     int              resolver_idx;
@@ -1677,20 +1677,20 @@ typedef struct dns_query_ctx {
     uint64_t         sent_ms;  /* renamed from sent_us: actually ms (fix #14) */
     uint8_t          sendbuf[512]; /* Fix: was DNS_BUFFER_UDP which is only 64 bytes on 64-bit systems */
     size_t           sendlen;
-    uint8_t          recvbuf[512]; /* Fix: was DNS_BUFFER_UDP which is only 64 bytes on 64-bit systems */
 } dns_query_ctx_t;
 
 static void on_dns_query_close(uv_handle_t *h) {
     dns_query_ctx_t *q = h->data;
-    if (++q->closes == 2) free(q);
+    /* Only one handle to close (the timer) */
+    free(q);
 }
 
 static void on_dns_timeout(uv_timer_t *t) {
     dns_query_ctx_t *q = t->data;
-    if (!uv_is_closing((uv_handle_t*)&q->udp)) {
+    if (g_pending_queries[q->id] == q) {
+        g_pending_queries[q->id] = NULL;
         rpool_on_loss(&g_pool, q->resolver_idx);
         g_stats.queries_lost++;
-        uv_close((uv_handle_t*)&q->udp, on_dns_query_close);
         uv_close((uv_handle_t*)&q->timer, on_dns_query_close);
     }
 }
@@ -1770,168 +1770,84 @@ static void session_add_downstream(int sidx, uint16_t seq, const uint8_t *data, 
         /* 4. Old packet: already processed or too far in past/future, drop */
         LOG_DEBUG("Session %d: dropping seq %u (too old or far future)\n", sidx, seq);
     }
+
+    /* Flush received data to SOCKS5 client */
+    if (s->client_ptr) {
+        socks5_client_t *c = (socks5_client_t*)s->client_ptr;
+        
+        /* Send SOCKS5 success before flushing data if not yet sent.
+         * This indicates the server has acknowledged our CONNECT. */
+        if (!s->socks5_connected) {
+            uint8_t ok[10] = {0x05,0x00,0x00,0x01,127,0,0,1,0x04,0x38};
+            socks5_send(c, ok, 10);
+            s->socks5_connected = true;
+            LOG_INFO("Session %d: sent SOCKS5 success (server ack received)\n", sidx);
+        }
+        
+        socks5_flush_recv_buf(c);
+    }
 }
+
+static void on_dns_recv(uv_udp_t *h,
                         ssize_t nread,
                         const uv_buf_t *buf,
                         const struct sockaddr *addr,
                         unsigned flags)
 {
-    if (nread == 0 && addr == NULL) return; /* spurious wake-up, ignore */
-    (void)flags;
-    dns_query_ctx_t *q = h->data;
-    int ridx = q->resolver_idx;
+    (void)h; (void)addr; (void)flags;
+    if (nread <= 0) return;
 
-    if (nread > 0) {
-        /* DEBUG: Log response source and size */
-        char src_ip[46] = "unknown";
-        if (addr) {
-            uv_inet_ntop(AF_INET, &((const struct sockaddr_in*)addr)->sin_addr, src_ip, sizeof(src_ip));
-        }
-        LOG_DEBUG("DNS response from %s: %zd bytes (resolver_idx=%d, session=%d, seq=%u)\n",
-                  src_ip, nread, ridx, q->session_idx, q->seq);
+    /* 1. Decode DNS structure (resp->id is the key) */
+    static uint8_t dec_buf[16384];
+    size_t decsz = sizeof(dec_buf);
+    dns_rcode_t rc = dns_decode((dns_decoded_t*)dec_buf, &decsz,
+                                (const dns_packet_t*)buf->base, (size_t)nread);
+    
+    if (rc != RCODE_OKAY) return;
+    dns_query_t *resp = (dns_query_t*)dec_buf;
 
-        /* DEBUG: Print response header bytes */
-        LOG_DEBUG("Response header: ");
-        for (size_t i = 0; i < (nread < 16 ? nread : 16); i++) {
-            fprintf(stderr, "%02x ", (unsigned char)buf->base[i]);
-        }
-        fprintf(stderr, "\n");
+    /* 2. Registry lookup */
+    if (resp->id >= 65536) return;
+    dns_query_ctx_t *q = g_pending_queries[resp->id];
+    if (!q) return;
 
-        /* Measure RTT (fix #14: variable is now correctly named sent_ms) */
-        double rtt = (double)(uv_hrtime() / 1000000ULL - q->sent_ms);
-        if (rtt < 0.0) rtt = 0.0;
-        rpool_on_ack(&g_pool, ridx, rtt);
+    /* Measure RTT and cleanup query */
+    double rtt = (double)(uv_hrtime() / 1000000ULL - q->sent_ms);
+    rpool_on_ack(&g_pool, q->resolver_idx, (rtt < 0) ? 0 : rtt);
+    uv_timer_stop(&q->timer);
+    g_pending_queries[resp->id] = NULL;
+    g_stats.queries_recv++;
+    g_stats.last_server_rx_ms = uv_hrtime() / 1000000ULL;
 
-        /* Decode DNS response */
-        dns_decoded_t decoded[DNS_DECODEBUF_4K];
-        size_t decsz = sizeof(decoded);
-        dns_rcode_t rc = dns_decode(decoded, &decsz,
-                       (const dns_packet_t*)buf->base,
-                       (size_t)nread);
-        if (rc == RCODE_OKAY)
-        {
-            dns_query_t *resp = (dns_query_t*)decoded;
-            LOG_DEBUG("DNS decode OK: id=%d, rcode=%d, ancount=%d\n",
-                      resp->id, resp->rcode, resp->ancount);
-            /* Walk answer section for TXT records */
-            for (int i = 0; i < (int)resp->ancount; i++) {
-                dns_answer_t *ans = &resp->answers[i];
-                LOG_DEBUG("Answer %d: type=%d (TXT=%d), len=%d\n",
-                          i, ans->generic.type, RR_TXT, ans->txt.len);
-                if (ans->generic.type == RR_TXT && ans->txt.len > 0) {
-                    LOG_DEBUG("TXT record content (%d bytes): ", ans->txt.len);
-                    for (size_t j = 0; j < (ans->txt.len < 32 ? ans->txt.len : 32); j++) {
-                        fprintf(stderr, "%02x ", (unsigned char)ans->txt.text[j]);
-                    }
-                    fprintf(stderr, "\n");
-                    /* Check if this is a SYNC response (comma-separated IPs)
-                     * A valid SYNC response should look like IP addresses:
-                     * e.g., "1.2.3.4,5.6.7.8" - check first part looks like IP
-                     */
-                    bool is_sync = false;
-                    if (ans->txt.len > 7 && strchr(ans->txt.text, ',')) {
-                        /* Check if first part looks like an IP (X.X.X.X format) */
-                        char first_part[16] = {0};
-                        const char *comma = strchr(ans->txt.text, ',');
-                        size_t first_len = comma ? (size_t)(comma - ans->txt.text) : ans->txt.len;
-                        if (first_len < sizeof(first_part)) {
-                            memcpy(first_part, ans->txt.text, first_len);
-                            first_part[first_len] = '\0';
-                            /* Simple IP check: contains digits and at least 3 dots */
-                            int dots = 0;
-                            bool has_digit = false;
-                            for (size_t k = 0; k < first_len; k++) {
-                                if (first_part[k] == '.') dots++;
-                                if (first_part[k] >= '0' && first_part[k] <= '9') has_digit = true;
-                            }
-                            is_sync = (dots >= 3 && has_digit);
-                        }
-                    }
-                    
-                    if (is_sync) {
-                        char *ips = strndup(ans->txt.text, ans->txt.len);
-                        char *tok = strtok(ips, ",");
-                        while (tok) {
-                            rpool_add(&g_pool, tok);
-                            tok = strtok(NULL, ",");
-                        }
-                        free(ips);
-                        LOG_INFO("Swarm: synced new resolvers from server\n");
-                    } else {
-                        /* Skip empty/ack packets (single null byte or empty) */
-                        if (ans->txt.len == 0 || (ans->txt.len == 1 && ans->txt.text[0] == '\0')) {
-                            LOG_DEBUG("Session %d: skipping empty/ack packet\n", q->session_idx);
-                        } else {
-                            /* Decode base64 response from server (server sends base64 by default) */
-                            uint8_t decoded[4096];
-                            ptrdiff_t decoded_len = base64_decode(decoded, ans->txt.text, ans->txt.len);
-                            if (decoded_len < 0) {
-                                LOG_DEBUG("Session %d: base64 decode failed\n", q->session_idx);
-                                continue;
-                            }
-                            
-                            /* Deliver payload to session recv buffer */
-                            int sidx = q->session_idx;
-                            if (sidx >= 0 && sidx < DNSTUN_MAX_SESSIONS
-                                && !g_sessions[sidx].closed)
-                            {
-                                session_t *s = &g_sessions[sidx];
-                                size_t need = s->recv_len + (size_t)decoded_len;
-                                if (need > s->recv_cap) {
-                                    /* Enforce maximum buffer size to prevent memory exhaustion */
-                                    if (s->recv_len >= MAX_SESSION_BUFFER) {
-                                        LOG_ERR("Session %d: recv buffer limit reached (%zu bytes), dropping old data\n",
-                                                sidx, s->recv_len);
-                                        /* Drop oldest data to make room */
-                                        memmove(s->recv_buf, s->recv_buf + (size_t)decoded_len, 
-                                                s->recv_len - (size_t)decoded_len);
-                                        s->recv_len -= (size_t)decoded_len;
-                                        need = s->recv_len + (size_t)decoded_len;
-                                    }
-                                    size_t new_cap = need + 4096;
-                                    /* Cap at MAX_SESSION_BUFFER to prevent unbounded growth */
-                                    if (new_cap > MAX_SESSION_BUFFER) new_cap = MAX_SESSION_BUFFER;
-                                    uint8_t *new_buf = realloc(s->recv_buf, new_cap);
-                                    if (!new_buf) {
-                                        LOG_ERR("Session %d: failed to grow recv buffer\n", sidx);
-                                        continue;
-                                    }
-                                    s->recv_buf = new_buf;
-                                    s->recv_cap = new_cap;
-                                }
-                                memcpy(s->recv_buf + s->recv_len,
-                                       decoded, (size_t)decoded_len);
-                                s->recv_len += (size_t)decoded_len;
-                                g_stats.rx_total += (size_t)decoded_len;
-                                g_stats.rx_bytes_sec += (size_t)decoded_len;
-                                
-                                /* Debug: log first 64 bytes of received data */
-                                LOG_DEBUG("Session %d received %zd bytes (from %d base64), first 64: '%.64s'\n",
-                                          sidx, decoded_len, ans->txt.len,
-                                          (char*)s->recv_buf + s->recv_len - (size_t)decoded_len);
-                                
-                                /* Flush received data to SOCKS5 client */
-                                if (s->client_ptr) {
-                                    socks5_client_t *c = (socks5_client_t*)s->client_ptr;
-                                    
-                                    /* Send SOCKS5 success before flushing data if not yet sent.
-                                     * This indicates the server has acknowledged our CONNECT. */
-                                    if (!s->socks5_connected) {
-                                        uint8_t ok[10] = {0x05,0x00,0x00,0x01,127,0,0,1,0x04,0x38};
-                                        socks5_send(c, ok, 10);
-                                        s->socks5_connected = true;
-                                        LOG_INFO("Session %d: sent SOCKS5 success (server ack received)\n", sidx);
-                                    }
-                                    
-                                    socks5_flush_recv_buf(c);
-                                }
-                            }
-                        }
-                    }
-                    g_stats.queries_recv++;
-                    g_stats.last_server_rx_ms = uv_hrtime() / 1000000ULL;
-                }
+    /* 3. Extract and reorder TXT payloads */
+    for (int i = 0; i < (int)resp->ancount; i++) {
+        dns_answer_t *ans = &resp->answers[i];
+        if (ans->generic.type == RR_TXT && ans->txt.len > 0) {
+            uint8_t raw[DNSTUN_MAX_DOWNSTREAM_MTU + 32];
+            ptrdiff_t raw_len = base64_decode(raw, ans->txt.text, ans->txt.len);
+            
+            if (raw_len < (ptrdiff_t)sizeof(server_response_header_t)) continue;
+
+            server_response_header_t *shdr = (server_response_header_t*)raw;
+            uint8_t *payload = raw + sizeof(server_response_header_t);
+            size_t paylen = (size_t)raw_len - sizeof(server_response_header_t);
+
+            if (shdr->seq == 0 && paylen > 7 && memchr(payload, ',', paylen)) {
+                /* SYNC response */
+                char *ips = strndup((char*)payload, paylen);
+                char *tok = strtok(ips, ",");
+                while (tok) { rpool_add(&g_pool, tok); tok = strtok(NULL, ","); }
+                free(ips);
+            } else {
+                /* Tunnel data */
+                session_add_downstream(shdr->session_id, shdr->seq, payload, paylen);
             }
+        }
+    }
+
+    /* Cleanup context */
+    uv_close((uv_handle_t*)&q->timer, on_dns_query_close);
+}
         } else {
             /* Bad / zombie response — lose a packet */
             LOG_ERR("DNS decode failed: rcode=%d from resolver %d\n", rc, ridx);
@@ -1951,22 +1867,23 @@ static void session_add_downstream(int sidx, uint16_t seq, const uint8_t *data, 
 }
 
 static void on_dns_send(uv_udp_send_t *sr, int status) {
+    dns_query_ctx_t *q = sr->data;
     if (status != 0) {
-        dns_query_ctx_t *q = sr->handle->data;
-        if (!uv_is_closing((uv_handle_t*)&q->udp)) {
+        LOG_ERR("DNS send failed: %s\n", uv_strerror(status));
+        if (g_pending_queries[q->id] == q) {
+            g_pending_queries[q->id] = NULL;
             rpool_on_loss(&g_pool, q->resolver_idx);
             g_stats.queries_lost++;
-            uv_close((uv_handle_t*)&q->udp, on_dns_query_close);
             uv_close((uv_handle_t*)&q->timer, on_dns_query_close);
         }
     }
 }
 
+static uint8_t g_dns_recv_buf[65536]; /* shared receive buffer */
 static void on_dns_alloc(uv_handle_t *h, size_t sz, uv_buf_t *buf) {
-    dns_query_ctx_t *q = h->data;
-    (void)sz;
-    buf->base = (char*)q->recvbuf;
-    buf->len  = sizeof(q->recvbuf);
+    (void)h; (void)sz;
+    buf->base = (char*)g_dns_recv_buf;
+    buf->len  = sizeof(g_dns_recv_buf);
 }
 
 /* ────────────────────────────────────────────── */
@@ -2073,8 +1990,6 @@ static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
     q->timer.data = q;
     uv_timer_start(&q->timer, on_dns_timeout, 5000, 0);  /* 5 second timeout */
 
-    uv_udp_recv_start(&q->udp, on_dns_alloc, on_dns_recv);
-
     /* Anti-DPI Jitter (fix #10): defer the UDP send by 0-50 ms. */
     if (g_cfg.jitter) {
         uint64_t delay_ms = (uint64_t)(rand() % 50);
@@ -2090,6 +2005,7 @@ static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
 
     /* Immediate send (no jitter or allocation failure) */
     uv_buf_t buf = uv_buf_init((char*)q->sendbuf, (unsigned)q->sendlen);
+    q->send_req.data = q;
     int send_rc = uv_udp_send(&q->send_req, &g_dns_udp, &buf, 1,
                               (const struct sockaddr*)&q->dest, on_dns_send);
     if (send_rc != 0) {

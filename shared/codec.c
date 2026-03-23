@@ -183,10 +183,11 @@ codec_result_t codec_compress(const uint8_t *in, size_t inlen, int level) {
     /* Try buffer pool first, fallback to malloc */
     res.data = buffer_pool_acquire(bound);
     if (!res.data) { res.error = true; return res; }
+    res.capacity = get_bucket_size(bound);
 
-    size_t csize = ZSTD_compress(res.data, bound, in, inlen, level ? level : 3);
+    size_t csize = ZSTD_compress(res.data, res.capacity, in, inlen, level ? level : 3);
     if (ZSTD_isError(csize)) {
-        buffer_pool_release(res.data, bound);
+        buffer_pool_release(res.data, res.capacity);
         res.data = NULL;
         res.error = true;
     } else {
@@ -207,10 +208,11 @@ codec_result_t codec_decompress(const uint8_t *in, size_t inlen, size_t original
     /* Try buffer pool first, fallback to malloc */
     res.data = buffer_pool_acquire(original_size);
     if (!res.data) { res.error = true; return res; }
+    res.capacity = get_bucket_size(original_size);
 
-    size_t dsize = ZSTD_decompress(res.data, original_size, in, inlen);
+    size_t dsize = ZSTD_decompress(res.data, res.capacity, in, inlen);
     if (ZSTD_isError(dsize)) {
-        buffer_pool_release(res.data, original_size);
+        buffer_pool_release(res.data, res.capacity);
         res.data = NULL;
         res.error = true;
     } else {
@@ -240,6 +242,7 @@ codec_result_t codec_encrypt(const uint8_t *in, size_t inlen, const char *psk) {
     /* Try buffer pool first, fallback to malloc */
     res.data = buffer_pool_acquire(out_max);
     if (!res.data) { res.error = true; return res; }
+    res.capacity = get_bucket_size(out_max);
 
     unsigned char *nonce = res.data;
     unsigned char *ciphertext = res.data + crypto_aead_chacha20poly1305_ietf_NPUBBYTES;
@@ -254,7 +257,7 @@ codec_result_t codec_encrypt(const uint8_t *in, size_t inlen, const char *psk) {
     
     if (enc_ret != 0) {
         /* Encryption failed - release the buffer */
-        buffer_pool_release(res.data, out_max);
+        buffer_pool_release(res.data, res.capacity);
         res.data = NULL;
         res.error = true;
         return res;
@@ -285,6 +288,7 @@ codec_result_t codec_decrypt(const uint8_t *in, size_t inlen, const char *psk) {
     /* Try buffer pool first, fallback to malloc */
     res.data = buffer_pool_acquire(cipherlen); /* always larger than plaintext */
     if (!res.data) { res.error = true; return res; }
+    res.capacity = get_bucket_size(cipherlen);
 
     unsigned long long plen;
     if (crypto_aead_chacha20poly1305_ietf_decrypt(res.data, &plen,
@@ -292,7 +296,7 @@ codec_result_t codec_decrypt(const uint8_t *in, size_t inlen, const char *psk) {
                                                  ciphertext, (unsigned long long)cipherlen,
                                                  NULL, 0,
                                                  nonce, key) != 0) {
-        buffer_pool_release(res.data, cipherlen);
+        buffer_pool_release(res.data, res.capacity);
         res.data = NULL;
         res.error = true;
     } else {
@@ -417,11 +421,12 @@ codec_result_t codec_fec_decode(fec_encoded_t *encoded, size_t original_len) {
     /* Try buffer pool first, fallback to malloc */
     res.data = buffer_pool_acquire(original_len + 16); /* small padding for alignment */
     if (!res.data) { api->free(&dec); res.error = true; return res; }
+    res.capacity = get_bucket_size(original_len + 16);
 
     void *out = res.data;
     struct RFC6330_Dec_Result dres = api->decode_aligned(dec, &out, (uint64_t)original_len, 0);
     if (dres.written < original_len) {
-        buffer_pool_release(res.data, original_len + 16);
+        buffer_pool_release(res.data, res.capacity);
         res.data = NULL;
         res.error = true;
     } else {
@@ -450,9 +455,10 @@ void codec_fec_free(fec_encoded_t *f) {
 /* Free a codec result, returning its buffer to the pool for reuse */
 void codec_free_result(codec_result_t *res) {
     if (!res || !res->data) return;
-    buffer_pool_release(res->data, res->len);
+    buffer_pool_release(res->data, res->capacity);
     res->data = NULL;
     res->len = 0;
+    res->capacity = 0;
     res->error = false;
 }
 

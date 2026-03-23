@@ -7,6 +7,7 @@
 #include <stdarg.h>
 #include <time.h>
 #include <math.h>
+#include <uv.h>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -52,6 +53,7 @@
 #define ANSI_HIDE_CUR       "\033[?25l"
 #define ANSI_SHOW_CUR       "\033[?25h"
 #define ANSI_CLEAR_EOL      "\033[K"
+#define ANSI_HOME           "\033[H"
 
 /* Compound colors */
 #define C_RESET            ANSI_RESET
@@ -125,42 +127,42 @@
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 /* Create a horizontal line with box characters */
-static void box_line(int width, char h, const char *color) {
+static void box_line(int width, const char *h, const char *color) {
     printf("%s", color);
-    putchar(BOX_H);
-    for (int i = 1; i < width - 1; i++) putchar(h);
-    putchar(BOX_H);
+    printf("%s", BOX_V);
+    for (int i = 1; i < width - 1; i++) printf("%s", h);
+    printf("%s", BOX_V);
     printf(ANSI_RESET "\n");
 }
 
 /* Create a double horizontal line */
 static void double_box_line(int width) {
     printf(C_BORDER);
-    putchar(DBOX_H);
-    for (int i = 1; i < width - 1; i++) putchar(DBOX_H);
-    putchar(DBOX_H);
+    printf("%s", DBOX_H);
+    for (int i = 1; i < width - 1; i++) printf("%s", DBOX_H);
+    printf("%s", DBOX_H);
     printf(ANSI_RESET "\n");
 }
 
 /* Create a box header with title */
 static void box_header(int width, const char *title, const char *color) {
     printf("%s", color);
-    printf(BOX_TL);
+    printf("%s", BOX_TL);
     int title_len = (int)strlen(title);
     int padding = (width - 2 - title_len) / 2;
-    for (int i = 0; i < padding; i++) putchar(BOX_H);
+    for (int i = 0; i < padding; i++) printf("%s", BOX_H);
     printf(ANSI_BOLD "%s" ANSI_RESET, title);
-    for (int i = 0; i < width - 2 - title_len - padding; i++) putchar(BOX_H);
-    printf(BOX_TR);
+    for (int i = 0; i < width - 2 - title_len - padding; i++) printf("%s", BOX_H);
+    printf("%s", BOX_TR);
     printf(ANSI_RESET "\n");
 }
 
 /* Create a box footer */
 static void box_footer(int width, const char *color) {
     printf("%s", color);
-    printf(BOX_BL);
-    for (int i = 1; i < width - 1; i++) putchar(BOX_H);
-    printf(BOX_BR);
+    printf("%s", BOX_BL);
+    for (int i = 1; i < width - 1; i++) printf("%s", BOX_H);
+    printf("%s", BOX_BR);
     printf(ANSI_RESET "\n");
 }
 
@@ -385,152 +387,142 @@ static void render_input_bar(tui_ctx_t *t) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * PANEL 0: STATS DASHBOARD (Enhanced)
+ * PANEL 0: DASHBOARD (New Premium Design)
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 static void render_stats(tui_ctx_t *t) {
     tui_stats_t *s = t->stats;
+    int W = 80;
     
-    /* Title bar */
-    printf(ANSI_CLEAR);
+    printf(ANSI_HOME);
+    
+    /* Header */
     printf(C_TITLE);
-    printf(BOX_TL);
-    for (int i = 1; i < 77; i++) putchar(BOX_H);
-    printf(BOX_TR "\n");
-    printf(BOX_V);
-    printf(ANSI_BOLD "  %s DNSTUN %s %s  " ANSI_RESET, 
-           ICON_BOLT, s->mode, ICON_BOLT);
-    for (int i = 38; i < 76; i++) putchar(' ');
-    printf(BOX_V "\n");
-    printf(BOX_BL);
-    for (int i = 1; i < 77; i++) putchar(BOX_H);
-    printf(BOX_BR "\n" ANSI_RESET);
+    printf("%s", DBOX_TL);
+    for (int i=1; i<W-1; i++) printf("%s", DBOX_H);
+    printf("%s\n%s", DBOX_TR, DBOX_V);
+    printf(ANSI_BOLD "  %s  DNSTUN %s v1.2.7  %s  " ANSI_RESET, ICON_BOLT, s->mode, ICON_BOLT);
+    for (int i=32; i<W-1; i++) printf(" ");
+    printf(C_TITLE "%s\n%s", DBOX_V, DBOX_BL);
+    for (int i=1; i<W-1; i++) printf("%s", DBOX_H);
+    printf("%s\n" ANSI_RESET, DBOX_BR);
+
+    /* 2-Column Section Top: CONFIG & PERFORMANCE */
+    int C1_W = 39;
+    int C2_W = 39;
     
-    /* Main stats row */
-    printf(BOX_V C_STAT_LABEL "  STATUS" ANSI_RESET);
-    for (int i = 10; i < 26; i++) putchar(' ');
+    /* Left: CONFIG */
+    printf(C_BORDER "%s", BOX_TL);
+    for (int i=1; i<10; i++) printf("%s", BOX_H);
+    printf(ANSI_BOLD " CONFIG " ANSI_RESET C_BORDER);
+    for (int i=18; i<C1_W-1; i++) printf("%s", BOX_H);
+    printf("%s ", BOX_TR);
     
-    printf(BOX_V C_STAT_LABEL "  THROUGHPUT" ANSI_RESET);
-    for (int i = 41; i < 51; i++) putchar(' ');
+    /* Right: CORE STATS */
+    printf(C_BORDER "%s", BOX_TL);
+    for (int i=1; i<10; i++) printf("%s", BOX_H);
+    printf(ANSI_BOLD " PERFORMANCE " ANSI_RESET C_BORDER);
+    for (int i=23; i<C2_W-1; i++) printf("%s", BOX_H);
+    printf("%s\n" ANSI_RESET, BOX_TR);
+
+    /* Row 1 content */
+    printf(C_BORDER "%s" ANSI_RESET " PSK:  %-25.25s " C_BORDER "%s " ANSI_RESET, BOX_V, t->cfg->psk[0] ? "********" : "(none)", BOX_V);
+    printf(C_BORDER "%s" ANSI_RESET " UP:   ", BOX_V);
+    draw_throughput_bar(s->tx_bytes_sec, 1024*1024, 20, C_UPLOAD);
+    printf(" " C_BORDER "%s\n", BOX_V);
+
+    /* Row 2 content */
+    printf(C_BORDER "%s" ANSI_RESET " Crypt: %-25s " C_BORDER "%s " ANSI_RESET, BOX_V, t->cfg->encryption ? "ChaCha20-Poly1305" : "INSECURE / NONE", BOX_V);
+    printf(C_BORDER "%s" ANSI_RESET " DOWN: ", BOX_V);
+    draw_throughput_bar(s->rx_bytes_sec, 1024*1024, 20, C_DOWNLOAD);
+    printf(" " C_BORDER "%s\n", BOX_V);
+
+    /* Row 3 content */
+    printf(C_BORDER "%s" ANSI_RESET " Poll:  %-25d " C_BORDER "%s " ANSI_RESET, BOX_V, t->cfg->poll_interval_ms, BOX_V);
+    printf(C_BORDER "%s" ANSI_RESET " Loss: ", BOX_V);
+    double lp = s->queries_sent > 0 ? 100.0 * (double)s->queries_lost / (double)s->queries_sent : 0.0;
+    draw_throughput_bar(lp * 100 * 1024, 100 * 1024, 20, C_WARNING); /* visualize loss % */
+    printf(" " C_BORDER "%s\n", BOX_V);
+
+    /* Closers */
+    printf(C_BORDER "%s", BOX_BL);
+    for (int i=1; i<C1_W-1; i++) printf("%s", BOX_H);
+    printf("%s ", BOX_BR);
+    printf(C_BORDER "%s", BOX_BL);
+    for (int i=1; i<C2_W-1; i++) printf("%s", BOX_H);
+    printf("%s\n" ANSI_RESET, BOX_BR);
+
+    /* 2-Column Section Bottom: RESOLVERS & SESSIONS */
+    /* Left: RESOLVERS */
+    printf(C_BORDER "%s", BOX_TL);
+    for (int i=1; i<10; i++) printf("%s", BOX_H);
+    printf(ANSI_BOLD " RESOLVERS (%d) " ANSI_RESET C_BORDER, t->pool->count);
+    for (int i=25; i<C1_W-1; i++) printf("%s", BOX_H);
+    printf("%s ", BOX_TR);
     
-    printf(BOX_V C_STAT_LABEL "  NETWORK" ANSI_RESET "\n");
-    
-    /* Separator */
-    printf(BOX_V);
-    for (int i = 1; i < 76; i++) putchar(BOX_H);
-    printf(BOX_V "\n");
-    
-    /* Server status for client mode */
-    if (strcmp(s->mode, "CLIENT") == 0) {
-        uint64_t now = uv_hrtime() / 1000000ULL;
-        printf(BOX_V "  ");
-        if (s->last_server_rx_ms > 0 && (now - s->last_server_rx_ms) < 5000) {
-            double min_rtt = 9999.0;
-            uv_mutex_lock(&t->pool->lock);
-            for (int i = 0; i < t->pool->count; i++) {
-                if (t->pool->resolvers[i].state == RSV_ACTIVE && 
-                    t->pool->resolvers[i].rtt_ms > 0.1 && 
-                    t->pool->resolvers[i].rtt_ms < min_rtt) {
-                    min_rtt = t->pool->resolvers[i].rtt_ms;
-                }
-            }
-            uv_mutex_unlock(&t->pool->lock);
-            
-            printf(C_SUCCESS " %s SERVER ONLINE" ANSI_RESET, ICON_CHECK);
-            if (min_rtt < 9000.0) {
-                printf("  RTT: %.1f ms", min_rtt);
-            }
-        } else if (s->last_server_rx_ms > 0) {
-            printf(C_ERROR " %s SERVER OFFLINE" ANSI_RESET, ICON_CROSS);
-            printf(" (%llus)", (unsigned long long)((now - s->last_server_rx_ms) / 1000ULL));
+    /* Right: SESSIONS */
+    printf(C_BORDER "%s", BOX_TL);
+    for (int i=1; i<10; i++) printf("%s", BOX_H);
+    printf(ANSI_BOLD " SESSIONS (%d) " ANSI_RESET C_BORDER, s->active_sessions);
+    for (int i=24; i<C2_W-1; i++) printf("%s", BOX_H);
+    printf("%s\n" ANSI_RESET, BOX_TR);
+
+    /* Resolver List (last 4) */
+    uv_mutex_lock(&t->pool->lock);
+    int nrs = t->pool->count;
+    for (int i=0; i<4; i++) {
+        printf(C_BORDER "%s" ANSI_RESET " ", BOX_V);
+        if (i < nrs) {
+            resolver_t *r = &t->pool->resolvers[i];
+            printf("%-15s %s%-.9s" ANSI_RESET " %5.0fms ", r->ip, 
+                   r->state == RSV_ACTIVE ? C_ACTIVE : C_DEAD, state_str(r->state), r->rtt_ms);
         } else {
-            printf(C_WARNING " %s CONNECTING..." ANSI_RESET, ICON_INFO);
+            for (int k=0; k<36; k++) printf(" ");
         }
-        for (int i = 28; i < 26; i++) putchar(' ');
-    } else {
-        printf(BOX_V);
-        for (int i = 1; i < 26; i++) putchar(' ');
+        printf(C_BORDER "%s " ANSI_RESET "%s" ANSI_RESET " ", BOX_V, BOX_V);
+        /* Sessions (not easily accessible here, just show stats) */
+        if (i == 0) printf("Total Active:   " C_STAT_VALUE "%-10d" ANSI_RESET, s->active_sessions);
+        else if (i == 1) printf("Total Sent:     " C_STAT_VALUE "%-10llu" ANSI_RESET, (unsigned long long)s->tx_total / 1024);
+        else if (i == 2) printf("Total Recv:     " C_STAT_VALUE "%-10llu" ANSI_RESET, (unsigned long long)s->rx_total / 1024);
+        else printf("                          ");
+        
+        for (int k=26; k<36; k++) printf(" ");
+        printf(C_BORDER "%s\n" ANSI_RESET, BOX_V);
     }
-    
-    /* Throughput bars */
-    printf(BOX_V "  ");
-    double max_rate = 1024.0 * 1024.0; /* 1 MB/s as max for visualization */
-    draw_throughput_bar(s->tx_bytes_sec, max_rate, 20, C_UPLOAD);
-    printf("\n");
-    
-    printf(BOX_V "  Sessions: ");
-    printf(C_STAT_VALUE "%d" ANSI_RESET, s->active_sessions);
-    for (int i = 15; i < 26; i++) putchar(' ');
-    
-    printf(BOX_V "  ");
-    draw_throughput_bar(s->rx_bytes_sec, max_rate, 20, C_DOWNLOAD);
-    printf("\n");
-    
-    /* Resolver stats row */
-    printf(BOX_V C_STAT_LABEL "  RESOLVERS" ANSI_RESET);
-    for (int i = 13; i < 26; i++) putchar(' ');
-    
-    printf(BOX_V C_STAT_LABEL "  DATA TOTALS" ANSI_RESET);
-    for (int i = 16; i < 51; i++) putchar(' ');
-    
-    printf(BOX_V C_STAT_LABEL "  PACKETS" ANSI_RESET "\n");
-    
-    printf(BOX_V);
-    for (int i = 1; i < 76; i++) putchar(BOX_H);
-    printf(BOX_V "\n");
-    
-    /* Resolver counts with icons */
-    printf(BOX_V "  ");
-    printf(C_ACTIVE " %s %3d" ANSI_RESET, ICON_STAR, s->active_resolvers);
-    printf(C_PENALTY " %s %3d" ANSI_RESET, ICON_WARN, s->penalty_resolvers);
-    printf(C_DEAD " %s %3d" ANSI_RESET, ICON_CROSS, s->dead_resolvers);
-    for (int i = 22; i < 26; i++) putchar(' ');
-    
-    /* Data totals */
-    printf(BOX_V "  TX: ");
-    if (s->tx_total > 1024 * 1024 * 1024) {
-        printf(C_UPLOAD "%.2f GB" ANSI_RESET, (double)s->tx_total / (1024*1024*1024));
-    } else if (s->tx_total > 1024 * 1024) {
-        printf(C_UPLOAD "%.2f MB" ANSI_RESET, (double)s->tx_total / (1024*1024));
-    } else {
-        printf(C_UPLOAD "%.1f KB" ANSI_RESET, (double)s->tx_total / 1024);
-    }
-    printf("  RX: ");
-    if (s->rx_total > 1024 * 1024 * 1024) {
-        printf(C_DOWNLOAD "%.2f GB" ANSI_RESET, (double)s->rx_total / (1024*1024*1024));
-    } else if (s->rx_total > 1024 * 1024) {
-        printf(C_DOWNLOAD "%.2f MB" ANSI_RESET, (double)s->rx_total / (1024*1024));
-    } else {
-        printf(C_DOWNLOAD "%.1f KB" ANSI_RESET, (double)s->rx_total / 1024);
-    }
-    for (int i = 35; i < 51; i++) putchar(' ');
-    
-    /* Packet stats */
-    printf(BOX_V "  Sent: " C_INFO "%llu" ANSI_RESET, (unsigned long long)s->queries_sent);
-    printf("  Recv: " C_INFO "%llu" ANSI_RESET, (unsigned long long)s->queries_recv);
-    printf("  Loss: " C_WARNING "%.1f%%" ANSI_RESET, 
-           s->queries_sent > 0 ? 100.0 * (double)s->queries_lost / (double)s->queries_sent : 0.0);
-    printf("\n");
-    
-    /* Domain display */
-    if (t->cfg->domain_count > 0) {
-        printf(BOX_V "  " C_INFO "Domains:" ANSI_RESET " ");
-        for (int i = 0; i < t->cfg->domain_count && i < 3; i++) {
-            if (i > 0) printf(", ");
-            printf(C_STAT_VALUE "%s" ANSI_RESET, t->cfg->domains[i]);
+    uv_mutex_unlock(&t->pool->lock);
+
+    printf(C_BORDER "%s", BOX_BL);
+    for (int i=1; i<C1_W-1; i++) printf("%s", BOX_H);
+    printf("%s ", BOX_BR);
+    printf(C_BORDER "%s", BOX_BL);
+    for (int i=1; i<C2_W-1; i++) printf("%s", BOX_H);
+    printf("%s\n" ANSI_RESET, BOX_BR);
+
+    /* LIVE LOG PANEL */
+    printf(C_BORDER "%s", BOX_TL);
+    for (int i=1; i<10; i++) printf("%s", BOX_H);
+    printf(ANSI_BOLD " LIVE LOG " ANSI_RESET C_BORDER);
+    for (int i=20; i<W-1; i++) printf("%s", BOX_H);
+    printf("%s\n" ANSI_RESET, BOX_TR);
+
+    int log_lines = 5;
+    int count = t->debug.count;
+    for (int i=0; i<log_lines; i++) {
+        printf(C_BORDER "%s" ANSI_RESET " ", BOX_V);
+        if (count > 0 && i < log_lines) {
+            int visible_idx = i + (count > log_lines ? count - log_lines : 0);
+            int idx = (t->debug.head - count + visible_idx) % TUI_DEBUG_LINES;
+            if (idx < 0) idx += TUI_DEBUG_LINES;
+            printf("%-75.75s", t->debug.lines[idx]);
+        } else {
+            for (int k=0; k<75; k++) printf(" ");
         }
-        if (t->cfg->domain_count > 3) {
-            printf(" +%d more", t->cfg->domain_count - 3);
-        }
-        for (int i = 62; i < 76; i++) putchar(' ');
-        printf(BOX_V "\n");
+        printf(C_BORDER " %s\n" ANSI_RESET, BOX_V);
     }
-    
-    /* Footer */
-    box_footer(76, C_BORDER);
-    printf(C_INFO "  [1]" ANSI_RESET " Stats   " C_INFO "[2]" ANSI_RESET " Resolvers   "
-           C_INFO "[3]" ANSI_RESET " Config   " C_INFO "[4]" ANSI_RESET " Log   "
-           C_ERROR "[q]" ANSI_RESET " Quit\n");
+    box_footer(W, C_BORDER);
+
+    /* Navigation */
+    printf(ANSI_BOLD " [1]" ANSI_RESET " Dash  " ANSI_BOLD "[2]" ANSI_RESET " Net  " ANSI_BOLD "[3]" ANSI_RESET " Conf  " ANSI_BOLD "[4]" ANSI_RESET " Log " ANSI_BOLD "[q]" ANSI_RESET " Quit\n");
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -538,12 +530,13 @@ static void render_stats(tui_ctx_t *t) {
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 static void render_resolvers(tui_ctx_t *t) {
+    printf(ANSI_HOME);
     if (strcmp(t->stats->mode, "SERVER") == 0) {
         if (!t->get_clients_cb) {
             box_header(76, " ACTIVE CLIENT SESSIONS ", C_HEADER);
-            printf(BOX_V);
+            printf("%s", BOX_V);
             for (int i = 1; i < 76; i++) putchar(' ');
-            printf(BOX_V "\n");
+            printf("%s\n", BOX_V);
             box_footer(76, C_BORDER);
             return;
         }
@@ -553,24 +546,24 @@ static void render_resolvers(tui_ctx_t *t) {
         box_header(76, " ACTIVE CLIENT SESSIONS ", C_HEADER);
         
         /* Header row */
-        printf(BOX_V C_STAT_LABEL " %-15s %-10s %5s %6s %5s %4s %6s " ANSI_RESET "\n",
-               "Client IP", "User ID", "MTU", "Loss%", "FEC", "Enc", "Idle(s)");
-        printf(BOX_V);
-        for (int i = 1; i < 76; i++) putchar(BOX_H);
-        printf(BOX_V "\n");
+        printf("%s" ANSI_BOLD " " F_CYAN "%-15s %-10s %5s %6s %5s %4s %6s " ANSI_RESET "%s\n",
+               BOX_V, "Client IP", "User ID", "MTU", "Loss%", "FEC", "Enc", "Idle(s)", BOX_V);
+        printf("%s", BOX_V);
+        for (int i = 1; i < 76; i++) printf("%s", BOX_H);
+        printf("%s\n", BOX_V);
         
         for (int i = 0; i < num && i < 15; i++) {
-            printf(BOX_V " ");
+            printf("%s ", BOX_V);
             printf("%-15s %-10s %5d %6.1f %5d %4s %6u ",
                    snaps[i].ip,
                    snaps[i].user_id[0] ? snaps[i].user_id : "-",
                    snaps[i].downstream_mtu,
-                   snaps[i].loss_pct,
+                   (double)snaps[i].loss_pct,
                    (int)snaps[i].fec_k,
                    snaps[i].enc_format == ENC_BINARY ? F_RED "bin" ANSI_RESET : F_GREEN "b64" ANSI_RESET,
                    snaps[i].idle_sec);
             for (int j = 70; j < 76; j++) putchar(' ');
-            printf(BOX_V "\n");
+            printf("%s\n", BOX_V);
         }
         
         box_footer(76, C_BORDER);
@@ -620,15 +613,15 @@ static void render_resolvers(tui_ctx_t *t) {
     uv_mutex_unlock(&pool->lock);
 
     box_header(76, " RESOLVER POOL ", C_HEADER);
-    printf(BOX_V C_STAT_LABEL " %-15s %-10s %6s %6s %5s %4s %5s %4s " ANSI_RESET "\n",
-           "IP", "State", "cwnd", "RTT(ms)", "QPS", "MTU", "Loss%", "FEC");
-    printf(BOX_V);
-    for (int i = 1; i < 76; i++) putchar(BOX_H);
-    printf(BOX_V "\n");
+    printf("%s" ANSI_BOLD " " F_CYAN "%-15s %-10s %6s %6s %5s %4s %5s %4s " ANSI_RESET "%s\n",
+           BOX_V, "IP", "State", "cwnd", "RTT(ms)", "QPS", "MTU", "Loss%", "FEC", BOX_V);
+    printf("%s", BOX_V);
+    for (int i = 1; i < 76; i++) printf("%s", BOX_H);
+    printf("%s\n", BOX_V);
 
     for (int i = 0; i < shown; i++) {
         snap_t *s = &snaps[i];
-        printf(BOX_V " ");
+        printf("%s ", BOX_V);
         printf("%-15s ", s->ip);
         
         /* State with icon */
@@ -649,7 +642,7 @@ static void render_resolvers(tui_ctx_t *t) {
         }
         
         for (int j = 70; j < 76; j++) putchar(' ');
-        printf(BOX_V "\n");
+        printf("%s\n", BOX_V);
     }
 
     box_footer(76, C_BORDER);
@@ -666,49 +659,54 @@ static void render_resolvers(tui_ctx_t *t) {
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 static void render_config(tui_ctx_t *t) {
+    printf(ANSI_HOME);
     box_header(76, " LIVE CONFIG ", C_HEADER);
     
     dnstun_config_t *c = t->cfg;
     const char *ciphers[]    = { "none","chacha20","aes256gcm","noise_nk" };
     const char *transports[] = { "udp","doh","dot" };
     
-    printf(BOX_V "  " C_STAT_LABEL "[a]" ANSI_RESET " poll_interval_ms  = " C_INFO "%d" ANSI_RESET,  c->poll_interval_ms);
-    printf("        " C_STAT_LABEL "[b]" ANSI_RESET " fec_window        = " C_INFO "%d" ANSI_RESET "\n", c->fec_window);
+    printf("%s  " C_STAT_LABEL "[a]" ANSI_RESET " poll_interval_ms  = " C_INFO "%-5d" ANSI_RESET, BOX_V, c->poll_interval_ms);
+    printf("        " C_STAT_LABEL "[b]" ANSI_RESET " fec_window        = " C_INFO "%-5d" ANSI_RESET "  %s\n", c->fec_window, BOX_V);
     
-    printf(BOX_V "  " C_STAT_LABEL "[c]" ANSI_RESET " cwnd_max          = " C_INFO "%.0f" ANSI_RESET, c->cwnd_max);
-    printf("        " C_STAT_LABEL "[d]" ANSI_RESET " encryption        = %s\n", 
-           c->encryption ? C_SUCCESS "ON " ANSI_RESET : C_ERROR "OFF" ANSI_RESET);
+    printf("%s  " C_STAT_LABEL "[c]" ANSI_RESET " cwnd_max          = " C_INFO "%-5.0f" ANSI_RESET, BOX_V, c->cwnd_max);
+    printf("        " C_STAT_LABEL "[d]" ANSI_RESET " encryption        = %s    %s\n", 
+           c->encryption ? C_SUCCESS "ON " ANSI_RESET : C_ERROR "OFF" ANSI_RESET, BOX_V);
     
-    printf(BOX_V "  " C_STAT_LABEL "[e]" ANSI_RESET " cipher            = " C_INFO "%s" ANSI_RESET, 
+    printf("%s  " C_STAT_LABEL "[e]" ANSI_RESET " cipher            = " C_INFO "%-10s" ANSI_RESET, BOX_V,
            (c->cipher < 4) ? ciphers[c->cipher] : "?");
-    printf("        " C_STAT_LABEL "[f]" ANSI_RESET " jitter            = %s\n", 
-           c->jitter ? C_SUCCESS "ON " ANSI_RESET : C_ERROR "OFF" ANSI_RESET);
+    printf("   " C_STAT_LABEL "[f]" ANSI_RESET " jitter            = %s    %s\n", 
+           c->jitter ? C_SUCCESS "ON " ANSI_RESET : C_ERROR "OFF" ANSI_RESET, BOX_V);
     
-    printf(BOX_V "  " C_STAT_LABEL "[g]" ANSI_RESET " padding           = %s", 
+    printf("%s  " C_STAT_LABEL "[g]" ANSI_RESET " padding           = %s", BOX_V,
            c->padding ? C_SUCCESS "ON " ANSI_RESET : C_ERROR "OFF" ANSI_RESET);
-    printf("          " C_STAT_LABEL "[h]" ANSI_RESET " chaffing          = %s\n", 
-           c->chaffing ? C_SUCCESS "ON " ANSI_RESET : C_ERROR "OFF" ANSI_RESET);
+    printf("          " C_STAT_LABEL "[h]" ANSI_RESET " chaffing          = %s    %s\n", 
+           c->chaffing ? C_SUCCESS "ON " ANSI_RESET : C_ERROR "OFF" ANSI_RESET, BOX_V);
     
-    printf(BOX_V "  " C_STAT_LABEL "[i]" ANSI_RESET " chrome_cover     = %s", 
+    printf("%s  " C_STAT_LABEL "[i]" ANSI_RESET " chrome_cover     = %s", BOX_V,
            c->chrome_cover ? C_SUCCESS "ON " ANSI_RESET : C_ERROR "OFF" ANSI_RESET);
-    printf("        " C_STAT_LABEL "[j]" ANSI_RESET " dns_flux          = %s\n", 
-           c->dns_flux ? C_SUCCESS "ON " ANSI_RESET : C_ERROR "OFF" ANSI_RESET);
+    printf("        " C_STAT_LABEL "[j]" ANSI_RESET " dns_flux          = %s    %s\n", 
+           c->dns_flux ? C_SUCCESS "ON " ANSI_RESET : C_ERROR "OFF" ANSI_RESET, BOX_V);
     
-    printf(BOX_V "  " C_STAT_LABEL "[k]" ANSI_RESET " transport         = " C_INFO "%s" ANSI_RESET, 
+    printf("%s  " C_STAT_LABEL "[k]" ANSI_RESET " transport         = " C_INFO "%-10s" ANSI_RESET, BOX_V,
            (c->transport < 3) ? transports[c->transport] : "?");
-    printf("        " C_STAT_LABEL "[l]" ANSI_RESET " log_level         = " C_INFO "%d" ANSI_RESET "\n", c->log_level);
+    printf("   " C_STAT_LABEL "[l]" ANSI_RESET " log_level         = " C_INFO "%-5d" ANSI_RESET "  %s\n", c->log_level, BOX_V);
     
     /* Domains display */
-    printf(BOX_V "  " C_STAT_LABEL "[m]" ANSI_RESET " domains           = " C_INFO);
+    printf("%s  " C_STAT_LABEL "[m]" ANSI_RESET " domains           = " C_INFO, BOX_V);
+    int dlen = 0;
     if (c->domain_count > 0) {
         for (int i = 0; i < c->domain_count; i++) {
-            if (i > 0) printf(",");
+            if (i > 0) { printf(","); dlen++; }
             printf("%s", c->domains[i]);
+            dlen += (int)strlen(c->domains[i]);
         }
     } else {
         printf(C_ERROR "(none)" ANSI_RESET);
+        dlen += 6;
     }
-    printf(ANSI_RESET "\n");
+    for (int i=dlen; i<52; i++) putchar(' ');
+    printf("%s\n", BOX_V);
     
     box_footer(76, C_BORDER);
     printf(C_INFO "  [1]" ANSI_RESET " Stats   " C_INFO "[2]" ANSI_RESET " Resolvers   "
@@ -729,21 +727,26 @@ static void render_debug(tui_ctx_t *t) {
     const char *level_names[] = { "ERR", "WRN", "INF", "DBG" };
     const char *level_colors[] = { F_RED, F_YELLOW, F_GREEN, F_BRIGHT_BLACK };
     
-    printf(BOX_V "  Log Levels: ");
+    printf("%s  Log Levels: ", BOX_V);
     for (int i = 0; i <= 3; i++) {
         if (i <= t->debug.level) {
             printf("%s%s %s" ANSI_RESET, level_colors[i], log_icon(i), level_names[i]);
         } else {
-            printf(C_DEBUG "%s %s" ANSI_RESET, log_icon(i), level_names[i]);
+            printf(F_BRIGHT_BLACK "  %s" ANSI_RESET, level_names[i]);
         }
-        if (i < 3) printf(" / ");
+        if (i < 3) printf("  ");
     }
-    printf("     [c] Clear   [a] Auto-scroll %s\n",
+    for (int i=0; i<30; i++) putchar(' ');
+    printf("%s\n", BOX_V);
+
+    printf("%s     [c] Clear   [a] Auto-scroll %s", BOX_V,
            t->debug.auto_scroll ? C_SUCCESS "ON" ANSI_RESET : C_ERROR "OFF" ANSI_RESET);
+    for (int i=0; i<30; i++) putchar(' ');
+    printf("%s\n", BOX_V);
     
-    printf(BOX_V);
-    for (int i = 1; i < 76; i++) putchar(BOX_H);
-    printf(BOX_V "\n");
+    printf("%s", BOX_V);
+    for (int i = 1; i < 76; i++) printf("%s", BOX_H);
+    printf("%s\n", BOX_V);
     
     int total_lines = t->debug.count;
     int visible_lines = 12;
@@ -762,23 +765,26 @@ static void render_debug(tui_ctx_t *t) {
     }
     
     if (total_lines == 0) {
-        printf(BOX_V);
+        printf("%s", BOX_V);
         printf(C_DEBUG "  (no log messages yet - press keys or start a session)" ANSI_RESET);
-        for (int i = 60; i < 76; i++) putchar(' ');
-        printf(BOX_V "\n");
+        for (int i = 60; i < 74; i++) putchar(' ');
+        printf("%s\n", BOX_V);
     } else {
         for (int i = start_idx; i < end_idx; i++) {
             int idx = (t->debug.head - total_lines + i) % TUI_DEBUG_LINES;
-            printf(BOX_V " ");
+            if (idx < 0) idx += TUI_DEBUG_LINES;
+            printf("%s ", BOX_V);
             /* Truncate long lines */
             int len = (int)strlen(t->debug.lines[idx]);
-            if (len > 72) {
-                printf("%.72s", t->debug.lines[idx]);
-            } else {
-                printf("%s", t->debug.lines[idx]);
-                for (int j = len; j < 72; j++) putchar(' ');
-            }
-            printf(BOX_V "\n");
+            /* We need to be careful with visible length vs byte length due to ANSI */
+            printf("%-73.73s", t->debug.lines[idx]);
+            printf(" %s\n", BOX_V);
+        }
+        /* Fill empty lines if needed */
+        for (int i = end_idx - start_idx; i < visible_lines; i++) {
+            printf("%s", BOX_V);
+            for (int k=0; k<74; k++) putchar(' ');
+            printf("%s\n", BOX_V);
         }
     }
     
@@ -869,7 +875,6 @@ void tui_init(tui_ctx_t *t, tui_stats_t *stats,
 }
 
 void tui_render(tui_ctx_t *t) {
-    printf(ANSI_CLEAR);
     switch (t->panel) {
         case 0: render_stats(t);     break;
         case 1: render_resolvers(t); break;
