@@ -1198,6 +1198,7 @@ static void on_tty_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
 /*  Entry point                                   */
 /* ────────────────────────────────────────────── */
 int main(int argc, char *argv[]) {
+    fprintf(stderr, "[TRACE] main: Entering\n"); fflush(stderr);
     const char *config_path = NULL;
     static char auto_config_path[2048] = {0};
     char *slash;
@@ -1296,12 +1297,14 @@ int main(int argc, char *argv[]) {
 
     /* Load config */
     config_defaults(&g_cfg, false);
+    fprintf(stderr, "[TRACE] main: config_defaults done\n"); fflush(stderr);
     if (config_load(&g_cfg, config_path) != 0) {
         fprintf(stderr,
             "Warning: could not load '%s', using defaults.\n"
             "Create client.ini to configure the tunnel.\n\n",
             config_path);
     }
+    fprintf(stderr, "[TRACE] main: config_load done\n"); fflush(stderr);
 
     /* ── First-run: ask for tunnel domain if not configured ────────────────
        This writes the domain to the INI file so subsequent runs are silent. */
@@ -1335,7 +1338,9 @@ int main(int argc, char *argv[]) {
     g_loop = uv_default_loop();
 
     /* Init resolver pool, then load saved resolvers from disk */
+    fprintf(stderr, "[TRACE] main: calling rpool_init\n"); fflush(stderr);
     rpool_init(&g_pool, &g_cfg);
+    fprintf(stderr, "[TRACE] main: rpool_init done\n"); fflush(stderr);
 
     FILE *rf_check = fopen(g_resolvers_file, "r");
     if (!rf_check) {
@@ -1388,7 +1393,9 @@ int main(int argc, char *argv[]) {
         fclose(rf_check);
     }
 
+    fprintf(stderr, "[TRACE] main: calling resolvers_load\n"); fflush(stderr);
     resolvers_load();
+    fprintf(stderr, "[TRACE] main: resolvers_load done\n"); fflush(stderr);
 
     /* Parse SOCKS5 bind address */
     if (g_cfg.socks5_bind[0]) {
@@ -1411,8 +1418,11 @@ int main(int argc, char *argv[]) {
     }
 
     /* TUI */
+    fprintf(stderr, "[TRACE] main: calling tui_init\n"); fflush(stderr);
     tui_init(&g_tui, &g_stats, &g_pool, &g_cfg, "CLIENT", config_path);
+    fprintf(stderr, "[TRACE] main: tui_init done\n"); fflush(stderr);
     tui_render(&g_tui); /* Initial render to clear screen and show frame */
+    fprintf(stderr, "[TRACE] main: initial tui_render done\n"); fflush(stderr);
 
     LOG_INFO("dnstun-client starting\n");
     LOG_INFO("  SOCKS5  : %s:%d\n", bind_ip, bind_port);
