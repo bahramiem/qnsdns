@@ -471,7 +471,9 @@ static void on_server_recv(uv_udp_t *h,
     }
 
     if (tun_idx < 3) { /* Need at least seq, payload_1, sid */
-        LOG_ERR("Malformed QNAME from %s: %s (tun_idx=%d, part_count=%d)\n",
+        /* This is likely a resolver test probe (MTU test, NXDOMAIN test, etc.)
+         * from the client. These don't have the .tun. marker. Silently ignore. */
+        LOG_DEBUG("Ignoring non-tunnel probe from %s: %s (tun_idx=%d, part_count=%d)\n",
                 src_ip, qname, tun_idx, part_count);
         return;
     }
@@ -692,8 +694,15 @@ static void on_server_recv(uv_udp_t *h,
     /* ── Forward payload to upstream (non-FEC path) ──────────────── */
     /* Fix #11: Only forward to already-connected sessions. SOCKS5 CONNECT
        must arrive via the FEC+decompress path to be decoded correctly. */
+    LOG_DEBUG("Session %d: checking forward - is_poll=%d, payload_len=%zu, tcp_connected=%d\n",
+              sidx, is_poll, payload_len, sess->tcp_connected);
     if (!is_poll && payload_len > 0 && sess->tcp_connected) {
+        LOG_DEBUG("Session %d: forwarding %zu bytes to upstream\n", sidx, payload_len);
         upstream_write_and_read(sidx, payload, payload_len);
+    } else if (payload_len > 0 && !sess->tcp_connected) {
+        LOG_DEBUG("Session %d: NOT forwarding - tcp not connected yet\n", sidx);
+    } else if (payload_len > 0) {
+        LOG_DEBUG("Session %d: NOT forwarding - is_poll=%d\n", sidx, is_poll);
     }
 
     /* ── Build reply — stuff any pending upstream data ───────────── */

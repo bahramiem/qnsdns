@@ -23,7 +23,14 @@
 #define DNSTUN_MAX_DOMAINS       32
 #define DNSTUN_MAX_LABEL_LEN     63
 #define DNSTUN_MAX_QNAME_LEN     253
-#define DNSTUN_CHUNK_PAYLOAD     160   /* max base32 payload bytes per DNS label block */
+/* max payload bytes per DNS query
+ * DNS QNAME limit is 253 bytes. After accounting for:
+ * - chunk_header_t (32 bytes)
+ * - base32 encoding overhead (32 * 8/5 = 52 bytes)
+ * - QNAME prefix (seq.sid.tun.domain. ~35 bytes)
+ * - base32 dotify overhead (~b32_len/57)
+ * Safe max payload ≈ 93 bytes for typical domains */
+#define DNSTUN_CHUNK_PAYLOAD     93    /* max base32 payload bytes per DNS query */
 #define DNSTUN_SESSION_ID_LEN    4
 #define DNSTUN_VERSION           1
 

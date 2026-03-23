@@ -196,12 +196,16 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
         memcpy(raw + rawlen, payload, paylen); rawlen += paylen;
     }
 
-    /* Base32 encode the raw data (UPPERCASE for DNS compatibility) */
-    char b32_raw[256];
+    /* Base32 encode the raw data (UPPERCASE for DNS compatibility)
+     * Formula: base32 output = ceil(input_len * 8 / 5)
+     * For header(32) + payload(160) = 192 bytes: 192 * 8 / 5 = 308 bytes */
+    #define BASE32_MAX_OUTPUT(max_input) (((max_input) * 8 + 4) / 5)
+    char b32_raw[BASE32_MAX_OUTPUT(sizeof(chunk_header_t) + DNSTUN_CHUNK_PAYLOAD + 4)];
     size_t b32_len = base32_encode((uint8_t*)b32_raw, raw, rawlen);
 
     /* Use slipstream's inline_dotify to split into labels every 57 chars */
-    char b32_dotted[320];
+    /* Add extra space for dots: approximately raw_len/57 extra chars */
+    char b32_dotted[BASE32_MAX_OUTPUT(sizeof(chunk_header_t) + DNSTUN_CHUNK_PAYLOAD + 4) + 64];
     memcpy(b32_dotted, b32_raw, b32_len);
     size_t dotted_len = inline_dotify(b32_dotted, sizeof(b32_dotted), b32_len);
 
@@ -216,11 +220,27 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
 
     /* QNAME format: <seq>.<b32>.<sid>.tun.<domain>.
      * CRITICAL: Must end with trailing dot for FQDN format!
-     * SPCDNS requires FQDN or it returns RCODE_NAME_ERROR (3) */
+     * SPCDNS requires FQDN or it returns RCODE_NAME_ERROR (3)
+     * 
+     * IMPORTANT: DNS QNAME maximum is 253 bytes. We need to ensure:
+     * seq(4) + b32_dotted + sid(8) + "tun"(3) + domain + dots + trailing(1) <= 253
+     * 
+     * For domain ~15 chars: 4 + 8 + 3 + 15 + 1 = 31 overhead
+     * Max b32_dotted = 253 - 31 - (dots overhead ~b32_len/57) ≈ 200 chars
+     * Max base32 input ≈ 200 * 5 / 8 = 125 bytes
+     * For header 32 bytes, max payload ≈ 93 bytes
+     * 
+     * DNSTUN_CHUNK_PAYLOAD is capped to ensure QNAME fits within DNS limits. */
     char qname[512];
     int qname_len = snprintf(qname, sizeof(qname), "%s.%s.%s.tun.%s.",
              seq_hex, b32_dotted, sid_hex, domain);
 
+    if (qname_len > DNSTUN_MAX_QNAME_LEN) {
+        LOG_ERR("QNAME too long: %d bytes (max %d). Reduce DNSTUN_CHUNK_PAYLOAD.\n",
+                qname_len, DNSTUN_MAX_QNAME_LEN);
+        return -1;
+    }
+    
     LOG_DEBUG("QNAME=%s (len=%d)\n", qname, qname_len);
 
     /* Build DNS query structure like slipstream */
@@ -1552,6 +1572,9 @@ static void socks5_handle_data(socks5_client_t *c,
         sess->send_len += len;
         g_stats.tx_total += len;
         g_stats.tx_bytes_sec += len;
+        
+        LOG_DEBUG("Session %d: queued %zu bytes from SOCKS5 (total send_buf: %zu)\n",
+                  c->session_idx, len, sess->send_len);
     }
 }
 
@@ -1927,6 +1950,7 @@ static void on_poll_timer(uv_timer_t *t) {
         if (!sess->established || sess->closed) continue;
 
         if (sess->send_len > 0) {
+            LOG_DEBUG("Session %d: poll timer sending %zu bytes (compressed+encrypted+FEC)\n", i, sess->send_len);
             /* 1. COMPRESS */
             codec_result_t cret = codec_compress(sess->send_buf, sess->send_len, 3);
             if (cret.error) { LOG_ERR("Compression failed\n"); continue; }
