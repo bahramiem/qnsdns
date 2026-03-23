@@ -466,6 +466,7 @@ static void on_init_phase_timeout(uv_timer_t *t) {
 }
 
 static void resolver_init_phase(void) {
+    fprintf(stderr, "[TRACE] Starting resolver_init_phase\n"); fflush(stderr);
     LOG_INFO("=== Resolver Initialization Phase ===\n");
     tui_render(&g_tui);
 
@@ -496,6 +497,7 @@ static void resolver_init_phase(void) {
     uint8_t dummy[1400]; memset(dummy, 'A', 1400);
 
     /* Stage 1: Hijack Detection (NXDOMAIN test) */
+    fprintf(stderr, "[TRACE] Init Stage 1: Hijack Detection\n"); fflush(stderr);
     LOG_INFO("Scanning for DNS Hijacking / Captive Portals...\n");
     for (int i = 0; i < g_pool.count; i++) {
         fire_probe_ext(i, NULL, 0, domain, true, false);
@@ -505,8 +507,10 @@ static void resolver_init_phase(void) {
         }
     }
     tui_render(&g_tui);
+    fprintf(stderr, "[TRACE] Init Stage 1 complete\n"); fflush(stderr);
 
     /* Stage 2: EDNS0 Detection */
+    fprintf(stderr, "[TRACE] Init Stage 2: EDNS0 Detection\n"); fflush(stderr);
     LOG_INFO("Detecting EDNS0 support...\n");
     for (int i = 0; i < g_pool.count; i++) {
         fire_probe_ext(i, NULL, 0, domain, false, true);
@@ -516,8 +520,10 @@ static void resolver_init_phase(void) {
         }
     }
     tui_render(&g_tui);
+    fprintf(stderr, "[TRACE] Init Stage 2 complete\n"); fflush(stderr);
 
     /* Stage 3: MTU Benchmarking (Initial) */
+    fprintf(stderr, "[TRACE] Init Stage 3: MTU Benchmarking\n"); fflush(stderr);
     LOG_INFO("Measuring MTU & Benchmarking RTT...\n");
     for (int m = 0; m < 3; m++) {
         for (int i = 0; i < g_pool.count; i++) {
@@ -529,6 +535,7 @@ static void resolver_init_phase(void) {
         }
     }
     tui_render(&g_tui);
+    fprintf(stderr, "[TRACE] Init Stage 3 complete\n"); fflush(stderr);
 
     /* Wait for settlement of initial stages */
     uv_timer_t wait;
@@ -537,6 +544,7 @@ static void resolver_init_phase(void) {
     uv_run(g_loop, UV_RUN_DEFAULT);
 
     /* Stage 4: MTU Binary Search Refinement (3 iterations) */
+    fprintf(stderr, "[TRACE] Init Stage 4: MTU Binary Search\n"); fflush(stderr);
     LOG_INFO("Refining MTU boundaries (Binary Search)...\n");
     for (int iter = 0; iter < 3; iter++) {
         int probes_sent = 0;
@@ -555,11 +563,13 @@ static void resolver_init_phase(void) {
             uv_run(g_loop, UV_RUN_DEFAULT);
         }
     }
+    fprintf(stderr, "[TRACE] Init Stage 4 complete\n"); fflush(stderr);
 
     uv_close((uv_handle_t*)&wait, NULL);
     uv_run(g_loop, UV_RUN_NOWAIT);
 
     /* Final Promotion Logic */
+    fprintf(stderr, "[TRACE] Init: Final Promotion Logic\n"); fflush(stderr);
     int active = 0;
     for (int i = 0; i < g_pool.count; i++) {
         resolver_t *r = &g_pool.resolvers[i];
@@ -572,6 +582,7 @@ static void resolver_init_phase(void) {
             active++;
         }
     }
+    fprintf(stderr, "[TRACE] Init: Final Promotion complete (%d active)\n", active); fflush(stderr);
 
     LOG_INFO("Init complete: %d/%d resolvers active\n", active, g_pool.count);
     g_stats.active_resolvers  = g_pool.active_count;
@@ -1215,6 +1226,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "libsodium initialization failed.\n");
         return 1;
     }
+    fprintf(stderr, "[TRACE] libsodium initialized\n"); fflush(stderr);
 
     /* Parse arguments */
     for (int i = 1; i < argc; i++) {
@@ -1298,6 +1310,7 @@ int main(int argc, char *argv[]) {
             "Create client.ini to configure the tunnel.\n\n",
             config_path);
     }
+    fprintf(stderr, "[TRACE] Config loaded from %s\n", config_path); fflush(stderr);
 
     /* ── First-run: ask for tunnel domain if not configured ────────────────
        This writes the domain to the INI file so subsequent runs are silent. */
@@ -1331,7 +1344,9 @@ int main(int argc, char *argv[]) {
     g_loop = uv_default_loop();
 
     /* Init resolver pool, then load saved resolvers from disk */
+    fprintf(stderr, "[TRACE] Initializing resolver pool\n"); fflush(stderr);
     rpool_init(&g_pool, &g_cfg);
+    fprintf(stderr, "[TRACE] Resolver pool initialized\n"); fflush(stderr);
 
     FILE *rf_check = fopen(g_resolvers_file, "r");
     if (!rf_check) {
@@ -1384,7 +1399,9 @@ int main(int argc, char *argv[]) {
         fclose(rf_check);
     }
 
+    fprintf(stderr, "[TRACE] Loading resolvers\n"); fflush(stderr);
     resolvers_load();
+    fprintf(stderr, "[TRACE] Resolvers loaded\n"); fflush(stderr);
 
     /* Parse SOCKS5 bind address */
     if (g_cfg.socks5_bind[0]) {
@@ -1401,13 +1418,16 @@ int main(int argc, char *argv[]) {
     uv_ip4_addr(bind_ip, bind_port, &socks5_addr);
     uv_tcp_init(g_loop, &g_socks5_server);
     uv_tcp_bind(&g_socks5_server, (const struct sockaddr*)&socks5_addr, 0);
+    fprintf(stderr, "[TRACE] Starting SOCKS5 server on %s:%d\n", bind_ip, bind_port); fflush(stderr);
     if (uv_listen((uv_stream_t*)&g_socks5_server, 128, on_socks5_connection) != 0) {
         LOG_ERR("Cannot bind SOCKS5 on %s:%d\n", bind_ip, bind_port);
         return 1;
     }
+    fprintf(stderr, "[TRACE] SOCKS5 server listening\n"); fflush(stderr);
 
     /* TUI */
     tui_init(&g_tui, &g_stats, &g_pool, &g_cfg, "CLIENT", config_path);
+    fprintf(stderr, "[TRACE] TUI initialized\n"); fflush(stderr);
     tui_render(&g_tui); /* Initial render to clear screen and show frame */
 
     LOG_INFO("dnstun-client starting\n");
@@ -1444,9 +1464,12 @@ int main(int argc, char *argv[]) {
     }
 
     /* Resolver init phase (probes resolvers, runs loop for ~3s) */
+    fprintf(stderr, "[TRACE] Entering resolver init phase\n"); fflush(stderr);
     resolver_init_phase();
+    fprintf(stderr, "[TRACE] Resolver init phase complete\n"); fflush(stderr);
 
     /* Run event loop */
+    fprintf(stderr, "[TRACE] Starting main event loop\n"); fflush(stderr);
     uv_run(g_loop, UV_RUN_DEFAULT);
 
     tui_shutdown(&g_tui);
