@@ -5,6 +5,9 @@
 #include <stdio.h>
 #include <time.h>
 
+/* ── Prototypes ─────────────────────────────────────────────────────────────*/
+static void rpool_on_ack_internal(resolver_pool_t *pool, int idx, double rtt_ms);
+
 /* ── Init / Destroy ─────────────────────────────────────────────────────────*/
 int rpool_init(resolver_pool_t *pool, const dnstun_config_t *cfg) {
     memset(pool, 0, sizeof(*pool));
