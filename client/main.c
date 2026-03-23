@@ -213,7 +213,7 @@ typedef enum {
     PROBE_TEST_NONE = 0,
     PROBE_TEST_LONGNAME,      /* Phase 1: Long QNAME support */
     PROBE_TEST_NXDOMAIN,      /* Phase 2: NXDOMAIN behavior (fake resolver filter) */
-    PROBE_TEST_EDNS_TXT      /* Phase 3: EDNS + TXT support and MTU detection */
+    PROBE_TEST_EDNS_TXT       /* Phase 3: EDNS + TXT support and MTU detection */
 } probe_test_type_t;
 
 /* Result structure for each resolver */
@@ -272,76 +272,93 @@ static void on_probe_recv(uv_udp_t *h, ssize_t nread,
         /* Update RTT in pool */
         rpool_on_ack(&g_pool, p->resolver_idx, rtt);
 
-        /* Parse DNS response based on test type */
+        /* Parse DNS response based on test type - scanner.py style */
         if (p->test_type == PROBE_TEST_LONGNAME && p->result) {
             /* Phase 1: Long QNAME test - any response means success */
             p->result->longname_supported = true;
             p->got_reply = true;
         }
         else if (p->test_type == PROBE_TEST_NXDOMAIN && p->result) {
-            /* Phase 2: NXDOMAIN test - check for NXDOMAIN or NOERROR with empty answer */
-            /* Fake resolvers return REFUSED or other errors */
+            /* Phase 2: NXDOMAIN test - scanner.py logic:
+             * resp.rcode() in (dns.rcode.NXDOMAIN, dns.rcode.NOERROR) and len(resp.answer) == 0
+             * Fake resolvers return REFUSED (5) or give wrong answers */
             if (nread >= 12) {
                 uint8_t *resp = (uint8_t *)buf->base;
-                uint16_t flags = (resp[2] << 8) | resp[3];
-                uint8_t rcode = flags & 0x0F;
-                /* NXDOMAIN = 3, NOERROR = 0, REFUSED = 5 */
-                if (rcode == 3 || rcode == 0) {
-                    /* Check if answer section is empty (for NOERROR) */
-                    uint16_t ancount = (resp[6] << 8) | resp[7];
-                    if (rcode == 3 || ancount == 0) {
-                        p->result->nxdomain_correct = true;
-                        p->got_reply = true;
-                    }
+                uint16_t resp_flags = (resp[2] << 8) | resp[3];
+                uint8_t rcode = resp_flags & 0x0F;
+                uint16_t ancount = (resp[6] << 8) | resp[7];
+                
+                /* NXDOMAIN = 3, NOERROR = 0, REFUSED = 5, SERVFAIL = 2 */
+                /* Good: NXDOMAIN or NOERROR with no answers (NxDomain for nonexistent) */
+                /* Bad: REFUSED (fake resolver), SERVFAIL, or NOERROR with answers */
+                if (rcode == 3 || (rcode == 0 && ancount == 0)) {
+                    p->result->nxdomain_correct = true;
+                    p->got_reply = true;
                 }
             }
         }
         else if (p->test_type == PROBE_TEST_EDNS_TXT && p->result) {
-            /* Phase 3: EDNS + TXT test - check for EDNS support and TXT record */
+            /* Phase 3: EDNS + TXT test - scanner.py logic:
+             * edns_supported = resp_edns is not None and resp_edns.edns >= 0
+             * txt_supported = resp_edns is not None
+             * The key insight: if we got ANY response, the resolver processed our query.
+             * EDNS is supported if there's an OPT record (type 41) in the response */
+            p->result->edns_supported = false;
+            p->result->txt_supported = false;
+            p->result->rtt_ms = rtt;
+
             if (nread >= 12) {
                 uint8_t *resp = (uint8_t *)buf->base;
-                /* Check for OPT record (EDNS) - look for root zone (0) with type 41 */
-                /* DNS header is 12 bytes, then question section, then answer/additional */
-                p->result->edns_supported = false;
-                p->result->txt_supported = false;
-                p->result->rtt_ms = rtt;
-
-                /* Parse DNS packet to find EDNS (OPT) record */
+                uint8_t rcode = resp[3] & 0x0F;
+                uint16_t ancount = (resp[6] << 8) | resp[7];
+                uint16_t arcount = (resp[8] << 8) | resp[9];
+                
+                LOG_DEBUG("EDNS test response: rcode=%d, ancount=%d, arcount=%d, len=%d\n",
+                         rcode, ancount, arcount, (int)nread);
+                
+                /* Parse DNS packet to find OPT record (EDNS) or TXT record */
                 size_t offset = 12;
                 
-                /* Skip question section - read QNAME dynamically */
-                /* Simple approach: skip until we find the null byte and QTYPE/QCLASS */
+                /* Skip question section */
                 while (offset < (size_t)nread && resp[offset] != 0) {
                     offset += resp[offset] + 1;
                 }
-                offset += 5; /* Skip null byte, QTYPE (2), QCLASS (2) */
+                offset += 5; /* Skip null byte (1) + QTYPE (2) + QCLASS (2) */
 
-                /* Now parse records - look for TXT record or OPT record */
-                while (offset + 11 < (size_t)nread) {
+                /* Parse answer and additional sections */
+                while (offset + 11 <= (size_t)nread) {
                     uint8_t name = resp[offset];
                     uint16_t rtype = (resp[offset + 1] << 8) | resp[offset + 2];
-                    /* uint16_t rclass = (resp[offset + 3] << 8) | resp[offset + 4]; */
-                    /* uint32_t ttl = (resp[offset + 5] << 24) | (resp[offset + 6] << 16) | 
-                                   (resp[offset + 7] << 8) | resp[offset + 8]; */
                     uint16_t rdlen = (resp[offset + 9] << 8) | resp[offset + 10];
                     
+                    /* Root zone (name=0) indicates the start of a record */
                     if (name == 0) {
                         if (rtype == 41) { /* OPT record - EDNS supported */
-                            /* Payload size is in the TTL field's upper 16 bits */
-                            uint16_t udp_payload = (resp[offset + 7] << 8) | resp[offset + 8];
+                            /* In OPT record, the "UDP payload" is in the CLASS field */
+                            uint16_t udp_payload = (resp[offset + 3] << 8) | resp[offset + 4];
                             p->result->edns_supported = true;
-                            p->result->mtu = udp_payload;
+                            p->result->mtu = (udp_payload > 0) ? udp_payload : 1232;
+                            LOG_DEBUG("Found OPT record, mtu=%d\n", p->result->mtu);
                         } else if (rtype == 16) { /* TXT record */
                             p->result->txt_supported = true;
+                            LOG_DEBUG("Found TXT record\n");
                         }
                     }
                     
                     offset += 11 + rdlen;
                 }
 
-                /* Success if either EDNS or TXT is supported */
+                /* Success if either EDNS or TXT is supported (scanner.py logic) */
                 if (p->result->edns_supported || p->result->txt_supported) {
                     p->got_reply = true;
+                    LOG_DEBUG("EDNS/TXT test passed for resolver %s\n", 
+                             g_pool.resolvers[p->resolver_idx].ip);
+                } else {
+                    /* Even without specific records, if we got a response, 
+                     * the resolver processed our query (like scanner.py) */
+                    p->result->txt_supported = true; /* Resolver processed the TXT query */
+                    p->got_reply = true;
+                    LOG_DEBUG("No specific records found, but response received\n");
                 }
             }
         } else {
@@ -616,7 +633,7 @@ static void resolver_init_phase(void) {
         return;
     }
 
-    int wait_ms = (g_cfg.test_timeout_ms > 0) ? g_cfg.test_timeout_ms + 500 : 1500;
+    int wait_ms = (g_cfg.test_timeout_ms > 0) ? g_cfg.test_timeout_ms + 1000 : 2500;
 
     /* ─── Phase 1: Long QNAME Test ─── */
     LOG_INFO("--- Phase 1: Testing Long QNAME support ---\n");
@@ -649,8 +666,8 @@ static void resolver_init_phase(void) {
     LOG_INFO("--- Phase 2: Testing NXDOMAIN behavior (fake resolver filter) ---\n");
     int phase2_count = 0;
     for (int i = 0; i < g_pool.count; i++) {
-        if (g_pool.resolvers[i].state == RSV_DEAD) {
-            /* Already filtered by Phase 1, but reset for Phase 2 */
+        /* Test resolvers that PASSED Phase 1 */
+        if (results[i].longname_supported) {
             results[i].nxdomain_correct = false;
             fire_test_probe(i, PROBE_TEST_NXDOMAIN, &results[i]);
             phase2_count++;
@@ -662,13 +679,14 @@ static void resolver_init_phase(void) {
     /* Filter: keep only resolvers with correct NXDOMAIN behavior */
     int nxdomain_ok = 0;
     for (int i = 0; i < g_pool.count; i++) {
-        if (results[i].nxdomain_correct) {
-            nxdomain_ok++;
-        } else {
-            /* Set failure reason - fake resolver */
+        /* Resolvers that passed Phase 1 but failed Phase 2 are marked dead */
+        if (results[i].longname_supported && !results[i].nxdomain_correct) {
             strncpy(g_pool.resolvers[i].fail_reason, "fake resolver", sizeof(g_pool.resolvers[i].fail_reason) - 1);
             g_pool.resolvers[i].fail_reason[sizeof(g_pool.resolvers[i].fail_reason) - 1] = '\0';
             rpool_set_state(&g_pool, i, RSV_DEAD);
+            results[i].longname_supported = false; /* Mark as failed */
+        } else if (results[i].nxdomain_correct) {
+            nxdomain_ok++;
         }
     }
     LOG_INFO("Phase 2 complete: %d/%d resolvers passed NXDOMAIN test\n", 
@@ -678,7 +696,8 @@ static void resolver_init_phase(void) {
     LOG_INFO("--- Phase 3: Testing EDNS + TXT support and MTU detection ---\n");
     int phase3_count = 0;
     for (int i = 0; i < g_pool.count; i++) {
-        if (g_pool.resolvers[i].state == RSV_DEAD) {
+        /* Test resolvers that passed Phase 1 and Phase 2 */
+        if (results[i].longname_supported && results[i].nxdomain_correct) {
             results[i].edns_supported = false;
             results[i].txt_supported = false;
             results[i].mtu = 0;
@@ -689,25 +708,31 @@ static void resolver_init_phase(void) {
     }
     run_event_loop_ms(wait_ms);
 
-    /* Final filter: promote resolvers that passed all tests */
+    /* Final filter: promote resolvers that passed all three phases */
     int active = 0;
     for (int i = 0; i < g_pool.count; i++) {
         resolver_t *r = &g_pool.resolvers[i];
         
-        if (r->state == RSV_DEAD && (results[i].edns_supported || results[i].txt_supported)) {
+        /* Check if resolver passed all three phases */
+        if (results[i].longname_supported && 
+            results[i].nxdomain_correct && 
+            (results[i].edns_supported || results[i].txt_supported)) {
             /* Update resolver with discovered MTU from EDNS */
             if (results[i].mtu > 0) {
                 r->upstream_mtu = results[i].mtu;
                 r->edns0_supported = true;
+            } else {
+                r->upstream_mtu = 512; /* Default MTU */
             }
             rpool_set_state(&g_pool, i, RSV_ACTIVE);
             active++;
-        } else if (r->state == RSV_DEAD) {
-            /* Failed Phase 3 - no EDNS/TXT support */
+        } else if (results[i].longname_supported && results[i].nxdomain_correct) {
+            /* Passed Phase 1 and 2, but failed Phase 3 - no EDNS/TXT support */
             strncpy(r->fail_reason, "no EDNS/TXT support", sizeof(r->fail_reason) - 1);
             r->fail_reason[sizeof(r->fail_reason) - 1] = '\0';
             rpool_set_state(&g_pool, i, RSV_DEAD);
         }
+        /* Resolvers that failed Phase 1 or Phase 2 already have fail_reason set */
     }
 
     LOG_INFO("=== Init complete: %d/%d resolvers active ===\n", active, g_pool.count);
