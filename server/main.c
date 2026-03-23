@@ -658,11 +658,11 @@ static void on_server_recv(uv_udp_t *h,
                     } else {
                         upstream_write_and_read(sidx, zdec.data, zdec.len);
                     }
-                    free(zdec.data);
+                    codec_free_result(&zdec);
                 }
 
-                if (!dret.error && dret.data) free(dret.data);
-                free(fdec.data);
+                if (!dret.error && dret.data) codec_free_result(&dret);
+                codec_free_result(&fdec);
             }
 
         next_burst:
@@ -1033,6 +1033,7 @@ int main(int argc, char *argv[]) {
         swarm_save();
 
     uv_mutex_destroy(&g_swarm_lock);
+    codec_pool_shutdown();  /* Shutdown buffer pool */
 
     if (g_tui.restart) {
         LOG_INFO("Restarting process to apply new domain...\n");

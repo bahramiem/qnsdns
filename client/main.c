@@ -1940,7 +1940,7 @@ static void on_poll_timer(uv_timer_t *t) {
             /* 2. ENCRYPT (Optional) */
             if (g_cfg.encryption) {
                 eret = codec_encrypt(cret.data, cret.len, g_cfg.psk);
-                if (eret.error) { LOG_ERR("Encryption failed\n"); free(cret.data); continue; }
+                if (eret.error) { LOG_ERR("Encryption failed\n"); codec_free_result(&cret); continue; }
                 enc_in = eret.data;
                 enc_len = eret.len;
             }
@@ -1961,8 +1961,8 @@ static void on_poll_timer(uv_timer_t *t) {
             }
 
             codec_fec_free(&fec);
-            if (g_cfg.encryption) free(eret.data);
-            free(cret.data);
+            if (g_cfg.encryption) codec_free_result(&eret);
+            codec_free_result(&cret);
             sess->send_len = 0;
         } else {
             /* No upload — send empty POLL to pull downstream data */
@@ -2328,6 +2328,7 @@ int main(int argc, char *argv[]) {
     tui_shutdown(&g_tui);
     resolvers_save();   /* persist final resolver list on clean exit */
     rpool_destroy(&g_pool);
+    codec_pool_shutdown();  /* Shutdown buffer pool */
 
     if (g_tui.restart) {
         LOG_INFO("Restarting process to apply new domain...\n");
