@@ -175,10 +175,46 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
     b32_dotted[bidx] = '\0';
 
     char qname[DNSTUN_MAX_QNAME_LEN + 1];
-    snprintf(qname, sizeof(qname), "%s.%s.%s.tun.%s",
+    int qname_written = snprintf(qname, sizeof(qname), "%s.%s.%s.tun.%s",
              seq_hex, b32_dotted, sid_hex, domain);
+    LOG_DEBUG("QNAME construction: written=%d, sizeof=%zu\n", qname_written, sizeof(qname));
+    LOG_DEBUG("  seq_hex=%s (len=%zu)\n", seq_hex, strlen(seq_hex));
+    LOG_DEBUG("  b32_dotted=%s (len=%zu)\n", b32_dotted, strlen(b32_dotted));
+    LOG_DEBUG("  sid_hex=%s (len=%zu)\n", sid_hex, strlen(sid_hex));
+    LOG_DEBUG("  domain=%s (len=%zu)\n", domain, strlen(domain));
+    /* DEBUG: Check domain for spaces or invalid chars */
+    fprintf(stderr, "[DEBUG] domain hex: ");
+    for (size_t i = 0; i < strlen(domain); i++) {
+        fprintf(stderr, "%02x ", (unsigned char)domain[i]);
+    }
+    fprintf(stderr, "\n");
+    for (size_t i = 0; i < strlen(domain); i++) {
+        if (domain[i] == ' ' || domain[i] == '\t' || domain[i] == '\n' || domain[i] == '\r') {
+            LOG_ERR("DOMAIN CONTAINS WHITESPACE at pos %zu: char=0x%02x\n", i, (unsigned char)domain[i]);
+        }
+    }
 
-    LOG_DEBUG("build_dns_query: QNAME=%s (len=%zu)\n", qname, strlen(qname));
+    size_t qname_len = strlen(qname);
+    LOG_DEBUG("build_dns_query: QNAME=%s (len=%zu)\n", qname, qname_len);
+
+    /* DEBUG: Check each label length (max 63 bytes per DNS spec) */
+    size_t label_len = 0;
+    size_t max_label = 0;
+    for (size_t i = 0; i <= qname_len; i++) {
+        if (qname[i] == '.' || qname[i] == '\0') {
+            if (label_len > max_label) max_label = label_len;
+            if (label_len > 63) {
+                LOG_ERR("LABEL TOO LONG at pos %zu: len=%zu (max 63)\n", i - label_len, label_len);
+            }
+            label_len = 0;
+        } else {
+            label_len++;
+        }
+    }
+    LOG_DEBUG("Longest label: %zu bytes\n", max_label);
+    if (qname_len > 253) {
+        LOG_ERR("QNAME TOO LONG: %zu bytes (max 253)\n", qname_len);
+    }
 
     /* Encode into DNS TXT query packet */
     dns_question_t question = {0};
@@ -194,9 +230,10 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
     query.questions = &question;
 
     size_t sz = *outlen;
+    LOG_DEBUG("dns_encode: outbuf size=%zu, qname=%s\n", sz, qname);
     dns_rcode_t rc = dns_encode((dns_packet_t*)outbuf, &sz, &query);
     if (rc != RCODE_OKAY) {
-        LOG_ERR("dns_encode failed: rcode=%d for QNAME=%s\n", rc, qname);
+        LOG_ERR("dns_encode failed: rcode=%d for QNAME=%s (bufsize=%zu)\n", rc, qname, *outlen);
         return -1;
     }
     
