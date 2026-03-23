@@ -8,6 +8,11 @@
 
 /* ──────────────────────────────────────────────
    Resolver pool — manages active / penalty / dead sets
+   
+   [MEDIUM] Lock sharding for reduced contention:
+   - Global lock: protects list operations (active/dead arrays)
+   - Per-resolver locks: protect individual resolver stats (RTT, cwnd, etc.)
+   This reduces lock contention on multi-core systems with many resolvers.
 ────────────────────────────────────────────── */
 typedef struct {
     resolver_t   resolvers[DNSTUN_MAX_RESOLVERS];
@@ -20,11 +25,17 @@ typedef struct {
     int          dead[DNSTUN_MAX_RESOLVERS];
     int          dead_count;
 
-    uv_mutex_t   lock;
-    int          rr_cursor;     /* round-robin next-index (owned by pool) */
+    uv_mutex_t   lock;              /* global lock for list operations */
+    uv_mutex_t   stat_locks[64];    /* per-resolver locks for stats (sharded) */
+    int          rr_cursor;         /* round-robin next-index (owned by pool) */
 
     const dnstun_config_t *cfg;
 } resolver_pool_t;
+
+/* Get per-resolver lock index (sharded) */
+static inline int rpool_stat_lock_idx(int resolver_idx) {
+    return resolver_idx % 64;
+}
 
 /* Init / destroy */
 int  rpool_init(resolver_pool_t *pool, const dnstun_config_t *cfg);

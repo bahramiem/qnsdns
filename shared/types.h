@@ -183,6 +183,78 @@ typedef struct {
 /* Flag bit masks for server_response_header_t */
 #define RESP_ENC_MASK        0x01  /* 0=base64, 1=hex */
 
+/* ──────────────────────────────────────────────
+   [MEDIUM] Variable-Length Encoding (Varint) for Header Compression
+   
+   For small values (0-127), varints use only 1 byte instead of 2.
+   This can compress the 2-byte seq field when values are small.
+   
+   Varint encoding format (Google Protocol Buffers style):
+   - 7 bits per byte contain value
+   - MSB indicates if more bytes follow (1 = more, 0 = last)
+   - Maximum 10 bytes for 64-bit values
+────────────────────────────────────────────── */
+
+/* Encode a 32-bit unsigned integer to varint format
+ * Returns number of bytes written (max 5 for 32-bit values)
+ * out must have at least 5 bytes space */
+static inline int encode_varint32(uint8_t *out, uint32_t value) {
+    int i = 0;
+    while (value > 0x7F) {
+        out[i++] = (uint8_t)((value & 0x7F) | 0x80);
+        value >>= 7;
+    }
+    out[i++] = (uint8_t)(value & 0x7F);
+    return i;
+}
+
+/* Decode a varint to 32-bit unsigned integer
+ * Returns number of bytes consumed, or -1 on error
+ * Returns 0 if input is NULL or len is 0 */
+static inline int decode_varint32(const uint8_t *in, size_t len, uint32_t *out) {
+    uint32_t result = 0;
+    int shift = 0;
+    int i = 0;
+    
+    if (!in || len == 0) return 0;
+    
+    while (i < 5 && i < (int)len) {
+        uint8_t b = in[i++];
+        result |= ((uint32_t)(b & 0x7F) << shift);
+        if ((b & 0x80) == 0) {
+            *out = result;
+            return i;
+        }
+        shift += 7;
+        if (shift >= 32) return -1;  /* Overflow */
+    }
+    return -1;  /* Incomplete varint */
+}
+
+/* Encode a 16-bit unsigned integer to varint format
+ * Returns number of bytes written (max 3 for 16-bit values)
+ * out must have at least 3 bytes space */
+static inline int encode_varint16(uint8_t *out, uint16_t value) {
+    if (value < 0x80) {
+        out[0] = (uint8_t)value;
+        return 1;
+    }
+    out[0] = (uint8_t)((value & 0x7F) | 0x80);
+    out[1] = (uint8_t)((value >> 7) & 0x7F);
+    return 2;
+}
+
+/* Decode a varint to 16-bit unsigned integer
+ * Returns number of bytes consumed, or -1 on error
+ * Returns 0 if input is NULL or len is 0 */
+static inline int decode_varint16(const uint8_t *in, size_t len, uint16_t *out) {
+    uint32_t val32;
+    int bytes = decode_varint32(in, len, &val32);
+    if (bytes < 0 || val32 > 0xFFFF) return -1;
+    *out = (uint16_t)val32;
+    return bytes;
+}
+
 /* Inline functions for header manipulation */
 static inline uint8_t chunk_get_session_id(uint8_t flags) {
     return (flags & CHUNK_SESSION_MASK) >> CHUNK_SESSION_SHIFT;

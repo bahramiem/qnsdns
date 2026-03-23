@@ -5,18 +5,77 @@
 static const char B32_ALPHA[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 static const char HEX_ALPHA[] = "0123456789abcdef";
 
-static int b32_val(char c) {
-    c = tolower((unsigned char)c);
-    if (c >= 'a' && c <= 'z') return c - 'a';
-    if (c >= '2' && c <= '7') return 26 + (c - '2');
-    return -1;
+/*
+ * [HIGH] O(1) Lookup Tables for Encoding/Decoding
+ * Instead of conditional checks in loops, use 256-byte static lookup tables.
+ * This eliminates branches and provides constant-time character-to-value mapping.
+ * For base32 (36 valid chars), base64 (64 valid chars), and hex (22 valid chars),
+ * these tables provide significant speedup over tolower() + conditional checks.
+ */
+static int8_t b32_table[256];   /* -1 = invalid, 0-31 = valid base32 value */
+static int8_t hex_table[256];   /* -1 = invalid, 0-15 = valid hex value */
+static int8_t b64_table[256];   /* -1 = invalid, 0-63 = valid base64 value */
+static volatile uint8_t tables_initialized = 0;
+
+/* Initialize lookup tables once at startup */
+static void init_tables(void) {
+    if (tables_initialized) return;
+    
+    /* Initialize base32 table: 0-25 for A-Z, 26-31 for 2-7 */
+    for (int i = 0; i < 256; i++) b32_table[i] = -1;
+    for (int i = 0; i < 26; i++) {
+        b32_table[(unsigned char)('A' + i)] = i;
+        b32_table[(unsigned char)('a' + i)] = i;  /* lowercase handled inline */
+    }
+    for (int i = 0; i < 6; i++) {
+        b32_table[(unsigned char)('2' + i)] = 26 + i;
+    }
+    
+    /* Initialize hex table: 0-9 for digits, 10-15 for a-f/A-F */
+    for (int i = 0; i < 256; i++) hex_table[i] = -1;
+    for (int i = 0; i < 10; i++) hex_table[(unsigned char)('0' + i)] = i;
+    for (int i = 0; i < 6; i++) {
+        hex_table[(unsigned char)('a' + i)] = 10 + i;
+        hex_table[(unsigned char)('A' + i)] = 10 + i;
+    }
+    
+    /* Initialize base64 table: A-Z (0-25), a-z (26-51), 0-9 (52-61), - (62), _ (63) */
+    for (int i = 0; i < 256; i++) b64_table[i] = -1;
+    for (int i = 0; i < 26; i++) {
+        b64_table[(unsigned char)('A' + i)] = i;
+        b64_table[(unsigned char)('a' + i)] = 26 + i;
+    }
+    for (int i = 0; i < 10; i++) b64_table[(unsigned char)('0' + i)] = 52 + i;
+    b64_table[(unsigned char)'-'] = 62;
+    b64_table[(unsigned char)'+'] = 62;
+    b64_table[(unsigned char)'_'] = 63;
+    b64_table[(unsigned char)'/'] = 63;
+    
+    tables_initialized = 1;
 }
 
-static int hex_val(char c) {
-    c = tolower((unsigned char)c);
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
-    return -1;
+/* O(1) base32 value lookup with case-insensitive handling */
+static inline int b32_val(char c) {
+    unsigned char uc = (unsigned char)c;
+    if (uc >= 'a' && uc <= 'z') {
+        return uc - 'a';  /* Fast path for lowercase */
+    }
+    return b32_table[uc];  /* Table handles A-Z and 2-7 */
+}
+
+/* O(1) hex value lookup */
+static inline int hex_val(char c) {
+    return hex_table[(unsigned char)c];
+}
+
+/* O(1) base64 value lookup */
+static inline int base64_val(char c) {
+    return b64_table[(unsigned char)c];
+}
+
+/* Initialize tables on first use - called lazily */
+static void base32_init(void) {
+    init_tables();
 }
 
 size_t base32_encode(char *out, const uint8_t *in, size_t inlen) {
@@ -39,6 +98,9 @@ size_t base32_encode(char *out, const uint8_t *in, size_t inlen) {
 }
 
 ptrdiff_t base32_decode(uint8_t *out, const char *in, size_t inlen) {
+    /* Lazy initialization of lookup tables */
+    if (!tables_initialized) base32_init();
+    
     size_t  o    = 0;
     uint64_t buf = 0;
     int bits = 0;
@@ -72,6 +134,9 @@ size_t hex_encode(char *out, const uint8_t *in, size_t inlen) {
 }
 
 ptrdiff_t hex_decode(uint8_t *out, const char *in, size_t inlen) {
+    /* Lazy initialization of lookup tables */
+    if (!tables_initialized) base32_init();
+    
     size_t o = 0;
     for (size_t i = 0; i + 1 < inlen; i += 2) {
         int hi = hex_val(in[i]);
@@ -90,14 +155,7 @@ ptrdiff_t hex_decode(uint8_t *out, const char *in, size_t inlen) {
 static const char BASE64_ALPHA[] = 
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
-static int base64_val(char c) {
-    if (c >= 'A' && c <= 'Z') return c - 'A';
-    if (c >= 'a' && c <= 'z') return 26 + (c - 'a');
-    if (c >= '0' && c <= '9') return 52 + (c - '0');
-    if (c == '-' || c == '+') return 62;
-    if (c == '_' || c == '/') return 63;
-    return -1;
-}
+/* base64_val is now defined inline at the top of the file */
 
 size_t base64_encode(char *out, const uint8_t *in, size_t inlen) {
     size_t i = 0, o = 0;
@@ -120,6 +178,9 @@ size_t base64_encode(char *out, const uint8_t *in, size_t inlen) {
 }
 
 ptrdiff_t base64_decode(uint8_t *out, const char *in, size_t inlen) {
+    /* Lazy initialization of lookup tables */
+    if (!tables_initialized) base32_init();
+    
     size_t  o    = 0;
     uint32_t buf = 0;
     int bits = 0;

@@ -11,10 +11,18 @@ int rpool_init(resolver_pool_t *pool, const dnstun_config_t *cfg) {
     pool->cfg = cfg;
     pool->rr_cursor = 0;
     uv_mutex_init(&pool->lock);
+    
+    /* Initialize sharded stat locks (64 locks for reduced contention) */
+    for (int i = 0; i < 64; i++) {
+        uv_mutex_init(&pool->stat_locks[i]);
+    }
     return 0;
 }
 
 void rpool_destroy(resolver_pool_t *pool) {
+    for (int i = 0; i < 64; i++) {
+        uv_mutex_destroy(&pool->stat_locks[i]);
+    }
     uv_mutex_destroy(&pool->lock);
 }
 
@@ -111,9 +119,12 @@ int rpool_next(resolver_pool_t *pool) {
     return result;
 }
 
-/* ── AIMD Congestion Control ────────────────────────────────────────────────*/
+/* ── AIMD Congestion Control ────────────────────────────────────────────────
+   [MEDIUM] Uses sharded per-resolver lock instead of global lock
+   to reduce contention on multi-core systems. */
 void rpool_on_ack(resolver_pool_t *pool, int idx, double rtt_ms) {
-    uv_mutex_lock(&pool->lock);
+    /* Use sharded stat lock instead of global lock */
+    uv_mutex_lock(&pool->stat_locks[idx % 64]);
     resolver_t *r = &pool->resolvers[idx];
 
     /* EWMA RTT baseline (alpha=0.125 like TCP) */
@@ -136,11 +147,12 @@ void rpool_on_ack(resolver_pool_t *pool, int idx, double rtt_ms) {
     /* EWMA loss rate: successful ACK drives it down */
     r->loss_rate = 0.95 * r->loss_rate + 0.05 * 0.0;
 
-    uv_mutex_unlock(&pool->lock);
+    uv_mutex_unlock(&pool->stat_locks[idx % 64]);
 }
 
 void rpool_on_loss(resolver_pool_t *pool, int idx) {
-    uv_mutex_lock(&pool->lock);
+    /* Use sharded stat lock instead of global lock */
+    uv_mutex_lock(&pool->stat_locks[idx % 64]);
     resolver_t *r = &pool->resolvers[idx];
 
     /* AIMD multiplicative decrease */
@@ -150,22 +162,25 @@ void rpool_on_loss(resolver_pool_t *pool, int idx) {
     /* EWMA loss update */
     r->loss_rate = 0.95 * r->loss_rate + 0.05 * 1.0;
 
-    uv_mutex_unlock(&pool->lock);
+    uv_mutex_unlock(&pool->stat_locks[idx % 64]);
 }
 
 void rpool_on_rtt_spike(resolver_pool_t *pool, int idx) {
-    uv_mutex_lock(&pool->lock);
+    /* Use sharded stat lock instead of global lock */
+    uv_mutex_lock(&pool->stat_locks[idx % 64]);
     resolver_t *r = &pool->resolvers[idx];
     r->cwnd *= 0.75;
     if (r->cwnd < 1.0) r->cwnd = 1.0;
-    uv_mutex_unlock(&pool->lock);
+    uv_mutex_unlock(&pool->stat_locks[idx % 64]);
 }
 
-/* ── Adaptive FEC K ─────────────────────────────────────────────────────────*/
+/* ── Adaptive FEC K ─────────────────────────────────────────────────────────
+   [MEDIUM] Uses sharded per-resolver lock for reading loss_rate */
 uint32_t rpool_fec_k(resolver_pool_t *pool, int idx, int raw_symbols) {
-    uv_mutex_lock(&pool->lock);
+    /* Use sharded stat lock for reading loss_rate */
+    uv_mutex_lock(&pool->stat_locks[idx % 64]);
     double loss = pool->resolvers[idx].loss_rate;
-    uv_mutex_unlock(&pool->lock);
+    uv_mutex_unlock(&pool->stat_locks[idx % 64]);
 
     /* FEC K = ceil(raw_symbols * loss / (1 - loss)) */
     if (loss <= 0.0) return 0;
