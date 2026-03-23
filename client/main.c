@@ -1672,8 +1672,31 @@ static void on_dns_recv(uv_udp_t *h,
                         fprintf(stderr, "%02x ", (unsigned char)ans->txt.text[j]);
                     }
                     fprintf(stderr, "\n");
-                    /* Check if this is a SYNC response (comma-separated IPs) */
+                    /* Check if this is a SYNC response (comma-separated IPs)
+                     * A valid SYNC response should look like IP addresses:
+                     * e.g., "1.2.3.4,5.6.7.8" - check first part looks like IP
+                     */
+                    bool is_sync = false;
                     if (ans->txt.len > 7 && strchr(ans->txt.text, ',')) {
+                        /* Check if first part looks like an IP (X.X.X.X format) */
+                        char first_part[16] = {0};
+                        const char *comma = strchr(ans->txt.text, ',');
+                        size_t first_len = comma ? (size_t)(comma - ans->txt.text) : ans->txt.len;
+                        if (first_len < sizeof(first_part)) {
+                            memcpy(first_part, ans->txt.text, first_len);
+                            first_part[first_len] = '\0';
+                            /* Simple IP check: contains digits and at least 3 dots */
+                            int dots = 0;
+                            bool has_digit = false;
+                            for (size_t k = 0; k < first_len; k++) {
+                                if (first_part[k] == '.') dots++;
+                                if (first_part[k] >= '0' && first_part[k] <= '9') has_digit = true;
+                            }
+                            is_sync = (dots >= 3 && has_digit);
+                        }
+                    }
+                    
+                    if (is_sync) {
                         char *ips = strndup(ans->txt.text, ans->txt.len);
                         char *tok = strtok(ips, ",");
                         while (tok) {
