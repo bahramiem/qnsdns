@@ -658,10 +658,10 @@ static void on_server_recv(uv_udp_t *h,
     }
 
     /* ── Build reply — stuff any pending upstream data ───────────── */
-    uint8_t reply[DNS_BUFFER_UDP];
+    uint8_t reply[8192];
     size_t  rlen = sizeof(reply);
     uint16_t mtu = sess->cl_downstream_mtu;
-    if (mtu < 16 || mtu > 4096) mtu = 512;
+    if (mtu < 16 || mtu > 8192) mtu = 512;
 
     if (sess->upstream_len > 0) {
         size_t sz = sess->upstream_len;

@@ -208,6 +208,12 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
 /* ────────────────────────────────────────────── */
 /*  Resolver probe — fire a single test query     */
 /* ────────────────────────────────────────────── */
+typedef enum {
+    STAGE_LONGNAME,
+    STAGE_NXDOMAIN,
+    STAGE_QUALITY
+} scanner_stage_t;
+
 typedef struct probe_req {
     uv_udp_t        udp;
     uv_timer_t      timer;
@@ -215,16 +221,22 @@ typedef struct probe_req {
     uv_udp_send_t   send_req;
     struct sockaddr_in dest;
     int             resolver_idx;
-    uint64_t        sent_ms;  /* ms timestamp via uv_hrtime() / 1e6 (fix #18) */
-    uint8_t         sendbuf[512];
+    uint64_t        sent_ms;
+    uint8_t         sendbuf[8192];
     size_t          sendlen;
-    uint8_t         recvbuf[2048];
+    uint8_t         recvbuf[8192];
     bool            got_reply;
+    scanner_stage_t stage;
 } probe_req_t;
+
+static int g_probes_active = 0;
 
 static void on_probe_close(uv_handle_t *h) {
     probe_req_t *p = h->data;
-    if (++p->closes == 2) free(p);
+    if (++p->closes == 2) {
+        g_probes_active--;
+        free(p);
+    }
 }
 
 static void on_probe_timeout(uv_timer_t *t) {
@@ -246,13 +258,32 @@ static void on_probe_recv(uv_udp_t *h, ssize_t nread,
     probe_req_t *p = h->data;
 
     if (nread > 0) {
-        /* Zombie / Hijack Check: Verify header/payload match */
-        /* (In a real impl, this would be a signature check) */
-        p->got_reply = true;
-        /* Fix #18: sub-millisecond RTT via uv_hrtime() */
-        double rtt = (double)(uv_hrtime() / 1000000ULL - p->sent_ms);
-        if (rtt < 0.0) rtt = 0.0;
-        rpool_on_ack(&g_pool, p->resolver_idx, rtt);
+        /* Decode DNS response to check RCODE */
+        dns_decoded_t decoded[DNS_DECODEBUF_4K];
+        size_t decsz = sizeof(decoded);
+        if (dns_decode(decoded, &decsz, (const dns_packet_t*)buf->base, (size_t)nread) == RCODE_OKAY) {
+            dns_query_t *resp = (dns_query_t*)decoded;
+            dns_rcode_t rcode = (dns_rcode_t)(resp->rcode);
+
+            if (p->stage == STAGE_LONGNAME) {
+                /* For Stage 1, any response (even NXDOMAIN for a fake subdomain) means success */
+                if (rcode == RCODE_OKAY || rcode == RCODE_NXDOMAIN) p->got_reply = true;
+            } else if (p->stage == STAGE_NXDOMAIN) {
+                /* If they return NOERROR (0) for a non-existent domain, they are fake/hijacking */
+                if (rcode == RCODE_NXDOMAIN) p->got_reply = true;
+            } else if (p->stage == STAGE_QUALITY) {
+                /* QUALITY: TXT response from our server must be NOERROR */
+                if (rcode == RCODE_OKAY) p->got_reply = true;
+            }
+
+            if (p->got_reply) {
+                double rtt = (double)(uv_hrtime() / 1000000ULL - p->sent_ms);
+                if (rtt < 0.0) rtt = 0.0;
+                rpool_on_ack(&g_pool, p->resolver_idx, rtt);
+            } else {
+                rpool_on_loss(&g_pool, p->resolver_idx);
+            }
+        }
     } else {
         rpool_on_loss(&g_pool, p->resolver_idx);
     }
@@ -281,35 +312,76 @@ static void on_probe_send(uv_udp_send_t *sr, int status) {
     }
 }
 
-static void fire_probe_ext(int idx, const uint8_t *payload, size_t paylen, const char *domain) {
+static void fire_probe_ext(int idx, const uint8_t *payload, size_t paylen, const char *domain, scanner_stage_t stage) {
     probe_req_t *p = calloc(1, sizeof(*p));
     if (!p) return;
 
     p->resolver_idx = idx;
-    p->sent_ms      = uv_hrtime() / 1000000ULL;  /* ms via monotonic clock */
+    p->stage        = stage;
+    p->sent_ms      = uv_hrtime() / 1000000ULL;
 
     resolver_t *r = &g_pool.resolvers[idx];
     memcpy(&p->dest, &r->addr, sizeof(p->dest));
     p->dest.sin_port = htons(53);
 
-    /* Build a minimal POLL DNS query */
-    chunk_header_t hdr = {0};
-    hdr.version = DNSTUN_VERSION;
-    hdr.flags   = 0x08; /* poll flag */
-    make_session_id(hdr.session_id);
-    hdr.enc_format      = (uint8_t)r->enc;
-    hdr.downstream_mtu  = r->downstream_mtu;
-    hdr.upstream_mtu    = (uint16_t)paylen;
-    strncpy(hdr.user_id, g_cfg.user_id, sizeof(hdr.user_id));
+    if (stage == STAGE_LONGNAME) {
+        /* A query for 60 'a's label */
+        char longname[128];
+        memset(longname, 'a', 60);
+        snprintf(longname + 60, sizeof(longname) - 60, ".google.com");
 
-    p->sendlen = sizeof(p->sendbuf);
-    if (build_dns_query(p->sendbuf, &p->sendlen, &hdr, payload, paylen, domain) != 0) {
-        free(p);
-        return;
+        dns_question_t question = {0};
+        question.name  = longname;
+        question.type  = RR_A;
+        question.class = CLASS_IN;
+
+        dns_query_t query = {0};
+        query.id        = rand_u16();
+        query.query     = true;
+        query.rd        = true;
+        query.qdcount   = 1;
+        query.questions = &question;
+
+        p->sendlen = sizeof(p->sendbuf);
+        dns_encode((dns_packet_t*)p->sendbuf, &p->sendlen, &query);
+    } else if (stage == STAGE_NXDOMAIN) {
+        /* A query for a likely non-existent domain */
+        char nxname[64];
+        snprintf(nxname, sizeof(nxname), "dnstun-check-%d.invalid", (int)(uv_hrtime() % 1000000));
+
+        dns_question_t question = {0};
+        question.name  = nxname;
+        question.type  = RR_A;
+        question.class = CLASS_IN;
+
+        dns_query_t query = {0};
+        query.id        = rand_u16();
+        query.query     = true;
+        query.rd        = true;
+        query.qdcount   = 1;
+        query.questions = &question;
+
+        p->sendlen = sizeof(p->sendbuf);
+        dns_encode((dns_packet_t*)p->sendbuf, &p->sendlen, &query);
+    } else {
+        /* QUALITY: TXT query with versioned header */
+        chunk_header_t hdr = {0};
+        hdr.version = DNSTUN_VERSION;
+        hdr.flags   = 0x08; /* poll flag */
+        make_session_id(hdr.session_id);
+        hdr.enc_format      = (uint8_t)r->enc;
+        hdr.downstream_mtu  = r->downstream_mtu;
+
+        p->sendlen = sizeof(p->sendbuf);
+        if (build_dns_query(p->sendbuf, &p->sendlen, &hdr, payload, paylen, domain) != 0) {
+            free(p);
+            return;
+        }
     }
 
-    uv_udp_init(g_loop, &p->udp);
+    if (uv_udp_init(g_loop, &p->udp) != 0) { free(p); return; }
     p->udp.data = p;
+    g_probes_active++;
     
     uv_timer_init(g_loop, &p->timer);
     p->timer.data = p;
@@ -322,7 +394,7 @@ static void fire_probe_ext(int idx, const uint8_t *payload, size_t paylen, const
 }
 
 static void fire_probe(int idx, const char *domain) {
-    fire_probe_ext(idx, NULL, 0, domain);
+    fire_probe_ext(idx, NULL, 0, domain, STAGE_QUALITY);
 }
 
 /* ────────────────────────────────────────────── */
@@ -357,7 +429,7 @@ static void on_init_phase_timeout(uv_timer_t *t) {
 }
 
 static void resolver_init_phase(void) {
-    LOG_INFO("=== Resolver Initialization Phase ===\n");
+    LOG_INFO("=== Resolver Initialization Phase (Multi-Stage) ===\n");
 
     /* Step 1: Add seed resolvers */
     for (int i = 0; i < g_cfg.seed_count; i++)
@@ -369,32 +441,54 @@ static void resolver_init_phase(void) {
             cidr_scan_subnet(g_cfg.seed_resolvers[i], g_cfg.cidr_prefix);
     }
 
-    /* Step 3: MTU / Rate Discovery */
     const char *domain = (g_cfg.domain_count > 0) ? g_cfg.domains[0] : "example.com";
-    int mtus[] = {512, 1024, 1400};
-    uint8_t dummy[1400]; memset(dummy, 'A', 1400);
+    scanner_stage_t stages[] = {STAGE_LONGNAME, STAGE_NXDOMAIN, STAGE_QUALITY};
+    const char *stage_names[] = {"LongName Support", "Fake Check (NXDOMAIN)", "Quality (TXT/EDNS)"};
 
-    LOG_INFO("Measuring MTU & Benchmarking QPS...\n");
-    for (int m = 0; m < 3; m++) {
-        for (int i = 0; i < g_pool.count; i++) {
-            fire_probe_ext(i, dummy, mtus[m], domain);
-            if (i % 16 == 0) uv_run(g_loop, UV_RUN_NOWAIT);
+    for (int s = 0; s < 3; s++) {
+        LOG_INFO("--- Stage %d: %s ---\n", s + 1, stage_names[s]);
+        
+        /* Persistent trackers for stage eligibility */
+        static bool eligible[DNSTUN_MAX_RESOLVERS];
+        if (s == 0) {
+            for (int i = 0; i < g_pool.count; i++) eligible[i] = true;
+        } else {
+            for (int i = 0; i < g_pool.count; i++) {
+                if (g_pool.resolvers[i].rtt_ms >= 900.0) eligible[i] = false;
+                else g_pool.resolvers[i].rtt_ms = 991.0; /* Reset for next stage */
+            }
         }
+
+        int fired = 0;
+        int total = g_pool.count;
+        int idx = 0;
+
+        while (idx < total || g_probes_active > 0) {
+            if (idx < total && g_probes_active < 64) {
+                if (eligible[idx]) {
+                    fire_probe_ext(idx, NULL, 0, domain, stages[s]);
+                    fired++;
+                }
+                idx++;
+            }
+            uv_run(g_loop, UV_RUN_NOWAIT);
+            if (g_probes_active >= 64) {
+#ifdef _WIN32
+                Sleep(1);
+#else
+                usleep(1000);
+#endif
+            }
+        }
+
+        LOG_INFO("Stage %d complete (%d probes fired)\n", s + 1, fired);
     }
 
-    /* Wait for settlement */
-    uv_timer_t wait;
-    uv_timer_init(g_loop, &wait);
-    uv_timer_start(&wait, on_init_phase_timeout, 3000, 0);
-    uv_run(g_loop, UV_RUN_DEFAULT);
-    uv_close((uv_handle_t*)&wait, NULL);
-    uv_run(g_loop, UV_RUN_NOWAIT);
-
-    /* Promote resolvers that replied (got_reply tracked via AIMD acks) */
+    /* Final Promotion */
     int active = 0;
     for (int i = 0; i < g_pool.count; i++) {
         resolver_t *r = &g_pool.resolvers[i];
-        if (r->rtt_ms < 900.0 && r->state == RSV_DEAD) {
+        if (r->rtt_ms < 900.0) {
             rpool_set_state(&g_pool, i, RSV_ACTIVE);
             active++;
         }
@@ -410,7 +504,7 @@ static void resolver_init_phase(void) {
 /* ────────────────────────────────────────────── */
 typedef struct socks5_client {
     uv_tcp_t  tcp;
-    uint8_t   buf[4096];
+    uint8_t   buf[8192];
     size_t    buf_len;
     int       session_idx;
     int       state;  /* 0=handshake, 1=request, 2=tunnel */
@@ -518,7 +612,7 @@ static void socks5_handle_data(socks5_client_t *c,
         /* Grow send buffer */
         size_t new_len = sess->send_len + len;
         if (new_len > sess->send_cap) {
-            size_t new_cap = new_len + 4096;
+            size_t new_cap = new_len + 8192;
             sess->send_buf = realloc(sess->send_buf, new_cap);
             sess->send_cap = new_cap;
         }
@@ -647,8 +741,8 @@ static void on_dns_recv(uv_udp_t *h,
                             session_t *s = &g_sessions[sidx];
                             size_t need = s->recv_len + ans->txt.len;
                             if (need > s->recv_cap) {
-                                s->recv_buf = realloc(s->recv_buf, need + 4096);
-                                s->recv_cap = need + 4096;
+                                s->recv_buf = realloc(s->recv_buf, need + 8192);
+                                s->recv_cap = need + 8192;
                             }
                             memcpy(s->recv_buf + s->recv_len,
                                    ans->txt.text, ans->txt.len);
