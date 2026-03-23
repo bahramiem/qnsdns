@@ -450,6 +450,19 @@ static void on_server_recv(uv_udp_t *h,
         if (strcasecmp(parts[i], "tun") == 0) { tun_idx = i; break; }
     }
 
+    /* Handle POLL queries: tun.t2.bahra.pl (no seq/payload/sid)
+     * These are keepalive probes from the client */
+    if (tun_idx == 0 && part_count >= 2) {
+        LOG_DEBUG("POLL query from %s: %s\n", src_ip, qname);
+        /* Send empty TXT response */
+        uint8_t reply_buf[512];
+        size_t reply_len = sizeof(reply_buf);
+        if (build_txt_reply(reply_buf, &reply_len, query_id, qname, NULL, 0, 512) == 0) {
+            send_udp_reply(src, reply_buf, reply_len);
+        }
+        return;
+    }
+
     if (tun_idx < 3) { /* Need at least seq, payload_1, sid */
         LOG_ERR("Malformed QNAME from %s: %s (tun_idx=%d, part_count=%d)\n",
                 src_ip, qname, tun_idx, part_count);
