@@ -180,25 +180,31 @@ static void draw_progress_bar(int x, int y, int width, double percent,
     printf("%s " ANSI_CYAN "%s" ANSI_RESET, BOX_T_LEFT, value_str);
 }
 
-static void draw_throughput_bar(int x, int y, int width, double kbps, 
+static void draw_throughput_bar(int x, int y, int width, double kbps,
                                  const char *label, int is_upload) {
     const char *color = is_upload ? ANSI_BR_GREEN : ANSI_BR_CYAN;
     const char *icon = is_upload ? "▲" : "▼";
-    
+
     /* Scale: 0-1000 KB/s maps to 0-100% */
     double percent = (kbps / 1000.0) * 100.0;
     if (percent > 100) percent = 100;
-    
-    int filled = (int)(percent * (width - 12) / 100.0);
-    
-    printf("\033[%d;%dH%s %s" ANSI_RESET " ", y, x, color, icon);
+
+    /* Leave space for icon (2 chars), bar, space (1), and "NNNN " (5) */
+    int bar_width = width - 8;
+    if (bar_width < 4) bar_width = 4;
+
+    int filled = (int)(percent * bar_width / 100.0);
+
+    printf("\033[%d;%dH%s%s" ANSI_RESET, y, x, color, icon);
     printf("%s", is_upload ? ANSI_GREEN : ANSI_CYAN);
-    
+
     for (int i = 0; i < filled; i++) printf(BAR_FULL);
     printf(ANSI_RESET);
-    for (int i = filled; i < width - 12; i++) printf(BAR_EMPTY);
-    
-    printf(" " ANSI_BOLD "%6.1f" ANSI_RESET ANSI_DIM " KB/s" ANSI_RESET, kbps);
+    for (int i = filled; i < bar_width; i++) printf(BAR_EMPTY);
+
+    /* Truncate large numbers - show integer KB/s to save space */
+    if (kbps > 9999.9) kbps = 9999.9;
+    printf(" " ANSI_BOLD "%4.0f" ANSI_RESET, kbps);
 }
 
 /* ── Sidebar Menu ──────────────────────────────────────────────────────────*/
@@ -260,39 +266,72 @@ static const char* highlight_log_keyword(const char *line, const char *keyword, 
 }
 
 static void render_log_line(const char *line, int y, int x, int width) {
+    if (width <= 0) return;
+
     char buf[512];
     strncpy(buf, line, sizeof(buf) - 1);
     buf[sizeof(buf) - 1] = '\0';
-    
+
+    /* Truncate to width first to prevent overflow during highlighting */
+    if ((int)strlen(buf) > width - 1) {
+        buf[width - 1] = '\0';
+    }
+
     /* Extract log level from format: [+XXXXXXXms] LEVEL message */
     const char *level_start = strstr(buf, "]");
     int level = 2; /* Default INFO */
-    
+
     if (level_start) {
         level_start += 2;
         if (strncmp(level_start, "ERR", 3) == 0) level = 0;
         else if (strncmp(level_start, "WRN", 3) == 0) level = 1;
         else if (strncmp(level_start, "DBG", 3) == 0) level = 3;
     }
-    
+
     /* Apply color based on level */
     const char *level_color = ANSI_GREEN;
     if (level == 0) level_color = ANSI_RED;
     else if (level == 1) level_color = ANSI_YELLOW;
     else if (level == 3) level_color = ANSI_CYAN;
-    
-    /* Smart keyword highlighting */
-    const char *highlighted = buf;
-    highlighted = highlight_log_keyword(highlighted, "session", ANSI_BR_YELLOW);
-    highlighted = highlight_log_keyword(highlighted, "DNS", ANSI_BR_BLUE);
-    highlighted = highlight_log_keyword(highlighted, "FEC", ANSI_BR_MAGENTA);
-    highlighted = highlight_log_keyword(highlighted, "resolver", ANSI_BR_GREEN);
-    highlighted = highlight_log_keyword(highlighted, "CONNECT", ANSI_BR_WHITE);
-    highlighted = highlight_log_keyword(highlighted, "error", ANSI_BR_RED);
-    highlighted = highlight_log_keyword(highlighted, "failed", ANSI_BR_RED);
-    
-    /* Truncate to fit width */
-    printf("\033[%d;%dH%-*.*s", y, x, width - 2, width - 2, highlighted);
+
+    /* Smart keyword highlighting - just print directly with color codes */
+    printf("\033[%d;%dH", y, x);
+
+    /* Print character by character to handle highlighting */
+    int pos = 0;
+    int printed = 0;
+    int max_print = width - 1;
+
+    while (buf[pos] && printed < max_print) {
+        /* Check for keywords */
+        int is_keyword = 0;
+        const char *color = NULL;
+
+        if (strncmp(&buf[pos], "session", 7) == 0) { is_keyword = 7; color = ANSI_BR_YELLOW; }
+        else if (strncmp(&buf[pos], "DNS", 3) == 0) { is_keyword = 3; color = ANSI_BR_BLUE; }
+        else if (strncmp(&buf[pos], "FEC", 3) == 0) { is_keyword = 3; color = ANSI_BR_MAGENTA; }
+        else if (strncmp(&buf[pos], "resolver", 8) == 0) { is_keyword = 8; color = ANSI_BR_GREEN; }
+        else if (strncmp(&buf[pos], "CONNECT", 7) == 0) { is_keyword = 7; color = ANSI_BR_WHITE; }
+        else if (strncmp(&buf[pos], "error", 5) == 0) { is_keyword = 5; color = ANSI_BR_RED; }
+        else if (strncmp(&buf[pos], "failed", 6) == 0) { is_keyword = 6; color = ANSI_BR_RED; }
+
+        if (is_keyword && printed + is_keyword <= max_print) {
+            printf("%s", color);
+            for (int k = 0; k < is_keyword && printed < max_print; k++) {
+                putchar(buf[pos++]);
+                printed++;
+            }
+            printf(ANSI_RESET);
+        } else {
+            putchar(buf[pos++]);
+            printed++;
+        }
+    }
+
+    /* Clear rest of line */
+    if (printed < max_print) {
+        printf("%*s", max_print - printed, "");
+    }
 }
 
 /* ── Live Log Panel ────────────────────────────────────────────────────────*/
@@ -300,32 +339,35 @@ static void draw_log_panel(tui_ctx_t *t, int x, int y, int width, int height) {
     /* Panel border with title */
     draw_box(x, y, width, height, ANSI_DIM, " Live Logs ");
     
-    /* Log level indicator */
-    const char *levels[] = {"ERR", "WRN", "INF", "DBG"};
+    /* Log level indicator - compact, fits in title area */
+    const char *levels[] = {"E", "W", "I", "D"};
     const char *level_colors[] = {ANSI_RED, ANSI_YELLOW, ANSI_GREEN, ANSI_CYAN};
-    printf("\033[%d;%dH" ANSI_DIM "[Level: " ANSI_RESET, y, x + width - 18);
+    int level_x = x + width - 12;
+    printf("\033[%d;%dH" ANSI_DIM "[" ANSI_RESET, y, level_x);
     for (int i = 0; i < 4; i++) {
         if (i == t->debug.level) {
-            printf("%s%s" ANSI_RESET " ", level_colors[i], levels[i]);
+            printf("%s%s" ANSI_RESET, level_colors[i], levels[i]);
         } else {
-            printf(ANSI_DIM "%s" ANSI_RESET " ", levels[i]);
+            printf(ANSI_DIM "%s" ANSI_RESET, levels[i]);
         }
     }
-    printf("]");
+    printf(ANSI_DIM "]" ANSI_RESET);
     
-    /* Log lines */
+    /* Log lines - clear entire area first to prevent artifacts */
     int lines_to_show = height - 2;
     int start_idx = t->debug.head - lines_to_show;
     if (start_idx < 0) start_idx = 0;
-    
+
     for (int i = 0; i < lines_to_show; i++) {
         int log_idx = (start_idx + i) % TUI_DEBUG_LINES;
         int row = y + 1 + i;
-        
+
+        /* Clear line first */
+        printf("\033[%d;%dH", row, x + 1);
+        for (int j = 0; j < width - 2; j++) putchar(' ');
+
         if (log_idx < t->debug.count) {
             render_log_line(t->debug.lines[log_idx], row, x + 2, width - 4);
-        } else {
-            printf("\033[%d;%dH%*s", row, x + 2, width - 4, "");
         }
     }
 }
