@@ -78,9 +78,9 @@ static FILE *g_debug_log = NULL;
 /* ────────────────────────────────────────────── */
 static int log_level(void) { return g_cfg.log_level; }
 
-#define LOG_INFO(...)  do { if (log_level() >= 1) { fprintf(stdout, "[INFO]  " __VA_ARGS__); if (g_debug_log) fprintf(g_debug_log, "[INFO]  " __VA_ARGS__); } } while(0)
-#define LOG_DEBUG(...) do { if (log_level() >= 2) { fprintf(stdout, "[DEBUG] " __VA_ARGS__); if (g_debug_log) fprintf(g_debug_log, "[DEBUG] " __VA_ARGS__); } } while(0)
-#define LOG_ERR(...)   do { fprintf(stderr, "[ERROR] " __VA_ARGS__); if (g_debug_log) fprintf(g_debug_log, "[ERROR] " __VA_ARGS__); } while(0)
+#define LOG_INFO(...)  do { if (log_level() >= 1) { fprintf(stdout, "[INFO]  " __VA_ARGS__); if (g_debug_log) fprintf(g_debug_log, "[INFO]  " __VA_ARGS__); tui_debug_log(&g_tui, 2, __VA_ARGS__); } } while(0)
+#define LOG_DEBUG(...) do { if (log_level() >= 2) { fprintf(stdout, "[DEBUG] " __VA_ARGS__); if (g_debug_log) fprintf(g_debug_log, "[DEBUG] " __VA_ARGS__); tui_debug_log(&g_tui, 3, __VA_ARGS__); } } while(0)
+#define LOG_ERR(...)   do { fprintf(stderr, "[ERROR] " __VA_ARGS__); if (g_debug_log) fprintf(g_debug_log, "[ERROR] " __VA_ARGS__); tui_debug_log(&g_tui, 0, __VA_ARGS__); } while(0)
 
 static uint16_t rand_u16(void) {
     return (uint16_t)(rand() & 0xFFFF);
