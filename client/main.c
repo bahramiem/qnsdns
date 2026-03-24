@@ -1791,8 +1791,17 @@ static size_t socks5_handle_data(socks5_client_t *c,
                 sess->send_cap = new_cap;
                 memcpy(sess->send_buf, data, min_len);
                 sess->send_len = min_len;
-                LOG_DEBUG("state 1: queued CONNECT request (%zu bytes) for server\n", min_len);
+                LOG_DEBUG("state 1: queued CONNECT request (%zu bytes) for server, session=%d\n", min_len, session_idx);
+                LOG_DEBUG("state 1: CONNECT bytes: ");
+                for (size_t i = 0; i < min_len && i < 32; i++) {
+                    fprintf(stderr, "%02x ", data[i]);
+                }
+                fprintf(stderr, "\n");
+            } else {
+                LOG_ERR("state 1: failed to alloc send_buf for CONNECT request\n");
             }
+        } else {
+            LOG_ERR("state 1: min_len is 0, not queuing CONNECT request\n");
         }
 
         /* Don't send success yet - wait for server acknowledgment.
@@ -2313,6 +2322,8 @@ static void on_poll_timer(uv_timer_t *t) {
         session_t *sess = &g_sessions[i];
         if (!sess->established || sess->closed) continue;
 
+        LOG_DEBUG("Session %d: poll timer check - send_len=%zu, established=%d, closed=%d\n",
+                  i, sess->send_len, sess->established, sess->closed);
         if (sess->send_len > 0) {
             LOG_DEBUG("Session %d: poll timer sending %zu bytes (compressed+encrypted+FEC)\n", i, sess->send_len);
             /* 1. COMPRESS */

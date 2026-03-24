@@ -26,6 +26,7 @@
 #include <process.h>
 #else
 #include <unistd.h>
+#include <arpa/inet.h>
 #endif
 
 #include "uv.h"
@@ -205,6 +206,8 @@ typedef struct connect_req {
     int           session_idx;
     uint8_t      *payload;
     size_t        payload_len;
+    char          target_host[256];
+    uint16_t      target_port;
 } connect_req_t;
 
 static void on_upstream_read(uv_stream_t *s, ssize_t nread,
@@ -212,6 +215,7 @@ static void on_upstream_read(uv_stream_t *s, ssize_t nread,
 static void on_upstream_alloc(uv_handle_t *h, size_t sz, uv_buf_t *buf);
 static void on_upstream_write(uv_write_t *w, int status);
 static void on_upstream_connect(uv_connect_t *req, int status);
+static void on_upstream_resolve(uv_getaddrinfo_t *resolver, int status, struct addrinfo *res);
 
 /* Write payload to upstream and then start reading responses */
 static void upstream_write_and_read(int session_idx,
@@ -285,6 +289,35 @@ static void on_upstream_read(uv_stream_t *s, ssize_t nread,
 
     g_stats.rx_total += (size_t)nread;
     g_stats.rx_bytes_sec += (size_t)nread;
+}
+
+static void on_upstream_resolve(uv_getaddrinfo_t *resolver, int status, struct addrinfo *res) {
+    connect_req_t *cr = (connect_req_t*)resolver->data;
+    int sidx = cr->session_idx;
+    srv_session_t *sess = &g_sessions[sidx];
+    
+    if (status != 0 || res == NULL) {
+        LOG_ERR("DNS resolution failed for session %d (%s:%d): %s\n", 
+                sidx, cr->target_host, cr->target_port, uv_strerror(status));
+        free(cr->payload);
+        free(cr);
+        free(resolver);
+        session_close(sidx);
+        return;
+    }
+    
+    /* Use the first resolved address */
+    struct sockaddr_in *addr = (struct sockaddr_in*)res->ai_addr;
+    LOG_INFO("DNS resolved %s:%d to %s for session %d\n", 
+             cr->target_host, cr->target_port, 
+             inet_ntoa(addr->sin_addr), sidx);
+    
+    /* Initiate TCP connection */
+    uv_tcp_connect(&cr->connect, &sess->upstream_tcp, 
+                   (const struct sockaddr*)addr, on_upstream_connect);
+    
+    uv_freeaddrinfo(res);
+    free(resolver);
 }
 
 static void on_upstream_connect(uv_connect_t *req, int status) {
@@ -668,10 +701,10 @@ static void on_server_recv(uv_udp_t *h,
                             }
                             
                             if (target_host[0] && target_port > 0) {
-                                struct sockaddr_in up_addr;
-                                uv_ip4_addr(target_host, target_port, &up_addr);
                                 connect_req_t *cr = calloc(1, sizeof(*cr));
                                 cr->session_idx = sidx;
+                                strncpy(cr->target_host, target_host, sizeof(cr->target_host) - 1);
+                                cr->target_port = target_port;
                                 size_t hdr_sz = (atype == 0x01) ? 10 : (6 + p[4]);
                                 if (l > hdr_sz) {
                                     cr->payload_len = l - hdr_sz;
@@ -683,7 +716,29 @@ static void on_server_recv(uv_udp_t *h,
                                 uv_tcp_init(g_loop, &sess->upstream_tcp);
                                 /* Enable TCP_NODELAY to minimize latency for interactive traffic */
                                 uv_tcp_nodelay(&sess->upstream_tcp, 1);
-                                uv_tcp_connect(&cr->connect, &sess->upstream_tcp, (const struct sockaddr*)&up_addr, on_upstream_connect);
+                                
+                                /* For domain names, use DNS resolution; for IPs, connect directly */
+                                if (atype == 0x03) {
+                                    /* Domain name - need to resolve */
+                                    struct addrinfo hints = {0};
+                                    hints.ai_family = AF_INET;
+                                    hints.ai_socktype = SOCK_STREAM;
+                                    char port_str[6];
+                                    snprintf(port_str, sizeof(port_str), "%d", target_port);
+                                    uv_getaddrinfo_t *resolver = malloc(sizeof(*resolver));
+                                    resolver->data = cr;
+                                    int r = uv_getaddrinfo(g_loop, resolver, on_upstream_resolve, target_host, port_str, &hints);
+                                    if (r != 0) {
+                                        LOG_ERR("Failed to start DNS resolution for %s:%d\n", target_host, target_port);
+                                        free(resolver);
+                                        free(cr);
+                                    }
+                                } else {
+                                    /* IPv4 address - connect directly */
+                                    struct sockaddr_in up_addr;
+                                    uv_ip4_addr(target_host, target_port, &up_addr);
+                                    uv_tcp_connect(&cr->connect, &sess->upstream_tcp, (const struct sockaddr*)&up_addr, on_upstream_connect);
+                                }
                             }
                         }
                     } else {
