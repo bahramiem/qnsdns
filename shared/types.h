@@ -139,15 +139,44 @@ typedef struct {
 #pragma pack(pop)
 
 /* ──────────────────────────────────────────────
-   Server response header (2 bytes)
+   Server response header (4 bytes)
    Used for downstream: Server → Client (Base64/Hex in TXT)
+   Added sequence number for out-of-order packet handling
 ────────────────────────────────────────────── */
 #pragma pack(push, 1)
 typedef struct {
-    uint8_t  flags;          /* bit 0: encoding_type (0=base64, 1=hex), bits 1-7: reserved */
+    uint8_t  flags;          /* bit 0: encoding_type (0=base64, 1=hex)
+                              * bit 1: has_sequence (1 = seq field is valid)
+                              * bits 2-7: reserved */
     uint8_t  session_id;     /* session ID (4 bits used, 0-15) */
-} server_response_header_t;   /* Total: 2 bytes */
+    uint16_t seq;            /* sequence number (2 bytes) */
+} server_response_header_t;   /* Total: 4 bytes */
 #pragma pack(pop)
+
+/* Flag bit masks for server_response_header_t */
+#define RESP_ENC_MASK        0x01  /* 0=base64, 1=hex */
+#define RESP_FLAG_HAS_SEQ    0x02  /* 1 = seq field is valid (downstream sequencing) */
+
+/* ──────────────────────────────────────────────
+   Downstream Reordering Buffer
+   Used for handling out-of-order packets on downstream
+────────────────────────────────────────────── */
+#define RX_REORDER_WINDOW    32     /* Number of slots in reorder buffer */
+
+/* Single slot in the reorder buffer */
+typedef struct {
+    uint8_t  *data;          /* Buffered packet data (allocated) */
+    size_t    len;           /* Data length */
+    uint16_t  seq;           /* Sequence number */
+    time_t    received_at;   /* Timestamp for expiry */
+    bool      valid;         /* Slot occupied */
+} rx_buffer_slot_t;
+
+/* Reorder buffer for a session */
+typedef struct {
+    rx_buffer_slot_t slots[RX_REORDER_WINDOW];
+    uint16_t         expected_seq;  /* Next expected sequence number */
+} reorder_buffer_t;
 
 /* ──────────────────────────────────────────────
    Handshake packet (5 bytes)
@@ -360,6 +389,9 @@ typedef struct session {
     
     /* Client-specific: back-pointer to SOCKS5 client (client only) */
     void      *client_ptr;
+    
+    /* Downstream reordering buffer (for handling out-of-order responses) */
+    reorder_buffer_t reorder_buf;
 } session_t;
 
 #endif /* DNSTUN_TYPES_H */

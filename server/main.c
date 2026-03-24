@@ -41,10 +41,10 @@
 #include "shared/codec.h"
 
 /* Forward declarations */
-static int build_txt_reply(uint8_t *outbuf, size_t *outlen,
+static int build_txt_reply_with_seq(uint8_t *outbuf, size_t *outlen,
                            uint16_t query_id, const char *qname,
                            const uint8_t *data, size_t data_len,
-                           uint16_t mtu);
+                           uint16_t mtu, uint16_t seq, uint8_t session_id);
 static void send_udp_reply(const struct sockaddr_in *dest,
                            const uint8_t *data, size_t len);
 
@@ -95,6 +95,9 @@ typedef struct srv_session {
     int       burst_received;
     uint8_t **burst_symbols;
     size_t    burst_symbol_len;
+
+    /* Downstream sequencing (Server → Client) */
+    uint16_t  downstream_seq;   /* Next seq to assign for downstream packets */
 
     time_t    last_active;
 } srv_session_t;
@@ -384,16 +387,40 @@ static size_t encode_downstream_data(char *out, const uint8_t *in, size_t inlen)
     return base64_encode(out, in, inlen);
 }
 
-static int build_txt_reply(uint8_t *outbuf, size_t *outlen,
+static int build_txt_reply_with_seq(uint8_t *outbuf, size_t *outlen,
                            uint16_t query_id, const char *qname,
                            const uint8_t *data, size_t data_len,
-                           uint16_t mtu)
+                           uint16_t mtu, uint16_t seq, uint8_t session_id)
 {
     if (data_len > mtu) data_len = mtu;
 
-    /* Encode data for TXT record - use base64 for DNS compatibility */
+    /* Build header with sequence number */
+    server_response_header_t hdr = {0};
+    hdr.flags = 0;  /* base64 encoding (default) */
+    hdr.flags |= RESP_FLAG_HAS_SEQ;  /* Mark as sequenced */
+    hdr.session_id = session_id;
+    hdr.seq = seq;
+
+    /* Build packet: header + payload */
+    uint8_t packet[4096];
+    size_t packet_len = 0;
+    
+    /* Copy header */
+    memcpy(packet, &hdr, sizeof(hdr));
+    packet_len += sizeof(hdr);
+    
+    /* Copy payload */
+    if (data_len > 0 && data != NULL) {
+        if (packet_len + data_len > sizeof(packet)) {
+            data_len = sizeof(packet) - packet_len;
+        }
+        memcpy(packet + packet_len, data, data_len);
+        packet_len += data_len;
+    }
+
+    /* Encode complete packet for TXT record */
     char encoded[4096];
-    size_t encoded_len = encode_downstream_data(encoded, data, data_len);
+    size_t encoded_len = encode_downstream_data(encoded, packet, packet_len);
     if (encoded_len >= sizeof(encoded)) encoded_len = sizeof(encoded) - 1;
     encoded[encoded_len] = '\0';
 
@@ -562,8 +589,8 @@ static void on_server_recv(uv_udp_t *h,
                 /* Send response with MTU-sized payload */
                 uint8_t reply[5120];
                 size_t rlen = sizeof(reply);
-                if (build_txt_reply(reply, &rlen, query_id, qname,
-                                    mtu_payload, requested_mtu, 512) == 0) {
+                if (build_txt_reply_with_seq(reply, &rlen, query_id, qname,
+                                    mtu_payload, requested_mtu, 512, 0, 0) == 0) {
                     send_udp_reply(src, reply, rlen);
                 }
                 return;  /* MTU probe handled */
@@ -619,8 +646,8 @@ static void on_server_recv(uv_udp_t *h,
         /* Echo the payload back through the normal response path */
         uint8_t reply[512];
         size_t rlen = sizeof(reply);
-        if (build_txt_reply(reply, &rlen, query_id, qname,
-                            payload, payload_len, 512) == 0) {
+        if (build_txt_reply_with_seq(reply, &rlen, query_id, qname,
+                            payload, payload_len, 512, 0, session_id) == 0) {
             send_udp_reply(src, reply, rlen);
         }
         return;  /* Don't process further - no session setup or upstream forwarding */
@@ -847,10 +874,12 @@ static void on_server_recv(uv_udp_t *h,
 
         uint8_t reply[512]; /* Fix: was DNS_BUFFER_UDP which is only 64 bytes on 64-bit systems */
         size_t  rlen = sizeof(reply);
-        if (build_txt_reply(reply, &rlen, query_id, qname,
+        if (build_txt_reply_with_seq(reply, &rlen, query_id, qname,
                             (const uint8_t*)swarm_text,
                             slen,
-                            sess->cl_downstream_mtu) == 0)
+                            sess->cl_downstream_mtu,
+                            sess->downstream_seq++,
+                            sess->session_id) == 0)
         {
             send_udp_reply(src, reply, rlen);
         }
@@ -874,8 +903,10 @@ static void on_server_recv(uv_udp_t *h,
         size_t sz = sess->upstream_len;
         if (sz > mtu) sz = mtu;
 
-        if (build_txt_reply(reply, &rlen, query_id, qname,
-                            sess->upstream_buf, sz, mtu) == 0)
+        if (build_txt_reply_with_seq(reply, &rlen, query_id, qname,
+                            sess->upstream_buf, sz, mtu,
+                            sess->downstream_seq++,
+                            sess->session_id) == 0)
         {
             /* Shift consumed bytes out of upstream buffer */
             memmove(sess->upstream_buf,
@@ -887,7 +918,9 @@ static void on_server_recv(uv_udp_t *h,
     } else {
         /* Empty reply — acknowledge the query */
         uint8_t ack[1] = {0};
-        if (build_txt_reply(reply, &rlen, query_id, qname, ack, 1, mtu) == 0)
+        if (build_txt_reply_with_seq(reply, &rlen, query_id, qname, ack, 1, mtu,
+                            sess->downstream_seq++,
+                            sess->session_id) == 0)
             send_udp_reply(src, reply, rlen);
     }
 }

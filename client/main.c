@@ -1780,6 +1780,158 @@ static void socks5_send(socks5_client_t *c, const uint8_t *data, size_t len) {
     uv_write(w, (uv_stream_t*)&c->tcp, &buf, 1, on_socks5_write_done);
 }
 
+/* ────────────────────────────────────────────── */
+/*  Downstream Reordering Buffer Functions        */
+/* ────────────────────────────────────────────── */
+
+/* Check if seq is within the reorder window relative to expected_seq */
+static inline bool is_within_window(uint16_t seq, uint16_t expected, int window) {
+    /* Handle wrap-around using modulo arithmetic */
+    if (expected < window) {
+        /* Near wrap-around: low values are "ahead" */
+        if (seq >= (uint16_t)(expected + window) || seq < expected) {
+            return false;
+        }
+    } else {
+        /* Normal case */
+        uint16_t diff = seq - expected;
+        return diff < (uint16_t)window;
+    }
+}
+
+/* Initialize reorder buffer for a session */
+static void reorder_buffer_init(reorder_buffer_t *rb) {
+    memset(rb, 0, sizeof(*rb));
+    rb->expected_seq = 0;
+    for (int i = 0; i < RX_REORDER_WINDOW; i++) {
+        rb->slots[i].valid = false;
+        rb->slots[i].data = NULL;
+        rb->slots[i].len = 0;
+    }
+}
+
+/* Free all buffered data in reorder buffer */
+static void reorder_buffer_free(reorder_buffer_t *rb) {
+    for (int i = 0; i < RX_REORDER_WINDOW; i++) {
+        if (rb->slots[i].valid && rb->slots[i].data) {
+            free(rb->slots[i].data);
+        }
+        rb->slots[i].valid = false;
+        rb->slots[i].data = NULL;
+    }
+}
+
+/* Find the slot index for a given sequence number */
+static int reorder_buffer_find_slot(reorder_buffer_t *rb, uint16_t seq) {
+    int offset = (int)(seq - rb->expected_seq);
+    if (offset < 0) offset += 65536;  /* Handle wrap-around */
+    return offset;
+}
+
+/* Insert a packet into the reorder buffer */
+static bool reorder_buffer_insert(reorder_buffer_t *rb, uint16_t seq, 
+                                  const uint8_t *data, size_t len) {
+    int offset = reorder_buffer_find_slot(rb, seq);
+    
+    if (offset < 0 || offset >= RX_REORDER_WINDOW) {
+        /* Outside window - either too old or too far ahead */
+        if (offset < 0) {
+            /* Too old - drop */
+            LOG_DEBUG("Reorder: dropping old packet seq=%u (expected=%u)\n", 
+                     seq, rb->expected_seq);
+            return false;
+        }
+        /* Too far ahead - skip ahead expected_seq */
+        LOG_DEBUG("Reorder: jumping expected_seq from %u to %u\n", 
+                 rb->expected_seq, seq);
+        reorder_buffer_free(rb);
+        rb->expected_seq = seq;
+        offset = 0;
+    }
+    
+    /* Check if slot is already occupied (duplicate) */
+    if (rb->slots[offset].valid) {
+        LOG_DEBUG("Reorder: duplicate packet seq=%u, dropping\n", seq);
+        return false;
+    }
+    
+    /* Allocate and copy data */
+    rb->slots[offset].data = malloc(len);
+    if (!rb->slots[offset].data) {
+        LOG_ERR("Reorder: failed to allocate buffer for seq=%u\n", seq);
+        return false;
+    }
+    memcpy(rb->slots[offset].data, data, len);
+    rb->slots[offset].len = len;
+    rb->slots[offset].seq = seq;
+    rb->slots[offset].received_at = time(NULL);
+    rb->slots[offset].valid = true;
+    
+    LOG_DEBUG("Reorder: buffered seq=%u at offset=%d (expected=%u)\n", 
+             seq, offset, rb->expected_seq);
+    return true;
+}
+
+/* Flush consecutive packets starting from expected_seq */
+static size_t reorder_buffer_flush(reorder_buffer_t *rb, uint8_t *out_buf, 
+                                  size_t out_cap, size_t *out_len) {
+    size_t total = 0;
+    *out_len = 0;
+    
+    while (rb->expected_seq != 0) {  /* Continue while we have buffered packets */
+        int offset = 0;  /* Next expected packet is always at offset 0 */
+        
+        /* Find the next valid slot */
+        for (int i = 0; i < RX_REORDER_WINDOW; i++) {
+            if (rb->slots[i].valid) {
+                offset = i;
+                break;
+            }
+        }
+        
+        /* If next slot (offset 0) is not valid, we're waiting for a packet */
+        if (!rb->slots[0].valid) {
+            break;
+        }
+        
+        rx_buffer_slot_t *slot = &rb->slots[0];
+        
+        /* Check if we have room in output buffer */
+        if (total + slot->len > out_cap) {
+            LOG_DEBUG("Reorder: output buffer full, flushing %zu bytes\n", total);
+            break;
+        }
+        
+        /* Copy to output */
+        memcpy(out_buf + total, slot->data, slot->len);
+        total += slot->len;
+        
+        /* Update expected sequence */
+        rb->expected_seq++;
+        
+        /* Free this slot and compact remaining slots */
+        free(slot->data);
+        slot->valid = false;
+        
+        /* Shift remaining slots down */
+        for (int i = 1; i < RX_REORDER_WINDOW; i++) {
+            if (rb->slots[i].valid) {
+                /* Find first empty slot and move this one there */
+                int empty = i - 1;
+                while (empty >= 0 && !rb->slots[empty].valid) empty--;
+                empty++;  /* First empty position */
+                if (empty != i) {
+                    memmove(&rb->slots[empty], &rb->slots[i], sizeof(rx_buffer_slot_t));
+                    memset(&rb->slots[i], 0, sizeof(rx_buffer_slot_t));
+                }
+            }
+        }
+    }
+    
+    *out_len = total;
+    return total;
+}
+
 /* Flush received data from server to SOCKS5 client */
 static void socks5_flush_recv_buf(socks5_client_t *c) {
     if (c->session_idx < 0 || c->session_idx >= DNSTUN_MAX_SESSIONS) return;
@@ -1857,6 +2009,9 @@ static size_t socks5_handle_data(socks5_client_t *c,
         sess->established = true;
         sess->closed      = false;
         sess->last_active = time(NULL);
+        
+        /* Initialize downstream reorder buffer */
+        reorder_buffer_init(&sess->reorder_buf);
 
         /* Parse target - ATYP already validated above */
         if (atype == 0x01) { /* IPv4 */
@@ -2139,34 +2294,78 @@ static void on_dns_recv(uv_udp_t *h,
                                 && !g_sessions[sidx].closed)
                             {
                                 session_t *s = &g_sessions[sidx];
-                                size_t need = s->recv_len + (size_t)decoded_len;
-                                if (need > s->recv_cap) {
-                                    /* Enforce maximum buffer size to prevent memory exhaustion */
-                                    if (s->recv_len >= MAX_SESSION_BUFFER) {
-                                        LOG_ERR("Session %d: recv buffer limit reached (%zu bytes), dropping old data\n",
-                                                sidx, s->recv_len);
-                                        /* Drop oldest data to make room */
-                                        memmove(s->recv_buf, s->recv_buf + (size_t)decoded_len, 
-                                                s->recv_len - (size_t)decoded_len);
-                                        s->recv_len -= (size_t)decoded_len;
-                                        need = s->recv_len + (size_t)decoded_len;
+                                
+                                /* Parse server response header if present (4-byte header) */
+                                const uint8_t *payload = decoded;
+                                size_t payload_len = (size_t)decoded_len;
+                                uint16_t seq = 0;
+                                bool has_seq = false;
+                                
+                                if (decoded_len >= sizeof(server_response_header_t)) {
+                                    server_response_header_t hdr;
+                                    memcpy(&hdr, decoded, sizeof(hdr));
+                                    has_seq = (hdr.flags & RESP_FLAG_HAS_SEQ) != 0;
+                                    
+                                    if (has_seq) {
+                                        seq = hdr.seq;
+                                        payload = decoded + sizeof(hdr);
+                                        payload_len = (size_t)(decoded_len - sizeof(hdr));
+                                        LOG_DEBUG("Downstream: seq=%u, payload_len=%zu\n", 
+                                                 seq, payload_len);
                                     }
-                                    size_t new_cap = need + 4096;
-                                    /* Cap at MAX_SESSION_BUFFER to prevent unbounded growth */
-                                    if (new_cap > MAX_SESSION_BUFFER) new_cap = MAX_SESSION_BUFFER;
-                                    uint8_t *new_buf = realloc(s->recv_buf, new_cap);
-                                    if (!new_buf) {
-                                        LOG_ERR("Session %d: failed to grow recv buffer\n", sidx);
-                                        continue;
-                                    }
-                                    s->recv_buf = new_buf;
-                                    s->recv_cap = new_cap;
                                 }
-                                memcpy(s->recv_buf + s->recv_len,
-                                       decoded, (size_t)decoded_len);
-                                s->recv_len += (size_t)decoded_len;
-                                g_stats.rx_total += (size_t)decoded_len;
-                                g_stats.rx_bytes_sec += (size_t)decoded_len;
+                                
+                                /* Handle sequenced vs non-sequenced packets */
+                                if (has_seq) {
+                                    /* Insert into reorder buffer and flush sequential packets */
+                                    reorder_buffer_insert(&s->reorder_buf, seq, payload, payload_len);
+                                    
+                                    /* Try to flush consecutive packets from reorder buffer */
+                                    uint8_t flush_buf[16384];
+                                    size_t flush_len = 0;
+                                    if (reorder_buffer_flush(&s->reorder_buf, flush_buf, 
+                                                           sizeof(flush_buf), &flush_len) > 0) {
+                                        /* Append flushed data to session recv buffer */
+                                        size_t need = s->recv_len + flush_len;
+                                        if (need > s->recv_cap) {
+                                            size_t new_cap = need + 4096;
+                                            if (new_cap > MAX_SESSION_BUFFER) new_cap = MAX_SESSION_BUFFER;
+                                            uint8_t *new_buf = realloc(s->recv_buf, new_cap);
+                                            if (!new_buf) {
+                                                LOG_ERR("Session %d: failed to grow recv buffer\n", sidx);
+                                            } else {
+                                                s->recv_buf = new_buf;
+                                                s->recv_cap = new_cap;
+                                            }
+                                        }
+                                        if (s->recv_cap >= s->recv_len + flush_len) {
+                                            memcpy(s->recv_buf + s->recv_len, flush_buf, flush_len);
+                                            s->recv_len += flush_len;
+                                            g_stats.rx_total += flush_len;
+                                            g_stats.rx_bytes_sec += flush_len;
+                                        }
+                                    }
+                                } else {
+                                    /* Non-sequenced (legacy or ACK) - deliver directly */
+                                    if (payload_len == 0) continue;
+                                    
+                                    size_t need = s->recv_len + payload_len;
+                                    if (need > s->recv_cap) {
+                                        size_t new_cap = need + 4096;
+                                        if (new_cap > MAX_SESSION_BUFFER) new_cap = MAX_SESSION_BUFFER;
+                                        uint8_t *new_buf = realloc(s->recv_buf, new_cap);
+                                        if (!new_buf) {
+                                            LOG_ERR("Session %d: failed to grow recv buffer\n", sidx);
+                                            continue;
+                                        }
+                                        s->recv_buf = new_buf;
+                                        s->recv_cap = new_cap;
+                                    }
+                                    memcpy(s->recv_buf + s->recv_len, payload, payload_len);
+                                    s->recv_len += payload_len;
+                                    g_stats.rx_total += payload_len;
+                                    g_stats.rx_bytes_sec += payload_len;
+                                }
                                 
                                 /* Flush received data to SOCKS5 client */
                                 if (s->client_ptr) {
