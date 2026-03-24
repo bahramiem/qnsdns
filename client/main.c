@@ -2309,9 +2309,7 @@ static void on_dns_recv(uv_udp_t *h,
                                 size_t payload_len = (size_t)decoded_len;
                                 uint16_t seq = 0;
                                 bool has_seq = false;
-
-                                /* Check if this is an ACK packet (null byte) */
-                                bool is_ack = (decoded_len == 0 || (decoded_len == 1 && decoded[0] == '\0'));
+                                bool is_ack = false;  /* Will be set after header check */
 
                                 if (decoded_len >= sizeof(server_response_header_t)) {
                                     server_response_header_t hdr;
@@ -2320,14 +2318,21 @@ static void on_dns_recv(uv_udp_t *h,
 
                                     if (has_seq) {
                                         seq = hdr.seq;
-                                        /* ACK packets have the null byte AFTER the header */
-                                        if (!is_ack) {
-                                            payload = decoded + sizeof(hdr);
-                                            payload_len = (size_t)(decoded_len - sizeof(hdr));
-                                        }
+                                        payload = decoded + sizeof(hdr);
+                                        payload_len = (size_t)(decoded_len - sizeof(hdr));
+                                        
+                                        /* Check if this is an ACK packet: single null byte AFTER header
+                                         * The server sends 4-byte header + 1-byte null for ACKs */
+                                        is_ack = (payload_len == 1 && payload[0] == '\0');
+                                        
                                         LOG_DEBUG("Downstream: seq=%u, payload_len=%zu, is_ack=%d\n",
                                                  seq, payload_len, is_ack);
                                     }
+                                }
+
+                                /* Legacy ACK without header: single null byte at start */
+                                if (!has_seq && (decoded_len == 0 || (decoded_len == 1 && decoded[0] == '\0'))) {
+                                    is_ack = true;
                                 }
 
                                 /* For ACK packets without header, use seq=0 and 1-byte payload */
