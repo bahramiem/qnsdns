@@ -721,7 +721,7 @@ static void on_server_recv(uv_udp_t *h,
                                 if (atype == 0x03) {
                                     /* Domain name - need to resolve */
                                     struct addrinfo hints = {0};
-                                    hints.ai_family = AF_INET;
+                                    hints.ai_family = AF_UNSPEC;  /* Allow both IPv4 and IPv6 */
                                     hints.ai_socktype = SOCK_STREAM;
                                     char port_str[6];
                                     snprintf(port_str, sizeof(port_str), "%d", target_port);
@@ -733,11 +733,20 @@ static void on_server_recv(uv_udp_t *h,
                                         free(resolver);
                                         free(cr);
                                     }
-                                } else {
+                                } else if (atype == 0x01) {
                                     /* IPv4 address - connect directly */
                                     struct sockaddr_in up_addr;
                                     uv_ip4_addr(target_host, target_port, &up_addr);
                                     uv_tcp_connect(&cr->connect, &sess->upstream_tcp, (const struct sockaddr*)&up_addr, on_upstream_connect);
+                                } else if (atype == 0x04) {
+                                    /* IPv6 address - connect directly */
+                                    struct sockaddr_in6 up_addr6;
+                                    uv_ip6_addr(target_host, target_port, &up_addr6);
+                                    uv_tcp_connect(&cr->connect, &sess->upstream_tcp, (const struct sockaddr*)&up_addr6, on_upstream_connect);
+                                } else {
+                                    /* Unknown address type - reject */
+                                    LOG_ERR("Unknown SOCKS5 address type: %d for %s:%d\n", atype, target_host, target_port);
+                                    free(cr);
                                 }
                             }
                         }

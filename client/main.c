@@ -80,6 +80,7 @@ static int log_level(void) { return g_cfg.log_level; }
 
 #define LOG_INFO(...)  do { if (log_level() >= 1) { fprintf(stdout, "[INFO]  " __VA_ARGS__); if (g_debug_log) fprintf(g_debug_log, "[INFO]  " __VA_ARGS__); tui_debug_log(&g_tui, 2, __VA_ARGS__); } } while(0)
 #define LOG_DEBUG(...) do { if (log_level() >= 2) { fprintf(stdout, "[DEBUG] " __VA_ARGS__); if (g_debug_log) fprintf(g_debug_log, "[DEBUG] " __VA_ARGS__); tui_debug_log(&g_tui, 3, __VA_ARGS__); } } while(0)
+#define LOG_WARN(...)  do { if (log_level() >= 1) { fprintf(stdout, "[WARN]  " __VA_ARGS__); if (g_debug_log) fprintf(g_debug_log, "[WARN]  " __VA_ARGS__); tui_debug_log(&g_tui, 1, __VA_ARGS__); } } while(0)
 #define LOG_ERR(...)   do { fprintf(stderr, "[ERROR] " __VA_ARGS__); if (g_debug_log) fprintf(g_debug_log, "[ERROR] " __VA_ARGS__); tui_debug_log(&g_tui, 0, __VA_ARGS__); } while(0)
 
 static uint16_t rand_u16(void) {
@@ -228,10 +229,22 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
      * Max base32 input ≈ 220 * 5 / 8 = 137 bytes
      * For header 4 bytes, max payload ≈ 133 bytes
      * 
-     * DNSTUN_CHUNK_PAYLOAD is capped to ensure QNAME fits within DNS limits. */
+     * DNSTUN_CHUNK_PAYLOAD is capped to ensure QNAME fits within DNS limits.
+     * 
+     * Fix: Strip trailing dot from domain to prevent double dots (e.g., "tun.example.com..") */
     char qname[512];
+    char clean_domain[256];
+    size_t domain_len = strlen(domain);
+    if (domain_len > 0 && domain[domain_len - 1] == '.') {
+        /* Strip trailing dot */
+        strncpy(clean_domain, domain, domain_len - 1);
+        clean_domain[domain_len - 1] = '\0';
+    } else {
+        strncpy(clean_domain, domain, sizeof(clean_domain) - 1);
+        clean_domain[sizeof(clean_domain) - 1] = '\0';
+    }
     int qname_len = snprintf(qname, sizeof(qname), "%s.tun.%s.",
-             b32_dotted, domain);
+             b32_dotted, clean_domain);
 
     if (qname_len > DNSTUN_MAX_QNAME_LEN) {
         LOG_ERR("QNAME too long: %d bytes (max %d). Reduce DNSTUN_CHUNK_PAYLOAD.\n",
@@ -2208,15 +2221,33 @@ static void on_jitter_timer(uv_timer_t *t) {
 }
 
 /* Fire one DNS query chunk for a session.
-   'seq' is the actual sequence number of this FEC symbol. */
+   'seq' is the actual sequence number of this FEC symbol.
+   Fix: Fall back to dead resolvers if no active resolvers available. */
 static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
                                   const uint8_t *payload, size_t paylen,
                                   int total_symbols)
 {
     int ridx = rpool_next(&g_pool);
+    
+    /* If no active resolver, try dead ones as fallback (desperation mode).
+     * This allows tunnel traffic even when all resolvers have been marked dead
+     * during initialization phase but might still work intermittently. */
     if (ridx < 0) {
-        LOG_ERR("fire_dns_chunk_symbol: no active resolver available (session_idx=%d, seq=%u)\n",
+        LOG_WARN("fire_dns_chunk_symbol: no active resolver, trying dead ones (session_idx=%d, seq=%u)\n",
+                 session_idx, seq);
+        uv_mutex_lock(&g_pool.lock);
+        if (g_pool.dead_count > 0) {
+            ridx = g_pool.dead[rand() % g_pool.dead_count];
+            LOG_DEBUG("fire_dns_chunk_symbol: using DEAD resolver %d (%s) as fallback\n",
+                      ridx, g_pool.resolvers[ridx].ip);
+        }
+        uv_mutex_unlock(&g_pool.lock);
+    }
+    
+    if (ridx < 0) {
+        LOG_ERR("fire_dns_chunk_symbol: no resolvers available at all (session_idx=%d, seq=%u)\n",
                 session_idx, seq);
+        g_stats.queries_dropped++;
         return;
     }
     LOG_DEBUG("fire_dns_chunk_symbol: using resolver %d (%s) for session %d seq %u\n",
