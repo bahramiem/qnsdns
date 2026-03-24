@@ -40,6 +40,14 @@
 #include "shared/tui.h"
 #include "shared/codec.h"
 
+/* Forward declarations */
+static int build_txt_reply(uint8_t *outbuf, size_t *outlen,
+                           uint16_t query_id, const char *qname,
+                           const uint8_t *data, size_t data_len,
+                           uint16_t mtu);
+static void send_udp_reply(const struct sockaddr_in *dest,
+                           const uint8_t *data, size_t len);
+
 /* ────────────────────────────────────────────── */
 /*  Global state                                  */
 /* ────────────────────────────────────────────── */
