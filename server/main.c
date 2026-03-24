@@ -392,6 +392,10 @@ static int build_txt_reply_with_seq(uint8_t *outbuf, size_t *outlen,
                            const uint8_t *data, size_t data_len,
                            uint16_t mtu, uint16_t seq, uint8_t session_id)
 {
+    /* DEBUG: Log buffer sizes to diagnose truncation */
+    fprintf(stderr, "[DEBUG] build_txt_reply: data_len=%zu mtu=%u outbuf_max=%zu\n",
+            data_len, mtu, *outlen);
+
     if (data_len > mtu) data_len = mtu;
 
     /* Build header with sequence number */
@@ -476,7 +480,12 @@ static void send_udp_reply(const struct sockaddr_in *dest,
     udp_reply_t *rep = malloc(sizeof(*rep));
     if (!rep) return;
     memcpy(&rep->dest, dest, sizeof(*dest));
-    if (len > sizeof(rep->reply_buf)) len = sizeof(rep->reply_buf);
+    /* DEBUG: Log truncation if data exceeds buffer */
+    if (len > sizeof(rep->reply_buf)) {
+        fprintf(stderr, "[WARN] send_udp_reply: TRUNCATING %zu bytes to %zu (buffer too small!)\n",
+                len, sizeof(rep->reply_buf));
+        len = sizeof(rep->reply_buf);
+    }
     memcpy(rep->reply_buf, data, len);
     rep->reply_len = len;
 

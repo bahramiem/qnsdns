@@ -1770,9 +1770,19 @@ static void on_socks5_write_done(uv_write_t *w, int status) {
 }
 
 static void socks5_send(socks5_client_t *c, const uint8_t *data, size_t len) {
+    /* DEBUG: Log data being sent to SOCKS5 client */
+    fprintf(stderr, "[DEBUG] socks5_send: sending %zu bytes to SOCKS5 client\n", len);
+    if (len > 0) {
+        fprintf(stderr, "[DEBUG] First 16 bytes: ");
+        for (size_t i = 0; i < len && i < 16; i++) {
+            fprintf(stderr, "%02x ", data[i]);
+        }
+        fprintf(stderr, "\n");
+    }
+
     uv_write_t *w = malloc(sizeof(*w) + len);
     if (!w) return;
-    
+
     /* Payload lives immediately after the write request in the same alloc. */
     uint8_t *copy = (uint8_t*)(w + 1);
     memcpy(copy, data, len);
@@ -2208,6 +2218,12 @@ static void on_dns_recv(uv_udp_t *h,
     dns_query_ctx_t *q = h->data;
     int ridx = q->resolver_idx;
 
+    /* DEBUG: Log received data size and buffer capacity */
+    if (nread > 0) {
+        fprintf(stderr, "[DEBUG] on_dns_recv: received %zd bytes (recvbuf size=%zu)\n",
+                nread, sizeof(q->recvbuf));
+    }
+
     if (nread > 0) {
         /* Measure RTT (fix #14: variable is now correctly named sent_ms) */
         double rtt = (double)(uv_hrtime() / 1000000ULL - q->sent_ms);
@@ -2262,11 +2278,18 @@ static void on_dns_recv(uv_udp_t *h,
                         LOG_INFO("Swarm: synced new resolvers from server\n");
                     } else {
                         /* Decode base64 response from server (server sends base64 by default) */
+                        /* DEBUG: Log TXT record size before decoding */
+                        fprintf(stderr, "[DEBUG] TXT record: len=%u text='%.*s'\n",
+                                ans->txt.len, (int)ans->txt.len, ans->txt.text);
+
                         uint8_t decoded[4096];
                         ptrdiff_t decoded_len = base64_decode(decoded, ans->txt.text, ans->txt.len);
                         if (decoded_len < 0) {
+                            fprintf(stderr, "[DEBUG] base64_decode FAILED for TXT len=%u\n", ans->txt.len);
                             continue;
                         }
+                        fprintf(stderr, "[DEBUG] base64_decode: input=%u output=%td\n",
+                                ans->txt.len, decoded_len);
                         
                         /* Skip empty/ack packets (single null byte or empty) - check DECODED data
                          * A binary null byte (0x00) encodes to "AA==" in Base64, so we must
@@ -2348,7 +2371,18 @@ static void on_dns_recv(uv_udp_t *h,
                                 } else {
                                     /* Non-sequenced (legacy or ACK) - deliver directly */
                                     if (payload_len == 0) continue;
-                                    
+
+                                    /* DEBUG: Log payload being stored */
+                                    fprintf(stderr, "[DEBUG] Storing payload: len=%zu recv_len=%zu\n",
+                                            payload_len, s->recv_len);
+                                    if (payload_len > 0) {
+                                        fprintf(stderr, "[DEBUG] Payload first 16 bytes: ");
+                                        for (size_t i = 0; i < payload_len && i < 16; i++) {
+                                            fprintf(stderr, "%02x ", payload[i]);
+                                        }
+                                        fprintf(stderr, "\n");
+                                    }
+
                                     size_t need = s->recv_len + payload_len;
                                     if (need > s->recv_cap) {
                                         size_t new_cap = need + 4096;
