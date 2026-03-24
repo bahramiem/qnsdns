@@ -532,12 +532,42 @@ static void on_server_recv(uv_udp_t *h,
      * The session_id is embedded in the chunk header flags byte, NOT in QNAME.
      * Format: parts[0..tun_idx-1] = base32 payload, parts[tun_idx] = "tun"
      * 
+     * Also handles MTU probes: mtu-req-[N].tun.<domain>
+     * 
      * tun_idx < 0: no .tun. marker found (invalid format, return)
-     * tun_idx == 0: MTU/probe queries like "tun.domain.com" (process with empty payload)
+     * tun_idx == 0: MTU/probe queries (empty payload or mtu-req- prefix)
      * tun_idx >= 1: normal tunnel traffic with base32 payload (process normally)
      */
     if (tun_idx < 0) {
         /* No .tun. marker found in QNAME - invalid format */
+        return;
+    }
+
+    /* Check for MTU probe format: mtu-req-[N].tun.domain.com */
+    if (tun_idx == 0 && parts[0] != NULL) {
+        /* First label before .tun. - could be MTU request */
+        const char *first_label = parts[0];
+        if (strncmp(first_label, "mtu-req-", 8) == 0) {
+            /* Parse requested MTU size */
+            int requested_mtu = atoi(first_label + 8);
+            if (requested_mtu > 0 && requested_mtu <= 4096) {
+                /* Generate random payload of requested size */
+                uint8_t mtu_payload[4096];
+                for (int i = 0; i < requested_mtu && i < (int)sizeof(mtu_payload); i++) {
+                    mtu_payload[i] = (uint8_t)(rand() & 0xFF);
+                }
+                
+                /* Send response with MTU-sized payload */
+                uint8_t reply[5120];
+                size_t rlen = sizeof(reply);
+                if (build_txt_reply(reply, &rlen, query_id, qname,
+                                    mtu_payload, requested_mtu, 512) == 0) {
+                    send_udp_reply(src, reply, rlen);
+                }
+                return;  /* MTU probe handled */
+            }
+        }
+        /* tun_idx == 0 but not MTU probe - ignore silently */
         return;
     }
 

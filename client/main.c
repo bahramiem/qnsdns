@@ -787,16 +787,16 @@ static size_t build_test_dns_query(uint8_t *buf, size_t bufsize,
     return offset;
 }
 
-/* Build a DNS query with variable-size for MTU testing
- * For upload tests: advertise mtu_size in EDNS UDP payload size
- * For download tests: encode size request in QNAME prefix (e.g., 0200.tun.domain.com)
+/* Build a DNS query for MTU testing following the optimal algorithm:
+ * - Upstream: Pad QNAME with random data labels to reach exact target MTU
+ * - Downstream: Use mtu-req-[N].tun.domain.com format so server sends large response
  * Returns total packet size */
 static size_t build_mtu_test_query(uint8_t *buf, size_t bufsize,
                                    const char *qname, uint16_t qtype,
-                                   int mtu_size, bool is_upload) {
+                                   int target_mtu, bool is_upload) {
     size_t offset = 0;
     uint16_t id = rand_u16();
-
+    
     /* DNS Header (12 bytes) */
     buf[offset++] = (id >> 8) & 0xFF;
     buf[offset++] = id & 0xFF;
@@ -808,15 +808,81 @@ static size_t build_mtu_test_query(uint8_t *buf, size_t bufsize,
     buf[offset++] = 0x00;
     buf[offset++] = 0x00;               /* NSCOUNT */
     buf[offset++] = 0x00;
-    buf[offset++] = 0x00;               /* ARCOUNT (EDNS) */
-    buf[offset++] = 0x01;
+    buf[offset++] = 0x00;               /* ARCOUNT */
+    buf[offset++] = 0x01;               /* 1 if EDNS */
 
-    /* QNAME: for download tests, encode requested size in first label */
-    if (!is_upload && mtu_size > 0) {
-        /* Format: <hex_size>.<qname> e.g., 0200.tun.domain.com */
-        char sized_qname[256];
-        snprintf(sized_qname, sizeof(sized_qname), "%04x.%s", mtu_size, qname);
-        const char *p = sized_qname;
+    if (is_upload && target_mtu > 0) {
+        /* UPSTREAM MTU TEST: Pad QNAME to reach exact target_mtu
+         * Format: [padding_label].tun.domain.com
+         * Where padding is random base32-compatible characters split into 63-char labels
+         * 
+         * Overhead calculation:
+         *   DNS Header: 12 bytes
+         *   QTYPE+QCLASS: 4 bytes
+         *   EDNS OPT: 11 bytes
+         *   QNAME null: 1 byte
+         *   Total overhead: 28 bytes
+         * 
+         * QNAME overhead (excluding variable part):
+         *   ".tun." = 5 bytes + domain
+         *   Each label has 1-byte length prefix
+         */
+        size_t domain_len = strlen(qname);  /* "tun.domain.com" format */
+        size_t base_qname_bytes = 1 + domain_len;  /* null + domain labels */
+        size_t overhead = 12 + 4 + 11 + base_qname_bytes;  /* 28 + domain */
+        size_t padding_needed = (target_mtu > (int)overhead) ? 
+                                (target_mtu - (int)overhead) : 0;
+        
+        /* Fill padding with random base32-compatible characters */
+        static const char b32_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+        size_t pos = 0;
+        while (padding_needed > 0) {
+            /* Split into 63-char max labels */
+            size_t label_len = (padding_needed > 63) ? 63 : padding_needed;
+            
+            /* Reserve 1 byte for label length prefix + label_len bytes + dots */
+            if (offset + 1 + label_len + 1 > bufsize - 64) break;
+            
+            buf[offset++] = (uint8_t)label_len;
+            for (size_t i = 0; i < label_len; i++) {
+                buf[offset++] = b32_chars[rand() % 32];
+            }
+            padding_needed -= label_len;
+            pos += label_len;
+        }
+        
+        /* Add dot separator */
+        buf[offset++] = '.';
+        
+        /* Add domain */
+        const char *p = qname;
+        while (*p) {
+            const char *dot = strchr(p, '.');
+            if (!dot) dot = p + strlen(p);
+            size_t label_len = dot - p;
+            if (offset + label_len + 1 > bufsize - 64) break;
+            buf[offset++] = (uint8_t)label_len;
+            memcpy(buf + offset, p, label_len);
+            offset += label_len;
+            p = dot;
+            if (*p) p++;
+        }
+    } else if (!is_upload && target_mtu > 0) {
+        /* DOWNSTREAM MTU TEST: Request specific response size
+         * Format: mtu-req-[N].tun.domain.com
+         * Server parses this and sends N-byte response */
+        char prefix[32];
+        snprintf(prefix, sizeof(prefix), "mtu-req-%d", target_mtu);
+        
+        /* Add prefix label */
+        size_t prefix_len = strlen(prefix);
+        buf[offset++] = (uint8_t)prefix_len;
+        memcpy(buf + offset, prefix, prefix_len);
+        offset += prefix_len;
+        buf[offset++] = '.';
+        
+        /* Add domain */
+        const char *p = qname;
         while (*p) {
             const char *dot = strchr(p, '.');
             if (!dot) dot = p + strlen(p);
@@ -829,7 +895,7 @@ static size_t build_mtu_test_query(uint8_t *buf, size_t bufsize,
             if (*p) p++;
         }
     } else {
-        /* Normal QNAME */
+        /* No padding needed or size not specified */
         const char *p = qname;
         while (*p) {
             const char *dot = strchr(p, '.');
@@ -843,7 +909,8 @@ static size_t build_mtu_test_query(uint8_t *buf, size_t bufsize,
             if (*p) p++;
         }
     }
-    buf[offset++] = 0;  /* Null terminator */
+    
+    buf[offset++] = 0;  /* QNAME null terminator */
 
     /* QTYPE and QCLASS */
     buf[offset++] = (qtype >> 8) & 0xFF;
@@ -851,12 +918,12 @@ static size_t build_mtu_test_query(uint8_t *buf, size_t bufsize,
     buf[offset++] = 0x00;  /* QCLASS: IN */
     buf[offset++] = 0x01;
 
-    /* EDNS0 OPT record with specified UDP payload size */
+    /* EDNS0 OPT record */
     buf[offset++] = 0x00;           /* NAME: root zone */
     buf[offset++] = 0x00;           /* TYPE: 41 = OPT */
     buf[offset++] = 0x29;
-    /* UDP payload size in EDNS advertises what size we can receive */
-    uint16_t udp_size = (mtu_size > 0 && mtu_size < 1400) ? (uint16_t)mtu_size : 1232;
+    /* UDP payload size - advertise our capability */
+    uint16_t udp_size = (target_mtu > 0 && target_mtu < 1400) ? (uint16_t)target_mtu : 1232;
     buf[offset++] = (udp_size >> 8) & 0xFF;
     buf[offset++] = udp_size & 0xFF;
     buf[offset++] = 0x00;           /* TTL: extended RCODE and flags = 0 */
