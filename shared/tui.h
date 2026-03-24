@@ -54,6 +54,21 @@ typedef struct {
 } tui_debug_buf_t;
 
 /* ──────────────────────────────────────────────
+   Protocol Test State (for debug packet loopback testing)
+────────────────────────────────────────────── */
+typedef struct {
+    uint64_t last_test_sent_ms;      /* timestamp when test was sent */
+    uint64_t last_test_recv_ms;      /* timestamp when response was received */
+    int      test_pending;           /* 1 = waiting for response */
+    int      last_test_success;      /* 1 = last test succeeded */
+    uint32_t test_sequence;          /* sequence number for current test */
+    char     test_payload[64];       /* payload sent in last test */
+} tui_proto_test_t;
+
+/* Callback for sending debug packet from TUI */
+typedef void (*tui_send_debug_cb)(const char *payload, uint32_t seq);
+
+/* ──────────────────────────────────────────────
    TUI context
 ────────────────────────────────────────────── */
 typedef struct tui_ctx {
@@ -79,6 +94,10 @@ typedef struct tui_ctx {
     /* Debug screen */
     tui_debug_buf_t   debug;
     int               debug_scroll;     /* scroll offset for debug view */
+
+    /* Protocol test screen */
+    tui_proto_test_t  proto_test;       /* protocol loopback test state */
+    tui_send_debug_cb send_debug_cb;    /* callback to send debug packet */
 } tui_ctx_t;
 
 /* Debug API */
@@ -86,6 +105,11 @@ void tui_debug_init(tui_ctx_t *t);
 void tui_debug_log(tui_ctx_t *t, int level, const char *fmt, ...);
 void tui_debug_clear(tui_ctx_t *t);
 void tui_debug_set_level(tui_ctx_t *t, int level);
+
+/* Protocol test API */
+void tui_proto_test_init(tui_ctx_t *t);
+void tui_proto_test_on_response(tui_ctx_t *t, uint32_t recv_seq);
+void tui_proto_test_on_timeout(tui_ctx_t *t);
 
 /* Init and run (called once per second from a timer or a dedicated thread) */
 void tui_init(tui_ctx_t *t, tui_stats_t *stats,

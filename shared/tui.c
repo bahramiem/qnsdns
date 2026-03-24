@@ -397,8 +397,69 @@ static void render_debug(tui_ctx_t *t) {
     
     hr(72, ANSI_CYAN);
     printf(ANSI_BOLD " [1] Stats   [2] Resolvers   [3] Config   "
-           ANSI_CYAN "[4]" ANSI_RESET ANSI_BOLD " Debug   [q] Quit\n" ANSI_RESET);
+            ANSI_CYAN "[4]" ANSI_RESET ANSI_BOLD " Debug   [q] Quit\n" ANSI_RESET);
     printf(ANSI_DIM " [↑/↓] Scroll   [0-3] Set level   [c] Clear   [a] Auto-scroll" ANSI_RESET "\n");
+}
+
+/* ── Panel 4: Protocol Test ─────────────────────────────────────────────────*/
+static void render_proto_test(tui_ctx_t *t) {
+    tui_proto_test_t *pt = &t->proto_test;
+    uint64_t now = uv_hrtime() / 1000000ULL;
+    static uint64_t start_time = 0;
+    if (start_time == 0) start_time = now;
+    uint64_t rel_ms = now - start_time;
+    
+    printf(ANSI_BOLD ANSI_CYAN " ▌ PROTOCOL TEST (Loopback) ▌" ANSI_RESET "\n");
+    hr(72, ANSI_CYAN);
+    
+    printf(" Press " ANSI_BOLD "[x]" ANSI_RESET " to send a debug packet through the full\n");
+    printf(" codec pipeline (chunk→base32→DNS→server→base64→DNS→client)\n\n");
+    
+    if (pt->test_sequence == 0) {
+        printf(" No test performed yet.\n");
+    } else {
+        printf(" Last test:\n");
+        printf("   Sequence:  " ANSI_CYAN "%u" ANSI_RESET "\n", pt->test_sequence);
+        printf("   Payload:  " ANSI_YELLOW "%s" ANSI_RESET "\n", pt->test_payload);
+        printf("   Sent:      +%llums\n", (unsigned long long)(pt->last_test_sent_ms - start_time));
+        
+        if (pt->test_pending) {
+            uint64_t elapsed = now - pt->last_test_sent_ms;
+            printf("   Status:    " ANSI_YELLOW "PENDING" ANSI_RESET " (waiting... %llums)\n", 
+                   (unsigned long long)elapsed);
+        } else if (pt->last_test_success) {
+            uint64_t rtt = pt->last_test_recv_ms - pt->last_test_sent_ms;
+            printf("   Status:    " ANSI_GREEN "SUCCESS" ANSI_RESET "\n");
+            printf("   RTT:       " ANSI_GREEN "%.1f ms" ANSI_RESET "\n", (double)rtt);
+        } else {
+            printf("   Status:    " ANSI_RED "FAILED/TIMEOUT" ANSI_RESET "\n");
+        }
+    }
+    
+    hr(72, ANSI_CYAN);
+    printf(ANSI_BOLD " [1] Stats   [2] Resolvers   [3] Config   [4] Debug   "
+           ANSI_CYAN "[5]" ANSI_RESET ANSI_BOLD " Proto   "
+           ANSI_CYAN "[x]" ANSI_RESET " Send   [q] Quit\n" ANSI_RESET);
+}
+
+/* ── Protocol test API ─────────────────────────────────────────────────────*/
+void tui_proto_test_init(tui_ctx_t *t) {
+    memset(&t->proto_test, 0, sizeof(t->proto_test));
+}
+
+void tui_proto_test_on_response(tui_ctx_t *t, uint32_t recv_seq) {
+    if (t->proto_test.test_pending && recv_seq == t->proto_test.test_sequence) {
+        t->proto_test.last_test_recv_ms = uv_hrtime() / 1000000ULL;
+        t->proto_test.test_pending = 0;
+        t->proto_test.last_test_success = 1;
+    }
+}
+
+void tui_proto_test_on_timeout(tui_ctx_t *t) {
+    if (t->proto_test.test_pending) {
+        t->proto_test.test_pending = 0;
+        t->proto_test.last_test_success = 0;
+    }
 }
 
 /* ── Domain-edit callback ───────────────────────────────────────────────────*/
@@ -466,6 +527,10 @@ void tui_init(tui_ctx_t *t, tui_stats_t *stats,
     t->debug.auto_scroll = 1;
     t->debug_scroll = 0;
 
+    /* Initialize protocol test state */
+    memset(&t->proto_test, 0, sizeof(t->proto_test));
+    t->send_debug_cb = NULL;
+
 #ifdef _WIN32
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
     if (hOut != INVALID_HANDLE_VALUE) {
@@ -483,11 +548,12 @@ void tui_init(tui_ctx_t *t, tui_stats_t *stats,
 void tui_render(tui_ctx_t *t) {
     printf(ANSI_CLEAR);
     switch (t->panel) {
-        case 0: render_stats(t);     break;
-        case 1: render_resolvers(t); break;
-        case 2: render_config(t);    break;
-        case 3: render_debug(t);     break;
-        default: render_stats(t);    break;
+        case 0: render_stats(t);       break;
+        case 1: render_resolvers(t);   break;
+        case 2: render_config(t);      break;
+        case 3: render_debug(t);      break;
+        case 4: render_proto_test(t);  break;
+        default: render_stats(t);      break;
     }
     fflush(stdout);
 }
@@ -536,6 +602,7 @@ void tui_handle_key(tui_ctx_t *t, int key) {
         case '2': t->panel = 1; break;
         case '3': t->panel = 2; break;
         case '4': t->panel = 3; break;
+        case '5': t->panel = 4; break;
         case 'q': t->running = 0; break;
 
         /* Config panel live toggles */
@@ -606,6 +673,25 @@ void tui_handle_key(tui_ctx_t *t, int key) {
                 }
                 break;
             default: break;
+        }
+    }
+
+    /* ── Protocol test panel specific keys ── */
+    if (t->panel == 4) {
+        if (key == 'x' || key == 'X') {
+            /* Trigger debug packet send */
+            if (!t->proto_test.test_pending && t->send_debug_cb != NULL) {
+                uint64_t now = uv_hrtime() / 1000000ULL;
+                t->proto_test.test_sequence++;
+                snprintf(t->proto_test.test_payload, sizeof(t->proto_test.test_payload),
+                         "DEBUG_%u", t->proto_test.test_sequence);
+                t->proto_test.last_test_sent_ms = now;
+                t->proto_test.test_pending = 1;
+                t->proto_test.last_test_success = 0;
+                
+                /* Call the registered callback to send the debug packet */
+                t->send_debug_cb(t->proto_test.test_payload, t->proto_test.test_sequence);
+            }
         }
     }
 

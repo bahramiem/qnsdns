@@ -528,6 +528,20 @@ static void on_server_recv(uv_udp_t *h,
     /* SYNC command: payload starts with "SYNC" (ASCII) */
     if (payload_len >= 4 && memcmp(payload, "SYNC", 4) == 0) is_sync = true;
 
+    /* DEBUG packet: payload starts with "DEBUG_" (ASCII) - echo back through normal pipeline */
+    bool is_debug = (payload_len >= 6 && memcmp(payload, "DEBUG_", 6) == 0);
+    if (is_debug) {
+        /* Echo the payload back through the normal response path */
+        uint8_t reply[512];
+        size_t rlen = sizeof(reply);
+        if (build_txt_reply(reply, &rlen, query_id, qname,
+                            payload, payload_len, 512) == 0) {
+            send_udp_reply(src, reply, rlen);
+            LOG_DEBUG("Debug packet echoed back to client (payload_len=%zu)\n", payload_len);
+        }
+        return;  /* Don't process further - no session setup or upstream forwarding */
+    }
+
     /* Session lookup / allocate by 4-bit session ID */
     int sidx = session_find_by_id(session_id);
     if (sidx < 0) {

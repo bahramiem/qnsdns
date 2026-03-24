@@ -339,6 +339,165 @@ typedef struct probe_req {
     int             mtu_test_max;     /* Max retries for MTU test */
 } probe_req_t;
 
+/* ────────────────────────────────────────────── */
+/*  Protocol Debug Packet (loopback test)          */
+/* ────────────────────────────────────────────── */
+typedef struct debug_pkt_ctx {
+    uv_udp_t        udp;
+    uv_timer_t      timer;
+    int             closes;
+    uv_udp_send_t   send_req;
+    struct sockaddr_in dest;
+    uint64_t        sent_ms;
+    uint8_t         sendbuf[512];
+    size_t          sendlen;
+    uint8_t         recvbuf[512];
+    uint32_t        expected_seq;
+    char            expected_payload[64];
+} debug_pkt_ctx_t;
+
+static void on_debug_close(uv_handle_t *h) {
+    debug_pkt_ctx_t *d = h->data;
+    if (++d->closes == 2) free(d);
+}
+
+static void on_debug_timeout(uv_timer_t *t) {
+    debug_pkt_ctx_t *d = t->data;
+    LOG_DEBUG("Debug packet %u timeout\n", d->expected_seq);
+    tui_proto_test_on_timeout(&g_tui);
+    if (!uv_is_closing((uv_handle_t*)&d->udp)) {
+        uv_close((uv_handle_t*)&d->udp, on_debug_close);
+        uv_close((uv_handle_t*)&d->timer, on_debug_close);
+    }
+}
+
+static void on_debug_alloc(uv_handle_t *h, size_t sz, uv_buf_t *buf) {
+    debug_pkt_ctx_t *d = h->data;
+    (void)sz;
+    buf->base = (char*)d->recvbuf;
+    buf->len = sizeof(d->recvbuf);
+}
+
+static void on_debug_send(uv_udp_send_t *sr, int status) {
+    (void)status;
+    (void)sr;
+}
+
+static void on_debug_recv(uv_udp_t *h, ssize_t nread,
+                         const uv_buf_t *buf,
+                         const struct sockaddr *addr,
+                         unsigned flags)
+{
+    if (nread == 0 && addr == NULL) return;
+    (void)flags;
+    
+    debug_pkt_ctx_t *d = h->data;
+    
+    if (nread > 0) {
+        /* Decode DNS response */
+        dns_decoded_t decoded[DNS_DECODEBUF_4K];
+        size_t decsz = sizeof(decoded);
+        dns_rcode_t rc = dns_decode(decoded, &decsz,
+                       (const dns_packet_t*)buf->base,
+                       (size_t)nread);
+        if (rc == RCODE_OKAY) {
+            dns_query_t *resp = (dns_query_t*)decoded;
+            for (int i = 0; i < (int)resp->ancount; i++) {
+                dns_answer_t *ans = &resp->answers[i];
+                if (ans->generic.type == RR_TXT && ans->txt.len > 0) {
+                    /* Base64 decode the server response */
+                    uint8_t decoded_payload[256];
+                    ptrdiff_t decoded_len = base64_decode(decoded_payload, ans->txt.text, ans->txt.len);
+                    
+                    if (decoded_len > 0) {
+                        /* Check if this matches our debug payload */
+                        if ((size_t)decoded_len == strlen(d->expected_payload) &&
+                            memcmp(decoded_payload, d->expected_payload, (size_t)decoded_len) == 0) {
+                            /* Success! */
+                            LOG_INFO("Debug packet %u loopback successful\n", d->expected_seq);
+                            tui_proto_test_on_response(&g_tui, d->expected_seq);
+                        }
+                    }
+                }
+            }
+        }
+        
+        /* Close and cleanup */
+        if (!uv_is_closing((uv_handle_t*)&d->udp)) {
+            uv_close((uv_handle_t*)&d->udp, on_debug_close);
+        }
+        uv_timer_stop(&d->timer);
+        if (!uv_is_closing((uv_handle_t*)&d->timer)) {
+            uv_close((uv_handle_t*)&d->timer, on_debug_close);
+        }
+    }
+}
+
+/* Send a debug packet through the normal codec pipeline */
+void send_debug_packet(const char *payload, uint32_t seq) {
+    /* Find an active resolver to send through */
+    resolver_t *r = NULL;
+    uv_mutex_lock(&g_pool.lock);
+    for (int i = 0; i < g_pool.count; i++) {
+        if (g_pool.resolvers[i].state == RSV_ACTIVE) {
+            r = &g_pool.resolvers[i];
+            break;
+        }
+    }
+    uv_mutex_unlock(&g_pool.lock);
+    
+    if (!r) {
+        LOG_ERR("No active resolver available for debug packet\n");
+        tui_proto_test_on_timeout(&g_tui);
+        return;
+    }
+    
+    debug_pkt_ctx_t *d = calloc(1, sizeof(*d));
+    if (!d) {
+        tui_proto_test_on_timeout(&g_tui);
+        return;
+    }
+    
+    d->sent_ms = uv_hrtime() / 1000000ULL;
+    d->expected_seq = seq;
+    strncpy(d->expected_payload, payload, sizeof(d->expected_payload) - 1);
+    
+    memcpy(&d->dest, &r->addr, sizeof(d->dest));
+    d->dest.sin_port = htons(53);
+    
+    /* Build chunk header - use session 15 (reserved for debug) */
+    chunk_header_t hdr = {0};
+    chunk_set_session_id(&hdr.flags, 15);  /* Reserved session for debug */
+    hdr.seq = (uint16_t)(seq & 0xFFFF);
+    hdr.chunk_info = 0;  /* Single chunk, no FEC */
+    
+    /* Use first configured domain */
+    const char *domain = (g_cfg.domain_count > 0) ? g_cfg.domains[0] : "tun.example.com";
+    
+    d->sendlen = sizeof(d->sendbuf);
+    if (build_dns_query(d->sendbuf, &d->sendlen, &hdr, 
+                        (const uint8_t*)payload, strlen(payload), domain) != 0) {
+        free(d);
+        tui_proto_test_on_timeout(&g_tui);
+        return;
+    }
+    
+    uv_udp_init(g_loop, &d->udp);
+    d->udp.data = d;
+    
+    uv_timer_init(g_loop, &d->timer);
+    d->timer.data = d;
+    uv_timer_start(&d->timer, on_debug_timeout, 5000, 0);  /* 5 second timeout */
+    
+    uv_udp_recv_start(&d->udp, on_debug_alloc, on_debug_recv);
+    
+    uv_buf_t buf = uv_buf_init((char*)d->sendbuf, (unsigned)d->sendlen);
+    uv_udp_send(&d->send_req, &d->udp, &buf, 1,
+                (const struct sockaddr*)&d->dest, on_debug_send);
+    
+    LOG_DEBUG("Debug packet %u sent: %s\n", seq, payload);
+}
+
 static void on_probe_close(uv_handle_t *h) {
     probe_req_t *p = h->data;
     if (++p->closes == 2) free(p);
@@ -2387,6 +2546,7 @@ int main(int argc, char *argv[]) {
 
     /* TUI */
     tui_init(&g_tui, &g_stats, &g_pool, &g_cfg, "CLIENT", config_path);
+    g_tui.send_debug_cb = send_debug_packet;  /* Register debug packet callback */
 
     LOG_INFO("dnstun-client starting\n");
     LOG_INFO("  SOCKS5  : %s:%d\n", bind_ip, bind_port);
