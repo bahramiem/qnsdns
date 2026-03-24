@@ -2188,6 +2188,10 @@ static void on_dns_recv(uv_udp_t *h,
                     }
                     g_stats.queries_recv++;
                     g_stats.last_server_rx_ms = uv_hrtime() / 1000000ULL;
+                    if (!g_stats.server_connected) {
+                        g_stats.server_connected = 1;
+                        LOG_INFO("Server connection established\n");
+                    }
                 }
             }
         } else {

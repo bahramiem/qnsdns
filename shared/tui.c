@@ -240,13 +240,6 @@ static void draw_sidebar(tui_ctx_t *t, int x, int y, int height) {
         }
     }
     
-    /* Quick Stats */
-    printf("\033[%d;%dH" ANSI_DIM "─ Quick Stats ──────" ANSI_RESET, y + height - 8, x + 1);
-    printf("\033[%d;%dH" ANSI_GREEN "▲ " ANSI_RESET "↑ %5.1f KB/s", y + height - 6, x + 1, t->stats->tx_bytes_sec);
-    printf("\033[%d;%dH" ANSI_CYAN "▼ " ANSI_RESET "↓ %5.1f KB/s", y + height - 5, x + 1, t->stats->rx_bytes_sec);
-    printf("\033[%d;%dH" ANSI_YELLOW "◆ " ANSI_RESET "Sessions: %d", y + height - 4, x + 1, t->stats->active_sessions);
-    printf("\033[%d;%dH" ANSI_MAGENTA "◇ " ANSI_RESET "Resolvers: %d", y + height - 3, x + 1, t->stats->active_resolvers);
-    
     /* Quit hint */
     printf("\033[%d;%dH" ANSI_DIM "Press [Q] to quit" ANSI_RESET, y + height - 1, x + 1);
 }
@@ -388,8 +381,19 @@ static void render_dashboard(tui_ctx_t *t, int x, int y, int width, int height) 
     
     draw_box(x, panel_y, panel_w, 6, ANSI_BR_BLUE, " Server Status ");
     
-    const char *status = (t->stats->last_server_rx_ms < 5000) ? "ONLINE" : "OFFLINE";
-    const char *status_color = (t->stats->last_server_rx_ms < 5000) ? ANSI_BR_GREEN : ANSI_BR_RED;
+    /* Show "Connected" when server_connected flag is set, otherwise show ONLINE/OFFLINE based on last response */
+    const char *status;
+    const char *status_color;
+    if (t->stats->server_connected) {
+        status = "Connected";
+        status_color = ANSI_BR_GREEN;
+    } else if (t->stats->last_server_rx_ms < 5000) {
+        status = "ONLINE";
+        status_color = ANSI_BR_GREEN;
+    } else {
+        status = "OFFLINE";
+        status_color = ANSI_BR_RED;
+    }
     
     printf("\033[%d;%dH" ANSI_BOLD "Status:   %s%s" ANSI_RESET, panel_y + 2, x + 2, status_color, status);
     printf("\033[%d;%dH" ANSI_BOLD "Latency:  " ANSI_RESET "%.1f ms", panel_y + 3, x + 2, 
@@ -417,13 +421,20 @@ static void render_dashboard(tui_ctx_t *t, int x, int y, int width, int height) 
     printf("\033[%d;%dH" ANSI_BOLD "Total RX:  " ANSI_RESET "%6.1f MB", session_y + 4, x + 2,
            t->stats->rx_total / (1024.0 * 1024.0));
     
+    /* Stats section */
+    printf("\033[%d;%dH" ANSI_DIM "─ Stats ──────────────" ANSI_RESET, session_y + 6, x + 2);
+    printf("\033[%d;%dH" ANSI_GREEN "▲ " ANSI_RESET "↑ %5.1f KB/s", session_y + 7, x + 2, t->stats->tx_bytes_sec);
+    printf("\033[%d;%dH" ANSI_CYAN "▼ " ANSI_RESET "↓ %5.1f KB/s", session_y + 8, x + 2, t->stats->rx_bytes_sec);
+    printf("\033[%d;%dH" ANSI_YELLOW "◆ " ANSI_RESET "Sessions: %d", session_y + 9, x + 2, t->stats->active_sessions);
+    printf("\033[%d;%dH" ANSI_MAGENTA "◇ " ANSI_RESET "Resolvers: %d", session_y + 10, x + 2, t->stats->active_resolvers);
+    
     /* Query Stats */
-    printf("\033[%d;%dH" ANSI_DIM "Queries ─────────────" ANSI_RESET, session_y + 6, x + 2);
-    printf("\033[%d;%dH" ANSI_BOLD "Sent:     " ANSI_RESET "%6llu", session_y + 7, x + 2,
+    printf("\033[%d;%dH" ANSI_DIM "Queries ─────────────" ANSI_RESET, session_y + 12, x + 2);
+    printf("\033[%d;%dH" ANSI_BOLD "Sent:     " ANSI_RESET "%6llu", session_y + 13, x + 2,
            (unsigned long long)t->stats->queries_sent);
-    printf("\033[%d;%dH" ANSI_BOLD "Received: " ANSI_RESET "%6llu", session_y + 8, x + 2,
+    printf("\033[%d;%dH" ANSI_BOLD "Received: " ANSI_RESET "%6llu", session_y + 14, x + 2,
            (unsigned long long)t->stats->queries_recv);
-    printf("\033[%d;%dH" ANSI_BOLD "Lost:     " ANSI_RESET "%6llu", session_y + 9, x + 2,
+    printf("\033[%d;%dH" ANSI_BOLD "Lost:     " ANSI_RESET "%6llu", session_y + 15, x + 2,
            (unsigned long long)t->stats->queries_lost);
     
     /* Resolvers Panel */
