@@ -531,10 +531,13 @@ static void on_server_recv(uv_udp_t *h,
     /* New compact format: <b32_payload>.tun.<domain>
      * The session_id is embedded in the chunk header flags byte, NOT in QNAME.
      * Format: parts[0..tun_idx-1] = base32 payload, parts[tun_idx] = "tun"
+     * 
+     * tun_idx < 0: no .tun. marker found (invalid format, return)
+     * tun_idx == 0: MTU/probe queries like "tun.domain.com" (process with empty payload)
+     * tun_idx >= 1: normal tunnel traffic with base32 payload (process normally)
      */
-    if (tun_idx < 1) { /* Need at least b32_payload and tun */
-        /* This is likely a resolver test probe (MTU test, NXDOMAIN test, etc.)
-         * from the client. These don't have the .tun. marker. Silently ignore. */
+    if (tun_idx < 0) {
+        /* No .tun. marker found in QNAME - invalid format */
         return;
     }
 

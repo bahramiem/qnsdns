@@ -787,6 +787,88 @@ static size_t build_test_dns_query(uint8_t *buf, size_t bufsize,
     return offset;
 }
 
+/* Build a DNS query with variable-size for MTU testing
+ * For upload tests: advertise mtu_size in EDNS UDP payload size
+ * For download tests: encode size request in QNAME prefix (e.g., 0200.tun.domain.com)
+ * Returns total packet size */
+static size_t build_mtu_test_query(uint8_t *buf, size_t bufsize,
+                                   const char *qname, uint16_t qtype,
+                                   int mtu_size, bool is_upload) {
+    size_t offset = 0;
+    uint16_t id = rand_u16();
+
+    /* DNS Header (12 bytes) */
+    buf[offset++] = (id >> 8) & 0xFF;
+    buf[offset++] = id & 0xFF;
+    buf[offset++] = 0x01;               /* Flags: RD = 1 */
+    buf[offset++] = 0x00;
+    buf[offset++] = 0x00;               /* QDCOUNT */
+    buf[offset++] = 0x01;
+    buf[offset++] = 0x00;               /* ANCOUNT */
+    buf[offset++] = 0x00;
+    buf[offset++] = 0x00;               /* NSCOUNT */
+    buf[offset++] = 0x00;
+    buf[offset++] = 0x00;               /* ARCOUNT (EDNS) */
+    buf[offset++] = 0x01;
+
+    /* QNAME: for download tests, encode requested size in first label */
+    if (!is_upload && mtu_size > 0) {
+        /* Format: <hex_size>.<qname> e.g., 0200.tun.domain.com */
+        char sized_qname[256];
+        snprintf(sized_qname, sizeof(sized_qname), "%04x.%s", mtu_size, qname);
+        const char *p = sized_qname;
+        while (*p) {
+            const char *dot = strchr(p, '.');
+            if (!dot) dot = p + strlen(p);
+            size_t label_len = dot - p;
+            if (offset + label_len + 1 > bufsize - 64) break;
+            buf[offset++] = (uint8_t)label_len;
+            memcpy(buf + offset, p, label_len);
+            offset += label_len;
+            p = dot;
+            if (*p) p++;
+        }
+    } else {
+        /* Normal QNAME */
+        const char *p = qname;
+        while (*p) {
+            const char *dot = strchr(p, '.');
+            if (!dot) dot = p + strlen(p);
+            size_t label_len = dot - p;
+            if (offset + label_len + 1 > bufsize - 64) break;
+            buf[offset++] = (uint8_t)label_len;
+            memcpy(buf + offset, p, label_len);
+            offset += label_len;
+            p = dot;
+            if (*p) p++;
+        }
+    }
+    buf[offset++] = 0;  /* Null terminator */
+
+    /* QTYPE and QCLASS */
+    buf[offset++] = (qtype >> 8) & 0xFF;
+    buf[offset++] = qtype & 0xFF;
+    buf[offset++] = 0x00;  /* QCLASS: IN */
+    buf[offset++] = 0x01;
+
+    /* EDNS0 OPT record with specified UDP payload size */
+    buf[offset++] = 0x00;           /* NAME: root zone */
+    buf[offset++] = 0x00;           /* TYPE: 41 = OPT */
+    buf[offset++] = 0x29;
+    /* UDP payload size in EDNS advertises what size we can receive */
+    uint16_t udp_size = (mtu_size > 0 && mtu_size < 1400) ? (uint16_t)mtu_size : 1232;
+    buf[offset++] = (udp_size >> 8) & 0xFF;
+    buf[offset++] = udp_size & 0xFF;
+    buf[offset++] = 0x00;           /* TTL: extended RCODE and flags = 0 */
+    buf[offset++] = 0x00;
+    buf[offset++] = 0x00;
+    buf[offset++] = 0x00;
+    buf[offset++] = 0x00;           /* RDLEN: 0 */
+    buf[offset++] = 0x00;
+
+    return offset;
+}
+
 /* Fire a scanner.py-style resolver test probe */
 static void fire_test_probe(int idx, probe_test_type_t test_type,
                             resolver_test_result_t *result) {
@@ -999,16 +1081,12 @@ static void fire_mtu_test_probe(int idx, probe_test_type_t test_type,
     snprintf(domain_buf, sizeof(domain_buf), "tun.%s", base);
     const char *domain = domain_buf;
     
-    if (test_type == PROBE_TEST_MTU_UP) {
-        /* Upload MTU test: send payload of mtu_size bytes, expect MTU_UP_RES */
-        /* For simplicity, we use TXT query with payload encoded */
-        p->sendlen = build_test_dns_query(p->sendbuf, sizeof(p->sendbuf),
-                                          domain, 16, 1, true); /* TXT, with EDNS */
-    } else {
-        /* Download MTU test: send MTU_DOWN_REQ with specified size */
-        p->sendlen = build_test_dns_query(p->sendbuf, sizeof(p->sendbuf),
-                                          domain, 16, 1, true); /* TXT, with EDNS */
-    }
+    /* Use build_mtu_test_query which encodes mtu_size in:
+     * - EDNS UDP payload size for upload tests
+     * - QNAME prefix (e.g., 0200.tun.domain.com) for download tests */
+    bool is_upload = (test_type == PROBE_TEST_MTU_UP);
+    p->sendlen = build_mtu_test_query(p->sendbuf, sizeof(p->sendbuf),
+                                      domain, 16, mtu_size, is_upload);
     
     if (p->sendlen == 0 || p->sendlen > sizeof(p->sendbuf)) {
         free(p);
