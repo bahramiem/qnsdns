@@ -1774,9 +1774,23 @@ static size_t socks5_handle_data(socks5_client_t *c,
         LOG_INFO("SOCKS5 CONNECT %s:%d (session %d) - waiting for server ack\n",
                  sess->target_host, sess->target_port, session_idx);
 
+        /* Queue the CONNECT request to be sent to the server.
+         * The server needs this to parse the target and establish upstream connection. */
+        if (min_len > 0) {
+            size_t new_cap = min_len + 4096;
+            if (new_cap > MAX_SESSION_BUFFER) new_cap = MAX_SESSION_BUFFER;
+            uint8_t *new_buf = realloc(sess->send_buf, new_cap);
+            if (new_buf) {
+                sess->send_buf = new_buf;
+                sess->send_cap = new_cap;
+                memcpy(sess->send_buf, data, min_len);
+                sess->send_len = min_len;
+                LOG_DEBUG("state 1: queued CONNECT request (%zu bytes) for server\n", min_len);
+            }
+        }
+
         /* Don't send success yet - wait for server acknowledgment.
-         * The CONNECT request will be sent via DNS queries and the SOCKS5
-         * success will be sent when we receive the first upstream response. */
+         * The SOCKS5 success will be sent when we receive the first upstream response. */
         LOG_DEBUG("state 1: consumed CONNECT request, returning %zu\n", min_len);
         return min_len;
     }
