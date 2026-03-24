@@ -822,8 +822,13 @@ static void fire_test_probe(int idx, probe_test_type_t test_type,
             use_edns = false;
             break;
         case PROBE_TEST_EDNS_TXT:
-            /* Phase 3: EDNS + TXT test */
-            domain = g_cfg.test_domain[0] ? g_cfg.test_domain : "s.domain.com";
+            /* Phase 3: EDNS + TXT test - add .tun. suffix so server processes these probes */
+            {
+                static char domain_buf[256];
+                const char *base = g_cfg.test_domain[0] ? g_cfg.test_domain : "s.domain.com";
+                snprintf(domain_buf, sizeof(domain_buf), "tun.%s", base);
+                domain = domain_buf;
+            }
             qtype = 16; /* TXT record */
             use_edns = true;
             break;
@@ -994,7 +999,11 @@ static void fire_mtu_test_probe(int idx, probe_test_type_t test_type,
     memcpy(&p->dest, &r->addr, sizeof(p->dest));
     p->dest.sin_port = htons(53);
     
-    const char *domain = g_cfg.test_domain[0] ? g_cfg.test_domain : "s.domain.com";
+    /* Add .tun. suffix so server processes MTU probes */
+    static char domain_buf[256];
+    const char *base = g_cfg.test_domain[0] ? g_cfg.test_domain : "s.domain.com";
+    snprintf(domain_buf, sizeof(domain_buf), "tun.%s", base);
+    const char *domain = domain_buf;
     
     if (test_type == PROBE_TEST_MTU_UP) {
         /* Upload MTU test: send payload of mtu_size bytes, expect MTU_UP_RES */
@@ -1677,7 +1686,8 @@ static void socks5_flush_recv_buf(socks5_client_t *c) {
     s->recv_len = 0;
 }
 
-static void socks5_handle_data(socks5_client_t *c,
+/* Returns number of bytes consumed from data buffer, or 0 if incomplete */
+static size_t socks5_handle_data(socks5_client_t *c,
                                const uint8_t *data, size_t len)
 {
     /* SOCKS5 state machine */
@@ -1687,13 +1697,33 @@ static void socks5_handle_data(socks5_client_t *c,
             uint8_t reply[2] = {0x05, 0x00};
             socks5_send(c, reply, 2);
             c->state = 1;
+            return 3;  /* Consumed auth method (VER + NMETHODS + METHODS[0]) */
         }
-        return;
+        /* Need more data */
+        return 0;
     }
 
     if (c->state == 1) {
-        /* CONNECT request */
-        if (len < 10 || data[0] != 0x05 || data[1] != 0x01) return;
+        /* CONNECT request - determine required length based on address type */
+        uint8_t atype = (len >= 4) ? data[3] : 0;
+        size_t min_len;
+        
+        if (atype == 0x01) {
+            min_len = 10;  /* IPv4: VER + CMD + RSV + ATYP(1) + IP(4) + PORT(2) */
+        } else if (atype == 0x03) {
+            /* Domain: need dlen byte to know total length */
+            if (len < 5) return 0;  /* Need at least dlen byte */
+            uint8_t dlen = data[4];
+            min_len = 5 + dlen + 2;  /* +1 dlen + dlen bytes + 2 port */
+        } else if (atype == 0x04) {
+            min_len = 22;  /* IPv6: VER + CMD + RSV + ATYP(1) + IP(16) + PORT(2) */
+        } else {
+            return 0;  /* Invalid ATYP, need more data */
+        }
+        
+        /* Check if we have enough data for CONNECT request */
+        if (len < min_len) return 0;
+        if (data[0] != 0x05 || data[1] != 0x01) return 0;  /* Not a CONNECT request */
 
         int session_idx = -1;
         for (int i = 0; i < DNSTUN_MAX_SESSIONS; i++) {
@@ -1705,7 +1735,7 @@ static void socks5_handle_data(socks5_client_t *c,
         if (session_idx < 0) {
             uint8_t err[10] = {0x05,0x05,0x00,0x01,0,0,0,0,0,0};
             socks5_send(c, err, 10);
-            return;
+            return min_len;  /* Consumed but errored */
         }
 
         session_t *sess = &g_sessions[session_idx];
@@ -1715,22 +1745,19 @@ static void socks5_handle_data(socks5_client_t *c,
         sess->closed      = false;
         sess->last_active = time(NULL);
 
-        /* Parse target */
-        uint8_t atype = data[3];
+        /* Parse target - ATYP already validated above */
         if (atype == 0x01) { /* IPv4 */
             snprintf(sess->target_host, sizeof(sess->target_host),
                      "%d.%d.%d.%d", data[4],data[5],data[6],data[7]);
             sess->target_port = (uint16_t)((data[8]<<8)|data[9]);
         } else if (atype == 0x03) { /* Domain */
             uint8_t dlen = data[4];
-            /* Fix #5: bounds check before accessing data[5..5+dlen+1] */
-            if ((size_t)(5 + dlen + 2) > len) return;
-            if (dlen >= sizeof(sess->target_host)) return;
+            if (dlen >= sizeof(sess->target_host)) return min_len;
             memcpy(sess->target_host, data+5, dlen);
             sess->target_host[dlen] = '\0';
             sess->target_port = (uint16_t)((data[5+dlen]<<8)|data[6+dlen]);
-        } else {
-            return; /* IPv6 not implemented yet */
+        } else { /* IPv6 */
+            return min_len;  /* IPv6 not implemented yet */
         }
 
         c->session_idx = session_idx;
@@ -1745,7 +1772,7 @@ static void socks5_handle_data(socks5_client_t *c,
         /* Don't send success yet - wait for server acknowledgment.
          * The CONNECT request will be sent via DNS queries and the SOCKS5
          * success will be sent when we receive the first upstream response. */
-        return;
+        return min_len;
     }
 
     if (c->state == 2) {
@@ -1772,7 +1799,7 @@ static void socks5_handle_data(socks5_client_t *c,
             uint8_t *new_buf = realloc(sess->send_buf, new_cap);
             if (!new_buf) {
                 LOG_ERR("Session %d: failed to grow send buffer\n", c->session_idx);
-                return;
+                return 0;
             }
             sess->send_buf = new_buf;
             sess->send_cap = new_cap;
@@ -1784,7 +1811,10 @@ static void socks5_handle_data(socks5_client_t *c,
         
         LOG_DEBUG("Session %d: queued %zu bytes from SOCKS5 (total send_buf: %zu)\n",
                   c->session_idx, len, sess->send_len);
+        return len;  /* Consume all tunnel data */
     }
+    
+    return 0;  /* Unknown state */
 }
 
 static void on_socks5_read(uv_stream_t *s, ssize_t nread, const uv_buf_t *buf) {
@@ -1796,7 +1826,26 @@ static void on_socks5_read(uv_stream_t *s, ssize_t nread, const uv_buf_t *buf) {
         return;
     }
 
-    socks5_handle_data(c, (const uint8_t*)buf->base, (size_t)nread);
+    /* Accumulate incoming data in buffer to handle fragmentation.
+     * SOCKS5 handshake packets may arrive fragmented across multiple reads. */
+    size_t incoming = (size_t)nread;
+    if (c->buf_len + incoming > sizeof(c->buf)) {
+        LOG_DEBUG("SOCKS5 buffer overflow, resetting\n");
+        c->buf_len = 0;  /* Reset on overflow - malformed packet */
+    } else {
+        memcpy(c->buf + c->buf_len, buf->base, incoming);
+        c->buf_len += incoming;
+    }
+
+    /* Process accumulated data in loop - handshake may complete across multiple reads */
+    while (c->buf_len > 0) {
+        size_t before = c->buf_len;
+        socks5_handle_data(c, c->buf, c->buf_len);
+        size_t consumed = before - c->buf_len;
+        
+        /* If no progress was made, break to avoid infinite loop */
+        if (consumed == 0) break;
+    }
 }
 
 static void on_socks5_alloc(uv_handle_t *h, size_t sz, uv_buf_t *buf) {
@@ -1948,18 +1997,21 @@ static void on_dns_recv(uv_udp_t *h,
                         free(ips);
                         LOG_INFO("Swarm: synced new resolvers from server\n");
                     } else {
-                        /* Skip empty/ack packets (single null byte or empty) */
-                        if (ans->txt.len == 0 || (ans->txt.len == 1 && ans->txt.text[0] == '\0')) {
-                            LOG_DEBUG("Session %d: skipping empty/ack packet\n", q->session_idx);
+                        /* Decode base64 response from server (server sends base64 by default) */
+                        uint8_t decoded[4096];
+                        ptrdiff_t decoded_len = base64_decode(decoded, ans->txt.text, ans->txt.len);
+                        if (decoded_len < 0) {
+                            LOG_DEBUG("Session %d: base64 decode failed\n", q->session_idx);
+                            continue;
+                        }
+                        
+                        /* Skip empty/ack packets (single null byte or empty) - check DECODED data
+                         * A binary null byte (0x00) encodes to "AA==" in Base64, so we must
+                         * check the decoded payload, not the raw Base64 text. */
+                        if (decoded_len == 0 || (decoded_len == 1 && decoded[0] == '\0')) {
+                            LOG_DEBUG("Session %d: skipping empty/ack packet (decoded_len=%zd)\n", 
+                                     q->session_idx, decoded_len);
                         } else {
-                            /* Decode base64 response from server (server sends base64 by default) */
-                            uint8_t decoded[4096];
-                            ptrdiff_t decoded_len = base64_decode(decoded, ans->txt.text, ans->txt.len);
-                            if (decoded_len < 0) {
-                                LOG_DEBUG("Session %d: base64 decode failed\n", q->session_idx);
-                                continue;
-                            }
-                            
                             /* Deliver payload to session recv buffer */
                             int sidx = q->session_idx;
                             if (sidx >= 0 && sidx < DNSTUN_MAX_SESSIONS
