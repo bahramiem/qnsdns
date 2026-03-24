@@ -788,3 +788,21 @@ void tui_proto_test_start(tui_ctx_t *t) {
     (void)t;
     /* Stub - protocol test functionality can be added later */
 }
+
+/* Protocol test API implementations */
+void tui_proto_test_init(tui_ctx_t *t) {
+    memset(&t->proto_test, 0, sizeof(t->proto_test));
+}
+
+void tui_proto_test_on_response(tui_ctx_t *t, uint32_t recv_seq) {
+    t->proto_test.test_pending = 0;
+    t->proto_test.last_test_success = 1;
+    t->proto_test.last_test_recv_ms = uv_hrtime() / 1000000ULL;
+    LOG_INFO("Protocol test response received (seq=%u)\n", recv_seq);
+}
+
+void tui_proto_test_on_timeout(tui_ctx_t *t) {
+    t->proto_test.test_pending = 0;
+    t->proto_test.last_test_success = 0;
+    LOG_WARN("Protocol test timeout\n");
+}
