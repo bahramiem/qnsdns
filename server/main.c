@@ -349,17 +349,19 @@ static void on_upstream_connect(uv_connect_t *req, int status) {
     if (cr->payload && cr->payload_len > 0)
         upstream_write_and_read(sidx, cr->payload, cr->payload_len);
 
-    /* Send SOCKS5 ACK back to client via DNS tunnel
+    /* Queue SOCKS5 ACK byte for next DNS response
      * The ACK (0x00) signals that upstream connection is established.
-     * Client will send SOCKS5 success reply to its local SOCKS5 client. */
-    if (sess->client_addr.sin_family != 0) {
-        uint8_t reply[512];
-        size_t rlen = sizeof(reply);
-        uint8_t ack[1] = {0};  /* ACK byte to signal CONNECT success */
-        /* Use default query_id of 0 for ACK - client doesn't need specific ID */
-        if (build_txt_reply(reply, &rlen, 0, "", ack, 1, 512) == 0) {
-            send_udp_reply(&sess->client_addr, reply, rlen);
-        }
+     * It will be included in the next valid DNS reply to client's query,
+     * avoiding the issue of sending an unsolicited DNS response with
+     * Transaction ID of 0 and empty QNAME. */
+    size_t need = sess->upstream_len + 1;
+    if (need > sess->upstream_cap) {
+        sess->upstream_buf = realloc(sess->upstream_buf, need + 8192);
+        sess->upstream_cap = need + 8192;
+    }
+    if (sess->upstream_buf) {
+        sess->upstream_buf[sess->upstream_len] = 0x00;  /* ACK byte */
+        sess->upstream_len++;
     }
 
     free(cr->payload);
