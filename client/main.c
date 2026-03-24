@@ -1839,12 +1839,16 @@ static void on_socks5_read(uv_stream_t *s, ssize_t nread, const uv_buf_t *buf) {
 
     /* Process accumulated data in loop - handshake may complete across multiple reads */
     while (c->buf_len > 0) {
-        size_t before = c->buf_len;
-        socks5_handle_data(c, c->buf, c->buf_len);
-        size_t consumed = before - c->buf_len;
+        size_t consumed = socks5_handle_data(c, c->buf, c->buf_len);
         
-        /* If no progress was made, break to avoid infinite loop */
+        /* If no progress was made, break to avoid infinite loop (incomplete packet) */
         if (consumed == 0) break;
+        
+        /* Shift remaining data to front of buffer */
+        if (consumed < c->buf_len) {
+            memmove(c->buf, c->buf + consumed, c->buf_len - consumed);
+        }
+        c->buf_len -= consumed;
     }
 }
 
