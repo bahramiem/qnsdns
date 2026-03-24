@@ -1657,6 +1657,17 @@ static void socks5_flush_recv_buf(socks5_client_t *c) {
     session_t *s = &g_sessions[c->session_idx];
     if (s->closed || s->recv_len == 0) return;
     
+    /* DEBUG: Log exactly what we're sending to SOCKS5 client */
+    LOG_DEBUG("SOCKS5 flush: session %d, sending %zu bytes to curl/client\n", 
+              c->session_idx, s->recv_len);
+    LOG_DEBUG("SOCKS5 flush: raw hex (first 32 bytes): ");
+    for (size_t i = 0; i < s->recv_len && i < 32; i++) {
+        fprintf(stderr, "%02x ", s->recv_buf[i]);
+    }
+    fprintf(stderr, "\n");
+    LOG_DEBUG("SOCKS5 flush: as string: '%.*s'\n", 
+              (int)(s->recv_len > 64 ? 64 : s->recv_len), (char*)s->recv_buf);
+    
     /* Send all pending data to SOCKS5 client */
     socks5_send(c, s->recv_buf, s->recv_len);
     LOG_DEBUG("Flushed %zu bytes from recv_buf to SOCKS5 client (session %d)\n",
@@ -1984,9 +1995,18 @@ static void on_dns_recv(uv_udp_t *h,
                                 g_stats.rx_total += (size_t)decoded_len;
                                 g_stats.rx_bytes_sec += (size_t)decoded_len;
                                 
-                                /* Debug: log first 64 bytes of received data */
-                                LOG_DEBUG("Session %d received %zd bytes (from %d base64), first 64: '%.64s'\n",
-                                          sidx, decoded_len, ans->txt.len,
+                                /* DEBUG: Log raw bytes received (hex dump) */
+                                LOG_DEBUG("Session %d: received %zd bytes from server (base64 len=%d)\n", 
+                                          sidx, decoded_len, ans->txt.len);
+                                LOG_DEBUG("Session %d: raw hex (first 32 bytes): ", sidx);
+                                size_t display_len = (s->recv_len > 32) ? 32 : s->recv_len;
+                                size_t offset = (s->recv_len > (size_t)decoded_len) ? s->recv_len - (size_t)decoded_len : 0;
+                                for (size_t i = 0; i < display_len; i++) {
+                                    fprintf(stderr, "%02x ", s->recv_buf[offset + i]);
+                                }
+                                fprintf(stderr, "\n");
+                                LOG_DEBUG("Session %d: as string: '%.*s'\n", sidx, 
+                                          (int)(decoded_len > 64 ? 64 : decoded_len),
                                           (char*)s->recv_buf + s->recv_len - (size_t)decoded_len);
                                 
                                 /* Flush received data to SOCKS5 client */
@@ -1997,9 +2017,14 @@ static void on_dns_recv(uv_udp_t *h,
                                      * This indicates the server has acknowledged our CONNECT. */
                                     if (!s->socks5_connected) {
                                         uint8_t ok[10] = {0x05,0x00,0x00,0x01,127,0,0,1,0x04,0x38};
+                                        LOG_DEBUG("Session %d: sending SOCKS5 success response (10 bytes) BEFORE flushing %zu bytes of HTTP data\n", 
+                                                  sidx, s->recv_len);
                                         socks5_send(c, ok, 10);
                                         s->socks5_connected = true;
                                         LOG_INFO("Session %d: sent SOCKS5 success (server ack received)\n", sidx);
+                                    } else {
+                                        LOG_DEBUG("Session %d: SOCKS5 already connected, flushing %zu bytes\n", 
+                                                  sidx, s->recv_len);
                                     }
                                     
                                     socks5_flush_recv_buf(c);

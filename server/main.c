@@ -494,19 +494,26 @@ static void on_server_recv(uv_udp_t *h,
     LOG_DEBUG("Parsed QNAME: tun_idx=%d, part_count=%d\n", tun_idx, part_count);
 
     /* Reassemble b32 payload from all parts before .tun. marker
-     * (now single consolidated label after client inline_dotify) */
+     * (now single consolidated label after client inline_dotify)
+     * CRITICAL: Do NOT add dots back - they were DNS label separators, not part of base32 data!
+     * The client's inline_dotify adds dots every 57 chars to split into DNS labels.
+     * When strtok parses the QNAME, dots are removed as delimiters.
+     * We must concatenate parts WITHOUT dots to reconstruct the original base32. */
     char b32_payload[512] = {0};
     for (int i = 0; i < tun_idx; i++) {
-        if (i > 0) strncat(b32_payload, ".", sizeof(b32_payload) - strlen(b32_payload) - 1);
         strncat(b32_payload, parts[i], sizeof(b32_payload) - strlen(b32_payload) - 1);
     }
     /* Decode b32 payload → raw bytes (chunk_header + data) */
     uint8_t raw[sizeof(chunk_header_t) + DNSTUN_CHUNK_PAYLOAD + 4];
-    ssize_t rawlen = base32_decode(raw, b32_payload, strlen(b32_payload));
+    size_t b32_len = strlen(b32_payload);
+    LOG_DEBUG("Base32 decode: input len=%zu, payload='%s'\n", b32_len, b32_payload);
+    ssize_t rawlen = base32_decode(raw, b32_payload, b32_len);
     if (rawlen < (ssize_t)sizeof(chunk_header_t)) {
-        LOG_DEBUG("Base32 decode too short from %s\n", src_ip);
+        LOG_ERR("Base32 decode failed from %s: ret=%zd, expected >=%zu (input was '%s')\n", 
+                src_ip, rawlen, sizeof(chunk_header_t), b32_payload);
         return;
     }
+    LOG_DEBUG("Base32 decode success: %zd bytes decoded\n", rawlen);
 
     /* Parse new compact 4-byte header */
     chunk_header_t hdr;
@@ -749,9 +756,14 @@ static void on_server_recv(uv_udp_t *h,
         size_t sz = sess->upstream_len;
         if (sz > mtu) sz = mtu;
 
-        /* Debug: log first 64 bytes being sent */
-        LOG_DEBUG("Session %d: sending %zu bytes to client, first 64: '%.64s'\n",
-                  sidx, sz, (char*)sess->upstream_buf);
+        /* DEBUG: Log raw bytes being sent (hex dump) */
+        LOG_DEBUG("Session %d: sending %zu bytes to client (MTU=%d)\n", sidx, sz, mtu);
+        LOG_DEBUG("Session %d: raw hex (first 32 bytes): ", sidx);
+        for (size_t i = 0; i < sz && i < 32; i++) {
+            fprintf(stderr, "%02x ", sess->upstream_buf[i]);
+        }
+        fprintf(stderr, "\n");
+        LOG_DEBUG("Session %d: as string: '%.*s'\n", sidx, (int)(sz > 64 ? 64 : sz), (char*)sess->upstream_buf);
 
         if (build_txt_reply(reply, &rlen, query_id, qname,
                             sess->upstream_buf, sz, mtu) == 0)
@@ -762,6 +774,7 @@ static void on_server_recv(uv_udp_t *h,
                     sess->upstream_len - sz);
             sess->upstream_len -= sz;
             send_udp_reply(src, reply, rlen);
+            LOG_DEBUG("Session %d: replied with %zu bytes via DNS TXT\n", sidx, sz);
         }
     } else {
         /* Empty reply — acknowledge the query */
