@@ -1851,8 +1851,9 @@ static void on_socks5_read(uv_stream_t *s, ssize_t nread, const uv_buf_t *buf) {
 static void on_socks5_alloc(uv_handle_t *h, size_t sz, uv_buf_t *buf) {
     socks5_client_t *c = h->data;
     (void)sz;
-    buf->base = (char*)c->buf;
-    buf->len  = sizeof(c->buf);
+    /* Return pointer to end of current buffer content to avoid overwriting existing data */
+    buf->base = (char*)(c->buf + c->buf_len);
+    buf->len  = sizeof(c->buf) - c->buf_len;
 }
 
 static void on_socks5_connection(uv_stream_t *server, int status) {
@@ -2009,8 +2010,24 @@ static void on_dns_recv(uv_udp_t *h,
                          * A binary null byte (0x00) encodes to "AA==" in Base64, so we must
                          * check the decoded payload, not the raw Base64 text. */
                         if (decoded_len == 0 || (decoded_len == 1 && decoded[0] == '\0')) {
-                            LOG_DEBUG("Session %d: skipping empty/ack packet (decoded_len=%zd)\n", 
+                            LOG_DEBUG("Session %d: received ack packet (decoded_len=%zd)\n", 
                                      q->session_idx, decoded_len);
+                            /* Send SOCKS5 success on heartbeat/ack - this signals upstream is established.
+                             * The server sends 0x00 as an ACK when the CONNECT succeeds. */
+                            int sidx = q->session_idx;
+                            if (sidx >= 0 && sidx < DNSTUN_MAX_SESSIONS
+                                && !g_sessions[sidx].closed)
+                            {
+                                session_t *s = &g_sessions[sidx];
+                                if (s->client_ptr && !s->socks5_connected) {
+                                    socks5_client_t *c = (socks5_client_t*)s->client_ptr;
+                                    uint8_t ok[10] = {0x05,0x00,0x00,0x01,127,0,0,1,0x04,0x38};
+                                    LOG_DEBUG("Session %d: sending SOCKS5 success response (heartbeat ack)\n", sidx);
+                                    socks5_send(c, ok, 10);
+                                    s->socks5_connected = true;
+                                    LOG_INFO("Session %d: sent SOCKS5 success (server ack received)\n", sidx);
+                                }
+                            }
                         } else {
                             /* Deliver payload to session recv buffer */
                             int sidx = q->session_idx;
