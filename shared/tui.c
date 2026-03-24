@@ -494,7 +494,7 @@ static void render_config_view(tui_ctx_t *t, int x, int y, int width, int height
     row += 2;
     printf("\033[%d;%dH" ANSI_BOLD "Poll Interval: " ANSI_RESET "%d ms", row++, x + 2, c->poll_interval_ms);
     printf("\033[%d;%dH" ANSI_BOLD "FEC Window:    " ANSI_RESET "%d", row++, x + 2, c->fec_window);
-    printf("\033[%d;%dH" ANSI_BOLD "Max CWND:      " ANSI RESET "%.0f", row++, x + 2, c->cwnd_max);
+    printf("\033[%d;%dH" ANSI_BOLD "Max CWND:      " ANSI_RESET "%.0f", row++, x + 2, c->cwnd_max);
     
     /* Domains */
     row += 2;
@@ -647,12 +647,11 @@ void tui_handle_key(tui_ctx_t *t, int key) {
             t->running = 0; 
             break;
             
-        /* Debug log controls */
+        /* Debug log controls - use shifted numbers */
         case '0': tui_debug_set_level(t, 0); break;
-        case '!': 
-        case '9': tui_debug_set_level(t, 1); break;  /* Shift+1 = ! */
-        case '2': tui_debug_set_level(t, 2); break;
-        case '3': tui_debug_set_level(t, 3); break;
+        case '!': tui_debug_set_level(t, 1); break;  /* Shift+1 = ! */
+        case '@': tui_debug_set_level(t, 2); break;  /* Shift+2 = @ */
+        case '#': tui_debug_set_level(t, 3); break;  /* Shift+3 = # */
         
         /* Scroll controls in debug view */
         case 'A': /* Up arrow - need proper escape sequence handling */
