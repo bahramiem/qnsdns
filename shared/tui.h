@@ -21,6 +21,7 @@ typedef struct {
     uint64_t queries_sent;
     uint64_t queries_recv;
     uint64_t queries_lost;
+    uint64_t queries_dropped;    /* queries dropped due to no available resolvers */
     uint64_t last_server_rx_ms;  /* time of last successful TXT response from server */
     char     mode[32];           /* "CLIENT" or "SERVER" */
 } tui_stats_t;
