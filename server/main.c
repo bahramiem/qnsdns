@@ -926,6 +926,10 @@ static void on_server_recv(uv_udp_t *h,
         size_t sz = sess->upstream_len;
         if (sz > mtu) sz = mtu;
 
+        /* DEBUG: Log upstream data being sent */
+        fprintf(stderr, "[DEBUG] Server sending: upstream_len=%zu sz=%zu mtu=%u reply_buf=%zu\n",
+                sess->upstream_len, sz, mtu, sizeof(reply));
+
         if (build_txt_reply_with_seq(reply, &rlen, query_id, qname,
                             sess->upstream_buf, sz, mtu,
                             sess->downstream_seq++,
