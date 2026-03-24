@@ -1690,21 +1690,26 @@ static void socks5_flush_recv_buf(socks5_client_t *c) {
 static size_t socks5_handle_data(socks5_client_t *c,
                                const uint8_t *data, size_t len)
 {
+    LOG_DEBUG("socks5_handle_data: state=%d, len=%zu, buf[0]=%02x\n", c->state, len, len > 0 ? data[0] : 0);
     /* SOCKS5 state machine */
     if (c->state == 0) {
         /* Auth method negotiation: reply NO AUTH */
+        LOG_DEBUG("state 0: checking greeting, len=%zu (need >=3)\n", len);
         if (len >= 3 && data[0] == 0x05) {
             uint8_t reply[2] = {0x05, 0x00};
+            LOG_DEBUG("state 0: sending auth reply 05 00\n");
             socks5_send(c, reply, 2);
             c->state = 1;
             return 3;  /* Consumed auth method (VER + NMETHODS + METHODS[0]) */
         }
         /* Need more data */
+        LOG_DEBUG("state 0: need more data (have %zu, need >=3)\n", len);
         return 0;
     }
 
     if (c->state == 1) {
         /* CONNECT request - determine required length based on address type */
+        LOG_DEBUG("state 1: processing CONNECT, len=%zu\n", len);
         uint8_t atype = (len >= 4) ? data[3] : 0;
         size_t min_len;
         
@@ -1772,6 +1777,7 @@ static size_t socks5_handle_data(socks5_client_t *c,
         /* Don't send success yet - wait for server acknowledgment.
          * The CONNECT request will be sent via DNS queries and the SOCKS5
          * success will be sent when we receive the first upstream response. */
+        LOG_DEBUG("state 1: consumed CONNECT request, returning %zu\n", min_len);
         return min_len;
     }
 
@@ -1838,8 +1844,10 @@ static void on_socks5_read(uv_stream_t *s, ssize_t nread, const uv_buf_t *buf) {
     }
 
     /* Process accumulated data in loop - handshake may complete across multiple reads */
+    LOG_DEBUG("on_socks5_read: starting processing loop, buf_len=%zu\n", c->buf_len);
     while (c->buf_len > 0) {
         size_t consumed = socks5_handle_data(c, c->buf, c->buf_len);
+        LOG_DEBUG("on_socks5_read: consumed=%zu, new buf_len will be %zu\n", consumed, c->buf_len - consumed);
         
         /* If no progress was made, break to avoid infinite loop (incomplete packet) */
         if (consumed == 0) break;
@@ -1850,6 +1858,7 @@ static void on_socks5_read(uv_stream_t *s, ssize_t nread, const uv_buf_t *buf) {
         }
         c->buf_len -= consumed;
     }
+    LOG_DEBUG("on_socks5_read: processing loop done, buf_len=%zu\n", c->buf_len);
 }
 
 static void on_socks5_alloc(uv_handle_t *h, size_t sz, uv_buf_t *buf) {
