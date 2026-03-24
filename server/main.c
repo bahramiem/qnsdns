@@ -281,10 +281,6 @@ static void on_upstream_read(uv_stream_t *s, ssize_t nread,
     memcpy(sess->upstream_buf + sess->upstream_len, buf->base, (size_t)nread);
     sess->upstream_len += (size_t)nread;
     
-    /* Debug: log first 64 bytes received from upstream */
-    LOG_DEBUG("Session %d: received %zd bytes from upstream, first 64: '%.64s'\n",
-              sidx, nread, sess->upstream_buf + sess->upstream_len - nread);
-    
     free(buf->base);
 
     g_stats.rx_total += (size_t)nread;
@@ -468,7 +464,6 @@ static void on_server_recv(uv_udp_t *h,
     const struct sockaddr_in *src = (const struct sockaddr_in*)addr;
     char src_ip[46];
     uv_inet_ntop(AF_INET, &src->sin_addr, src_ip, sizeof(src_ip));
-    LOG_DEBUG("Server received %zd bytes from %s:%d\n", nread, src_ip, ntohs(src->sin_port));
     g_stats.queries_recv++;
 
     /* Record source IP in swarm (src_ip already defined above) */
@@ -481,7 +476,6 @@ static void on_server_recv(uv_udp_t *h,
                    (const dns_packet_t*)buf->base,
                    (size_t)nread) != RCODE_OKAY)
     {
-        LOG_DEBUG("DNS decode failed from %s\n", src_ip);
         g_stats.queries_lost++;
         return;
     }
@@ -520,11 +514,8 @@ static void on_server_recv(uv_udp_t *h,
     if (tun_idx < 1) { /* Need at least b32_payload and tun */
         /* This is likely a resolver test probe (MTU test, NXDOMAIN test, etc.)
          * from the client. These don't have the .tun. marker. Silently ignore. */
-        LOG_DEBUG("Ignoring non-tunnel probe from %s: %s (tun_idx=%d, part_count=%d)\n",
-                src_ip, qname, tun_idx, part_count);
         return;
     }
-    LOG_DEBUG("Parsed QNAME: tun_idx=%d, part_count=%d\n", tun_idx, part_count);
 
     /* Reassemble b32 payload from all parts before .tun. marker
      * (now single consolidated label after client inline_dotify)
@@ -539,14 +530,12 @@ static void on_server_recv(uv_udp_t *h,
     /* Decode b32 payload → raw bytes (chunk_header + data) */
     uint8_t raw[sizeof(chunk_header_t) + DNSTUN_CHUNK_PAYLOAD + 4];
     size_t b32_len = strlen(b32_payload);
-    LOG_DEBUG("Base32 decode: input len=%zu, payload='%s'\n", b32_len, b32_payload);
     ssize_t rawlen = base32_decode(raw, b32_payload, b32_len);
     if (rawlen < (ssize_t)sizeof(chunk_header_t)) {
-        LOG_ERR("Base32 decode failed from %s: ret=%zd, expected >=%zu (input was '%s')\n", 
-                src_ip, rawlen, sizeof(chunk_header_t), b32_payload);
+        LOG_ERR("Base32 decode failed from %s: ret=%zd, expected >=%zu\n", 
+                src_ip, rawlen, sizeof(chunk_header_t));
         return;
     }
-    LOG_DEBUG("Base32 decode success: %zd bytes decoded\n", rawlen);
 
     /* Parse new compact 4-byte header */
     chunk_header_t hdr;
@@ -577,7 +566,6 @@ static void on_server_recv(uv_udp_t *h,
         if (build_txt_reply(reply, &rlen, query_id, qname,
                             payload, payload_len, 512) == 0) {
             send_udp_reply(src, reply, rlen);
-            LOG_DEBUG("Debug packet echoed back to client (payload_len=%zu)\n", payload_len);
         }
         return;  /* Don't process further - no session setup or upstream forwarding */
     }
@@ -592,9 +580,6 @@ static void on_server_recv(uv_udp_t *h,
         }
         LOG_INFO("New session created: idx=%d, sid=%u, is_poll=%d, is_sync=%d, payload_len=%zu\n",
                  sidx, session_id, is_poll, is_sync, payload_len);
-    } else {
-        LOG_DEBUG("Existing session: idx=%d, sid=%u, seq=%u, total=%u, payload_len=%zu\n",
-                  sidx, session_id, seq, chunk_total, payload_len);
     }
 
     srv_session_t *sess = &g_sessions[sidx];
@@ -799,15 +784,8 @@ static void on_server_recv(uv_udp_t *h,
     /* ── Forward payload to upstream (non-FEC path) ──────────────── */
     /* Fix #11: Only forward to already-connected sessions. SOCKS5 CONNECT
        must arrive via the FEC+decompress path to be decoded correctly. */
-    LOG_DEBUG("Session %d: checking forward - is_poll=%d, payload_len=%zu, tcp_connected=%d\n",
-              sidx, is_poll, payload_len, sess->tcp_connected);
     if (!is_poll && payload_len > 0 && sess->tcp_connected) {
-        LOG_DEBUG("Session %d: forwarding %zu bytes to upstream\n", sidx, payload_len);
         upstream_write_and_read(sidx, payload, payload_len);
-    } else if (payload_len > 0 && !sess->tcp_connected) {
-        LOG_DEBUG("Session %d: NOT forwarding - tcp not connected yet\n", sidx);
-    } else if (payload_len > 0) {
-        LOG_DEBUG("Session %d: NOT forwarding - is_poll=%d\n", sidx, is_poll);
     }
 
     /* ── Build reply — stuff any pending upstream data ───────────── */
@@ -820,15 +798,6 @@ static void on_server_recv(uv_udp_t *h,
         size_t sz = sess->upstream_len;
         if (sz > mtu) sz = mtu;
 
-        /* DEBUG: Log raw bytes being sent (hex dump) */
-        LOG_DEBUG("Session %d: sending %zu bytes to client (MTU=%d)\n", sidx, sz, mtu);
-        LOG_DEBUG("Session %d: raw hex (first 32 bytes): ", sidx);
-        for (size_t i = 0; i < sz && i < 32; i++) {
-            fprintf(stderr, "%02x ", sess->upstream_buf[i]);
-        }
-        fprintf(stderr, "\n");
-        LOG_DEBUG("Session %d: as string: '%.*s'\n", sidx, (int)(sz > 64 ? 64 : sz), (char*)sess->upstream_buf);
-
         if (build_txt_reply(reply, &rlen, query_id, qname,
                             sess->upstream_buf, sz, mtu) == 0)
         {
@@ -838,7 +807,6 @@ static void on_server_recv(uv_udp_t *h,
                     sess->upstream_len - sz);
             sess->upstream_len -= sz;
             send_udp_reply(src, reply, rlen);
-            LOG_DEBUG("Session %d: replied with %zu bytes via DNS TXT\n", sidx, sz);
         }
     } else {
         /* Empty reply — acknowledge the query */

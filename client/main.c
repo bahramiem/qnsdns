@@ -251,8 +251,6 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
                 qname_len, DNSTUN_MAX_QNAME_LEN);
         return -1;
     }
-    
-    LOG_DEBUG("QNAME=%s (len=%d, session=%d)\n", qname, qname_len, chunk_get_session_id(hdr->flags));
 
     /* Build DNS query structure like slipstream */
     dns_question_t question = {0};
@@ -376,7 +374,6 @@ static void on_debug_close(uv_handle_t *h) {
 
 static void on_debug_timeout(uv_timer_t *t) {
     debug_pkt_ctx_t *d = t->data;
-    LOG_DEBUG("Debug packet %u timeout\n", d->expected_seq);
     tui_proto_test_on_timeout(&g_tui);
     if (!uv_is_closing((uv_handle_t*)&d->udp)) {
         uv_close((uv_handle_t*)&d->udp, on_debug_close);
@@ -507,8 +504,6 @@ void send_debug_packet(const char *payload, uint32_t seq) {
     uv_buf_t buf = uv_buf_init((char*)d->sendbuf, (unsigned)d->sendlen);
     uv_udp_send(&d->send_req, &d->udp, &buf, 1,
                 (const struct sockaddr*)&d->dest, on_debug_send);
-    
-    LOG_DEBUG("Debug packet %u sent: %s\n", seq, payload);
 }
 
 static void on_probe_close(uv_handle_t *h) {
@@ -582,9 +577,6 @@ static void on_probe_recv(uv_udp_t *h, ssize_t nread,
                 uint16_t ancount = (resp[6] << 8) | resp[7];
                 uint16_t arcount = (resp[8] << 8) | resp[9];
                 
-                LOG_DEBUG("EDNS test response: rcode=%d, ancount=%d, arcount=%d, len=%d\n",
-                         rcode, ancount, arcount, (int)nread);
-                
                 /* Parse DNS packet to find OPT record (EDNS) or TXT record */
                 size_t offset = 12;
                 
@@ -637,10 +629,8 @@ static void on_probe_recv(uv_udp_t *h, ssize_t nread,
                             uint16_t udp_payload = (resp[offset + 3] << 8) | resp[offset + 4];
                             p->result->edns_supported = true;
                             p->result->upstream_mtu = (udp_payload > 0) ? udp_payload : 1232;
-                            LOG_DEBUG("Found OPT record, upstream_mtu=%d\n", p->result->upstream_mtu);
                         } else if (rtype == 16) { /* TXT record */
                             p->result->txt_supported = true;
-                            LOG_DEBUG("Found TXT record\n");
                         }
                     }
                     
@@ -652,14 +642,11 @@ static void on_probe_recv(uv_udp_t *h, ssize_t nread,
                 /* Success if either EDNS or TXT is supported (scanner.py logic) */
                 if (p->result->edns_supported || p->result->txt_supported) {
                     p->got_reply = true;
-                    LOG_DEBUG("EDNS/TXT test passed for resolver %s\n", 
-                             g_pool.resolvers[p->resolver_idx].ip);
                 } else {
                     /* Even without specific records, if we got a response, 
                      * the resolver processed our query (like scanner.py) */
                     p->result->txt_supported = true; /* Resolver processed the TXT query */
                     p->got_reply = true;
-                    LOG_DEBUG("No specific records found, but response received\n");
                 }
             }
         } else {
@@ -962,11 +949,7 @@ static int get_next_mtu_to_test(mtu_binary_search_t *bs) {
 static int perform_mtu_binary_search(mtu_binary_search_t *bs, 
                                      bool (*test_fn)(int mtu, void *arg), 
                                      void *arg) {
-    LOG_DEBUG("[MTU] Starting binary search: low=%d, high=%d, min_thresh=%d\n",
-              bs->low, bs->high, bs->min_threshold);
-    
     if (bs->high <= 0 || bs->low > bs->high) {
-        LOG_DEBUG("[MTU] Invalid MTU range, returning 0\n");
         return 0;
     }
     
@@ -984,13 +967,11 @@ static int perform_mtu_binary_search(mtu_binary_search_t *bs,
         
         if (success) {
             bs->optimal = mtu_to_test;
-            LOG_DEBUG("[MTU] MTU %d passed, optimal=%d\n", mtu_to_test, bs->optimal);
         }
         
         mtu_to_test = get_next_mtu_to_test(bs);
     }
     
-    LOG_DEBUG("[MTU] Binary search complete: optimal=%d\n", bs->optimal);
     return bs->optimal;
 }
 
@@ -1090,9 +1071,6 @@ static uint16_t find_max_upstream_mtu(int resolver_idx, uint16_t suggested_mtu) 
     int optimal = 0;
     int retries = g_cfg.mtu_test_retries > 0 ? g_cfg.mtu_test_retries : 2;
     
-    LOG_DEBUG("[MTU] Finding max upstream MTU for resolver %d, range %d-%d\n",
-              resolver_idx, low, high);
-    
     for (int mtu = high; mtu >= low; mtu -= 10) {
         bool success = false;
         /* In a real implementation, we would send test probes here */
@@ -1107,7 +1085,6 @@ static uint16_t find_max_upstream_mtu(int resolver_idx, uint16_t suggested_mtu) 
         optimal = suggested_mtu;
     }
     
-    LOG_DEBUG("[MTU] Max upstream MTU for resolver %d: %d\n", resolver_idx, optimal);
     return (uint16_t)optimal;
 }
 
@@ -1118,9 +1095,6 @@ static uint16_t find_max_downstream_mtu(int resolver_idx, uint16_t upstream_mtu)
     int high = g_cfg.max_download_mtu > 0 ? g_cfg.max_download_mtu : 1200;
     int optimal = 0;
     
-    LOG_DEBUG("[MTU] Finding max downstream MTU for resolver %d, range %d-%d\n",
-              resolver_idx, low, high);
-    
     /* In a real implementation, we would send test probes here */
     /* For now, use a conservative default based on upstream MTU */
     if (upstream_mtu > 0) {
@@ -1128,7 +1102,6 @@ static uint16_t find_max_downstream_mtu(int resolver_idx, uint16_t upstream_mtu)
         if (optimal < 512) optimal = 512;
     }
     
-    LOG_DEBUG("[MTU] Max downstream MTU for resolver %d: %d\n", resolver_idx, optimal);
     return (uint16_t)optimal;
 }
 
@@ -1254,10 +1227,6 @@ static size_t encode_aggregated_packet(uint8_t *out_buf, size_t out_size,
         /* chunk_info: high nibble = chunk_total-1, low nibble = fec_k (0 for now) */
         chunk_set_info(&hdr->chunk_info, (uint8_t)symbols_packed, 0);
         
-        LOG_DEBUG("[Agg] Packed %d symbols into %zu bytes (MTU=%u, efficiency=%.1f%%)\n",
-                  symbols_packed, total_size, mtu,
-                  calc_packing_efficiency(mtu, total_size));
-        
         return total_size;
     } else {
         /* No aggregation - send single symbol */
@@ -1303,7 +1272,6 @@ static int decode_aggregated_packet(uint8_t *symbols[], uint8_t sizes[],
         }
     }
     
-    LOG_DEBUG("[Agg] Decoded %d symbols from packet (len=%zu)\n", symbol_count, packet_len);
     return symbol_count;
 }
 
@@ -1336,9 +1304,6 @@ static void log_aggregation_stats(void) {
             total_resolvers++;
             total_symbols += symbols;
             total_efficiency += efficiency;
-            
-            LOG_DEBUG("  Resolver %s: MTU=%u, symbols=%d, efficiency=%.1f%%\n",
-                      r->ip, r->upstream_mtu, symbols, efficiency);
         }
     }
     uv_mutex_unlock(&g_pool.lock);
@@ -1663,9 +1628,6 @@ static void socks5_send(socks5_client_t *c, const uint8_t *data, size_t len) {
     uv_write_t *w = malloc(sizeof(*w) + len);
     if (!w) return;
     
-    /* Debug: log first 64 bytes being sent */
-    LOG_DEBUG("SOCKS5 sending %zu bytes to client, first 64: '%.64s'\n", len, (char*)data);
-    
     /* Payload lives immediately after the write request in the same alloc. */
     uint8_t *copy = (uint8_t*)(w + 1);
     memcpy(copy, data, len);
@@ -1679,21 +1641,8 @@ static void socks5_flush_recv_buf(socks5_client_t *c) {
     session_t *s = &g_sessions[c->session_idx];
     if (s->closed || s->recv_len == 0) return;
     
-    /* DEBUG: Log exactly what we're sending to SOCKS5 client */
-    LOG_DEBUG("SOCKS5 flush: session %d, sending %zu bytes to curl/client\n", 
-              c->session_idx, s->recv_len);
-    LOG_DEBUG("SOCKS5 flush: raw hex (first 32 bytes): ");
-    for (size_t i = 0; i < s->recv_len && i < 32; i++) {
-        fprintf(stderr, "%02x ", s->recv_buf[i]);
-    }
-    fprintf(stderr, "\n");
-    LOG_DEBUG("SOCKS5 flush: as string: '%.*s'\n", 
-              (int)(s->recv_len > 64 ? 64 : s->recv_len), (char*)s->recv_buf);
-    
     /* Send all pending data to SOCKS5 client */
     socks5_send(c, s->recv_buf, s->recv_len);
-    LOG_DEBUG("Flushed %zu bytes from recv_buf to SOCKS5 client (session %d)\n",
-              s->recv_len, c->session_idx);
     
     /* Clear the buffer */
     s->recv_len = 0;
@@ -1703,32 +1652,27 @@ static void socks5_flush_recv_buf(socks5_client_t *c) {
 static size_t socks5_handle_data(socks5_client_t *c,
                                const uint8_t *data, size_t len)
 {
-    LOG_DEBUG("socks5_handle_data: state=%d, len=%zu, buf[0]=%02x\n", c->state, len, len > 0 ? data[0] : 0);
     /* SOCKS5 state machine */
     if (c->state == 0) {
         /* Auth method negotiation: reply NO AUTH
          * SOCKS5 greeting: VER(1) + NMETHODS(1) + METHODS(NMETHODS bytes)
          * Total length = 2 + NMETHODS */
-        LOG_DEBUG("state 0: checking greeting, len=%zu\n", len);
         if (len >= 2 && data[0] == 0x05) {
             uint8_t nmethods = data[1];
             size_t greeting_len = 2 + nmethods;
             if (len >= greeting_len) {
                 uint8_t reply[2] = {0x05, 0x00};
-                LOG_DEBUG("state 0: sending auth reply 05 00 (consumed %zu bytes)\n", greeting_len);
                 socks5_send(c, reply, 2);
                 c->state = 1;
                 return greeting_len;  /* Consumed full greeting */
             }
         }
         /* Need more data */
-        LOG_DEBUG("state 0: need more data (have %zu)\n", len);
         return 0;
     }
 
     if (c->state == 1) {
         /* CONNECT request - determine required length based on address type */
-        LOG_DEBUG("state 1: processing CONNECT, len=%zu\n", len);
         uint8_t atype = (len >= 4) ? data[3] : 0;
         size_t min_len;
         
@@ -1804,12 +1748,6 @@ static size_t socks5_handle_data(socks5_client_t *c,
                 sess->send_cap = new_cap;
                 memcpy(sess->send_buf, data, min_len);
                 sess->send_len = min_len;
-                LOG_DEBUG("state 1: queued CONNECT request (%zu bytes) for server, session=%d\n", min_len, session_idx);
-                LOG_DEBUG("state 1: CONNECT bytes: ");
-                for (size_t i = 0; i < min_len && i < 32; i++) {
-                    fprintf(stderr, "%02x ", data[i]);
-                }
-                fprintf(stderr, "\n");
             } else {
                 LOG_ERR("state 1: failed to alloc send_buf for CONNECT request\n");
             }
@@ -1819,7 +1757,6 @@ static size_t socks5_handle_data(socks5_client_t *c,
 
         /* Don't send success yet - wait for server acknowledgment.
          * The SOCKS5 success will be sent when we receive the first upstream response. */
-        LOG_DEBUG("state 1: consumed CONNECT request, returning %zu\n", min_len);
         return min_len;
     }
 
@@ -1857,8 +1794,6 @@ static size_t socks5_handle_data(socks5_client_t *c,
         g_stats.tx_total += len;
         g_stats.tx_bytes_sec += len;
         
-        LOG_DEBUG("Session %d: queued %zu bytes from SOCKS5 (total send_buf: %zu)\n",
-                  c->session_idx, len, sess->send_len);
         return len;  /* Consume all tunnel data */
     }
     
@@ -1879,7 +1814,6 @@ static void on_socks5_read(uv_stream_t *s, ssize_t nread, const uv_buf_t *buf) {
      * Note: libuv already wrote data to c->buf + c->buf_len via on_socks5_alloc. */
     size_t incoming = (size_t)nread;
     if (c->buf_len + incoming > sizeof(c->buf)) {
-        LOG_DEBUG("SOCKS5 buffer overflow, resetting\n");
         c->buf_len = 0;  /* Reset on overflow - malformed packet */
     } else {
         /* Data is already in place via on_socks5_alloc, just update length */
@@ -1887,10 +1821,8 @@ static void on_socks5_read(uv_stream_t *s, ssize_t nread, const uv_buf_t *buf) {
     }
 
     /* Process accumulated data in loop - handshake may complete across multiple reads */
-    LOG_DEBUG("on_socks5_read: starting processing loop, buf_len=%zu\n", c->buf_len);
     while (c->buf_len > 0) {
         size_t consumed = socks5_handle_data(c, c->buf, c->buf_len);
-        LOG_DEBUG("on_socks5_read: consumed=%zu, new buf_len will be %zu\n", consumed, c->buf_len - consumed);
         
         /* If no progress was made, break to avoid infinite loop (incomplete packet) */
         if (consumed == 0) break;
@@ -1901,7 +1833,6 @@ static void on_socks5_read(uv_stream_t *s, ssize_t nread, const uv_buf_t *buf) {
         }
         c->buf_len -= consumed;
     }
-    LOG_DEBUG("on_socks5_read: processing loop done, buf_len=%zu\n", c->buf_len);
 }
 
 static void on_socks5_alloc(uv_handle_t *h, size_t sz, uv_buf_t *buf) {
@@ -1978,21 +1909,6 @@ static void on_dns_recv(uv_udp_t *h,
     int ridx = q->resolver_idx;
 
     if (nread > 0) {
-        /* DEBUG: Log response source and size */
-        char src_ip[46] = "unknown";
-        if (addr) {
-            uv_inet_ntop(AF_INET, &((const struct sockaddr_in*)addr)->sin_addr, src_ip, sizeof(src_ip));
-        }
-        LOG_DEBUG("DNS response from %s: %zd bytes (resolver_idx=%d, session=%d, seq=%u)\n",
-                  src_ip, nread, ridx, q->session_idx, q->seq);
-
-        /* DEBUG: Print response header bytes */
-        LOG_DEBUG("Response header: ");
-        for (size_t i = 0; i < (nread < 16 ? nread : 16); i++) {
-            fprintf(stderr, "%02x ", (unsigned char)buf->base[i]);
-        }
-        fprintf(stderr, "\n");
-
         /* Measure RTT (fix #14: variable is now correctly named sent_ms) */
         double rtt = (double)(uv_hrtime() / 1000000ULL - q->sent_ms);
         if (rtt < 0.0) rtt = 0.0;
@@ -2007,19 +1923,10 @@ static void on_dns_recv(uv_udp_t *h,
         if (rc == RCODE_OKAY)
         {
             dns_query_t *resp = (dns_query_t*)decoded;
-            LOG_DEBUG("DNS decode OK: id=%d, rcode=%d, ancount=%d\n",
-                      resp->id, resp->rcode, resp->ancount);
             /* Walk answer section for TXT records */
             for (int i = 0; i < (int)resp->ancount; i++) {
                 dns_answer_t *ans = &resp->answers[i];
-                LOG_DEBUG("Answer %d: type=%d (TXT=%d), len=%d\n",
-                          i, ans->generic.type, RR_TXT, ans->txt.len);
                 if (ans->generic.type == RR_TXT && ans->txt.len > 0) {
-                    LOG_DEBUG("TXT record content (%d bytes): ", ans->txt.len);
-                    for (size_t j = 0; j < (ans->txt.len < 32 ? ans->txt.len : 32); j++) {
-                        fprintf(stderr, "%02x ", (unsigned char)ans->txt.text[j]);
-                    }
-                    fprintf(stderr, "\n");
                     /* Check if this is a SYNC response (comma-separated IPs)
                      * A valid SYNC response should look like IP addresses:
                      * e.g., "1.2.3.4,5.6.7.8" - check first part looks like IP
@@ -2058,7 +1965,6 @@ static void on_dns_recv(uv_udp_t *h,
                         uint8_t decoded[4096];
                         ptrdiff_t decoded_len = base64_decode(decoded, ans->txt.text, ans->txt.len);
                         if (decoded_len < 0) {
-                            LOG_DEBUG("Session %d: base64 decode failed\n", q->session_idx);
                             continue;
                         }
                         
@@ -2066,8 +1972,6 @@ static void on_dns_recv(uv_udp_t *h,
                          * A binary null byte (0x00) encodes to "AA==" in Base64, so we must
                          * check the decoded payload, not the raw Base64 text. */
                         if (decoded_len == 0 || (decoded_len == 1 && decoded[0] == '\0')) {
-                            LOG_DEBUG("Session %d: received ack packet (decoded_len=%zd)\n", 
-                                     q->session_idx, decoded_len);
                             /* Send SOCKS5 success on heartbeat/ack - this signals upstream is established.
                              * The server sends 0x00 as an ACK when the CONNECT succeeds. */
                             int sidx = q->session_idx;
@@ -2078,7 +1982,6 @@ static void on_dns_recv(uv_udp_t *h,
                                 if (s->client_ptr && !s->socks5_connected) {
                                     socks5_client_t *c = (socks5_client_t*)s->client_ptr;
                                     uint8_t ok[10] = {0x05,0x00,0x00,0x01,127,0,0,1,0x04,0x38};
-                                    LOG_DEBUG("Session %d: sending SOCKS5 success response (heartbeat ack)\n", sidx);
                                     socks5_send(c, ok, 10);
                                     s->socks5_connected = true;
                                     LOG_INFO("Session %d: sent SOCKS5 success (server ack received)\n", sidx);
@@ -2120,20 +2023,6 @@ static void on_dns_recv(uv_udp_t *h,
                                 g_stats.rx_total += (size_t)decoded_len;
                                 g_stats.rx_bytes_sec += (size_t)decoded_len;
                                 
-                                /* DEBUG: Log raw bytes received (hex dump) */
-                                LOG_DEBUG("Session %d: received %zd bytes from server (base64 len=%d)\n", 
-                                          sidx, decoded_len, ans->txt.len);
-                                LOG_DEBUG("Session %d: raw hex (first 32 bytes): ", sidx);
-                                size_t display_len = (s->recv_len > 32) ? 32 : s->recv_len;
-                                size_t offset = (s->recv_len > (size_t)decoded_len) ? s->recv_len - (size_t)decoded_len : 0;
-                                for (size_t i = 0; i < display_len; i++) {
-                                    fprintf(stderr, "%02x ", s->recv_buf[offset + i]);
-                                }
-                                fprintf(stderr, "\n");
-                                LOG_DEBUG("Session %d: as string: '%.*s'\n", sidx, 
-                                          (int)(decoded_len > 64 ? 64 : decoded_len),
-                                          (char*)s->recv_buf + s->recv_len - (size_t)decoded_len);
-                                
                                 /* Flush received data to SOCKS5 client */
                                 if (s->client_ptr) {
                                     socks5_client_t *c = (socks5_client_t*)s->client_ptr;
@@ -2142,14 +2031,9 @@ static void on_dns_recv(uv_udp_t *h,
                                      * This indicates the server has acknowledged our CONNECT. */
                                     if (!s->socks5_connected) {
                                         uint8_t ok[10] = {0x05,0x00,0x00,0x01,127,0,0,1,0x04,0x38};
-                                        LOG_DEBUG("Session %d: sending SOCKS5 success response (10 bytes) BEFORE flushing %zu bytes of HTTP data\n", 
-                                                  sidx, s->recv_len);
                                         socks5_send(c, ok, 10);
                                         s->socks5_connected = true;
                                         LOG_INFO("Session %d: sent SOCKS5 success (server ack received)\n", sidx);
-                                    } else {
-                                        LOG_DEBUG("Session %d: SOCKS5 already connected, flushing %zu bytes\n", 
-                                                  sidx, s->recv_len);
                                     }
                                     
                                     socks5_flush_recv_buf(c);
@@ -2233,13 +2117,9 @@ static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
      * This allows tunnel traffic even when all resolvers have been marked dead
      * during initialization phase but might still work intermittently. */
     if (ridx < 0) {
-        LOG_WARN("fire_dns_chunk_symbol: no active resolver, trying dead ones (session_idx=%d, seq=%u)\n",
-                 session_idx, seq);
         uv_mutex_lock(&g_pool.lock);
         if (g_pool.dead_count > 0) {
             ridx = g_pool.dead[rand() % g_pool.dead_count];
-            LOG_DEBUG("fire_dns_chunk_symbol: using DEAD resolver %d (%s) as fallback\n",
-                      ridx, g_pool.resolvers[ridx].ip);
         }
         uv_mutex_unlock(&g_pool.lock);
     }
@@ -2250,8 +2130,6 @@ static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
         g_stats.queries_dropped++;
         return;
     }
-    LOG_DEBUG("fire_dns_chunk_symbol: using resolver %d (%s) for session %d seq %u\n",
-              ridx, g_pool.resolvers[ridx].ip, session_idx, seq);
 
     resolver_t *r = &g_pool.resolvers[ridx];
 
@@ -2292,19 +2170,6 @@ static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
     memcpy(&q->dest, &r->addr, sizeof(q->dest));
     q->dest.sin_port = htons(53);
 
-    /* DEBUG: Log destination and packet info */
-    char dest_ip[46];
-    uv_inet_ntop(AF_INET, &q->dest.sin_addr, dest_ip, sizeof(dest_ip));
-    LOG_DEBUG("Sending to resolver %s at %s:%d (packet len=%zu)\n",
-              r->ip, dest_ip, ntohs(q->dest.sin_port), q->sendlen);
-
-    /* DEBUG: Print first 32 bytes of DNS packet for verification */
-    LOG_DEBUG("DNS packet header (first 32 bytes): ");
-    for (size_t i = 0; i < (q->sendlen < 32 ? q->sendlen : 32); i++) {
-        fprintf(stderr, "%02x ", q->sendbuf[i]);
-    }
-    fprintf(stderr, "\n");
-
     uv_udp_init(g_loop, &q->udp);
     q->udp.data = q;
     q->sent_ms  = uv_hrtime() / 1000000ULL;
@@ -2337,8 +2202,6 @@ static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
         uv_close((uv_handle_t*)&q->udp, on_dns_query_close);
         uv_close((uv_handle_t*)&q->timer, on_dns_query_close);
     } else {
-        LOG_DEBUG("DNS query sent to %s:%d (len=%zu, domain=%s)\n",
-                  r->ip, ntohs(q->dest.sin_port), q->sendlen, domain);
         g_stats.queries_sent++;
     }
 }
@@ -2353,10 +2216,7 @@ static void on_poll_timer(uv_timer_t *t) {
         session_t *sess = &g_sessions[i];
         if (!sess->established || sess->closed) continue;
 
-        LOG_DEBUG("Session %d: poll timer check - send_len=%zu, established=%d, closed=%d\n",
-                  i, sess->send_len, sess->established, sess->closed);
         if (sess->send_len > 0) {
-            LOG_DEBUG("Session %d: poll timer sending %zu bytes (compressed+encrypted+FEC)\n", i, sess->send_len);
             /* 1. COMPRESS */
             codec_result_t cret = codec_compress(sess->send_buf, sess->send_len, 3);
             if (cret.error) { LOG_ERR("Compression failed\n"); continue; }
