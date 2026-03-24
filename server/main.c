@@ -782,14 +782,28 @@ static void on_server_recv(uv_udp_t *h,
                                 cr->session_idx = sidx;
                                 strncpy(cr->target_host, target_host, sizeof(cr->target_host) - 1);
                                 cr->target_port = target_port;
-                                size_t hdr_sz = (atype == 0x01) ? 10 : (6 + p[4]);
+                                /* SOCKS5 header sizes:
+                                 * - IPv4 (0x01): VER(1) + CMD(1) + RSV(1) + ATYP(1) + IP(4) + PORT(2) = 10 bytes
+                                 * - Domain (0x03): VER(1) + CMD(1) + RSV(1) + ATYP(1) + DLEN(1) + DOMAIN(dlen) + PORT(2) = 7 + dlen bytes
+                                 * - IPv6 (0x04): VER(1) + CMD(1) + RSV(1) + ATYP(1) + IP(16) + PORT(2) = 22 bytes
+                                 */
+                                size_t hdr_sz;
+                                if (atype == 0x01) {
+                                    hdr_sz = 10;  /* IPv4 */
+                                } else if (atype == 0x03) {
+                                    hdr_sz = 7 + p[4];  /* Domain: 7 bytes + domain length */
+                                } else if (atype == 0x04) {
+                                    hdr_sz = 22;  /* IPv6 */
+                                } else {
+                                    hdr_sz = l;  /* Unknown, treat all as header */
+                                }
                                 if (l > hdr_sz) {
                                     cr->payload_len = l - hdr_sz;
                                     cr->payload = malloc(cr->payload_len);
                                     memcpy(cr->payload, p + hdr_sz, cr->payload_len);
                                 }
-                                LOG_INFO("Connecting upstream for session %d to %s:%d\n",
-                                         sidx, target_host, target_port);
+                                LOG_INFO("Connecting upstream for session %d to %s:%d (hdr_sz=%zu, payload_len=%zu)\n",
+                                         sidx, target_host, target_port, hdr_sz, cr->payload_len);
                                 uv_tcp_init(g_loop, &sess->upstream_tcp);
                                 /* Enable TCP_NODELAY to minimize latency for interactive traffic */
                                 uv_tcp_nodelay(&sess->upstream_tcp, 1);
