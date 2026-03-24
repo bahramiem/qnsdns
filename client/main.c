@@ -1693,17 +1693,23 @@ static size_t socks5_handle_data(socks5_client_t *c,
     LOG_DEBUG("socks5_handle_data: state=%d, len=%zu, buf[0]=%02x\n", c->state, len, len > 0 ? data[0] : 0);
     /* SOCKS5 state machine */
     if (c->state == 0) {
-        /* Auth method negotiation: reply NO AUTH */
-        LOG_DEBUG("state 0: checking greeting, len=%zu (need >=3)\n", len);
-        if (len >= 3 && data[0] == 0x05) {
-            uint8_t reply[2] = {0x05, 0x00};
-            LOG_DEBUG("state 0: sending auth reply 05 00\n");
-            socks5_send(c, reply, 2);
-            c->state = 1;
-            return 3;  /* Consumed auth method (VER + NMETHODS + METHODS[0]) */
+        /* Auth method negotiation: reply NO AUTH
+         * SOCKS5 greeting: VER(1) + NMETHODS(1) + METHODS(NMETHODS bytes)
+         * Total length = 2 + NMETHODS */
+        LOG_DEBUG("state 0: checking greeting, len=%zu\n", len);
+        if (len >= 2 && data[0] == 0x05) {
+            uint8_t nmethods = data[1];
+            size_t greeting_len = 2 + nmethods;
+            if (len >= greeting_len) {
+                uint8_t reply[2] = {0x05, 0x00};
+                LOG_DEBUG("state 0: sending auth reply 05 00 (consumed %zu bytes)\n", greeting_len);
+                socks5_send(c, reply, 2);
+                c->state = 1;
+                return greeting_len;  /* Consumed full greeting */
+            }
         }
         /* Need more data */
-        LOG_DEBUG("state 0: need more data (have %zu, need >=3)\n", len);
+        LOG_DEBUG("state 0: need more data (have %zu)\n", len);
         return 0;
     }
 
@@ -1847,13 +1853,14 @@ static void on_socks5_read(uv_stream_t *s, ssize_t nread, const uv_buf_t *buf) {
     }
 
     /* Accumulate incoming data in buffer to handle fragmentation.
-     * SOCKS5 handshake packets may arrive fragmented across multiple reads. */
+     * SOCKS5 handshake packets may arrive fragmented across multiple reads.
+     * Note: libuv already wrote data to c->buf + c->buf_len via on_socks5_alloc. */
     size_t incoming = (size_t)nread;
     if (c->buf_len + incoming > sizeof(c->buf)) {
         LOG_DEBUG("SOCKS5 buffer overflow, resetting\n");
         c->buf_len = 0;  /* Reset on overflow - malformed packet */
     } else {
-        memcpy(c->buf + c->buf_len, buf->base, incoming);
+        /* Data is already in place via on_socks5_alloc, just update length */
         c->buf_len += incoming;
     }
 
