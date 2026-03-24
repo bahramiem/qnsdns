@@ -2342,52 +2342,48 @@ static void on_dns_recv(uv_udp_t *h,
                                     LOG_DEBUG("ACK packet: seq=0 (no header)\n");
                                 }
 
-                                /* Insert ALL packets into reorder buffer (unified flow) */
-                                if (has_seq || is_ack) {
+                                /* Handle DATA and ACK packets.
+                                 * DATA packets go into reorder buffer.
+                                 * ACK packets (null byte) trigger SOCKS5 success but don't get buffered. */
+                                if (has_seq && !is_ack) {
+                                    /* Data packet: insert into reorder buffer for sequencing */
                                     reorder_buffer_insert(&s->reorder_buf, seq, payload, payload_len);
+                                }
+                                /* ACK packets (is_ack=true) skip buffering - they're just heartbeats */
 
-                                    /* Send SOCKS5 success when we process seq=0 (ACK packet)
-                                     * This works whether ACK arrives first OR after data is flushed */
-                                    if (seq == 0 && is_ack && s->client_ptr && !s->socks5_connected) {
-                                        socks5_client_t *c = (socks5_client_t*)s->client_ptr;
-                                        uint8_t ok[10] = {0x05,0x00,0x00,0x01,127,0,0,1,0x04,0x38};
-                                        socks5_send(c, ok, 10);
-                                        s->socks5_connected = true;
-                                        LOG_INFO("Session %d: sent SOCKS5 success (ACK seq=0 received)\n", sidx);
-                                    }
+                                /* Send SOCKS5 success when we receive seq=0 ACK packet */
+                                if (seq == 0 && is_ack && s->client_ptr && !s->socks5_connected) {
+                                    socks5_client_t *c = (socks5_client_t*)s->client_ptr;
+                                    uint8_t ok[10] = {0x05,0x00,0x00,0x01,127,0,0,1,0x04,0x38};
+                                    socks5_send(c, ok, 10);
+                                    s->socks5_connected = true;
+                                    LOG_INFO("Session %d: sent SOCKS5 success (ACK seq=0 received)\n", sidx);
+                                }
 
-                                    /* Try to flush consecutive packets from reorder buffer */
-                                    uint8_t flush_buf[16384];
-                                    size_t flush_len = 0;
-                                    if (reorder_buffer_flush(&s->reorder_buf, flush_buf,
-                                                           sizeof(flush_buf), &flush_len) > 0) {
-                                        /* Skip ACK payload (null byte) in flushed data */
-                                        size_t data_start = 0;
-                                        if (flush_len > 0 && flush_buf[0] == '\0') {
-                                            data_start = 1;  /* Skip the ACK byte */
+                                /* Try to flush consecutive packets from reorder buffer */
+                                uint8_t flush_buf[16384];
+                                size_t flush_len = 0;
+                                if (reorder_buffer_flush(&s->reorder_buf, flush_buf,
+                                                        sizeof(flush_buf), &flush_len) > 0) {
+                                    if (flush_len > 0) {
+                                        /* Append flushed data to session recv buffer */
+                                        size_t need = s->recv_len + flush_len;
+                                        if (need > s->recv_cap) {
+                                            size_t new_cap = need + 4096;
+                                            if (new_cap > MAX_SESSION_BUFFER) new_cap = MAX_SESSION_BUFFER;
+                                            uint8_t *new_buf = realloc(s->recv_buf, new_cap);
+                                            if (!new_buf) {
+                                                LOG_ERR("Session %d: failed to grow recv buffer\n", sidx);
+                                            } else {
+                                                s->recv_buf = new_buf;
+                                                s->recv_cap = new_cap;
+                                            }
                                         }
-                                        size_t data_len = flush_len - data_start;
-
-                                        if (data_len > 0) {
-                                            /* Append flushed data to session recv buffer */
-                                            size_t need = s->recv_len + data_len;
-                                            if (need > s->recv_cap) {
-                                                size_t new_cap = need + 4096;
-                                                if (new_cap > MAX_SESSION_BUFFER) new_cap = MAX_SESSION_BUFFER;
-                                                uint8_t *new_buf = realloc(s->recv_buf, new_cap);
-                                                if (!new_buf) {
-                                                    LOG_ERR("Session %d: failed to grow recv buffer\n", sidx);
-                                                } else {
-                                                    s->recv_buf = new_buf;
-                                                    s->recv_cap = new_cap;
-                                                }
-                                            }
-                                            if (s->recv_cap >= s->recv_len + data_len) {
-                                                memcpy(s->recv_buf + s->recv_len, flush_buf + data_start, data_len);
-                                                s->recv_len += data_len;
-                                                g_stats.rx_total += data_len;
-                                                g_stats.rx_bytes_sec += data_len;
-                                            }
+                                        if (s->recv_cap >= s->recv_len + flush_len) {
+                                            memcpy(s->recv_buf + s->recv_len, flush_buf, flush_len);
+                                            s->recv_len += flush_len;
+                                            g_stats.rx_total += flush_len;
+                                            g_stats.rx_bytes_sec += flush_len;
                                         }
                                     }
                                 } else if (!is_ack && payload_len > 0) {
