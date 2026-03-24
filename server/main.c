@@ -341,6 +341,19 @@ static void on_upstream_connect(uv_connect_t *req, int status) {
     if (cr->payload && cr->payload_len > 0)
         upstream_write_and_read(sidx, cr->payload, cr->payload_len);
 
+    /* Send SOCKS5 ACK back to client via DNS tunnel
+     * The ACK (0x00) signals that upstream connection is established.
+     * Client will send SOCKS5 success reply to its local SOCKS5 client. */
+    if (sess->client_addr.sin_family != 0) {
+        uint8_t reply[512];
+        size_t rlen = sizeof(reply);
+        uint8_t ack[1] = {0};  /* ACK byte to signal CONNECT success */
+        /* Use default query_id of 0 for ACK - client doesn't need specific ID */
+        if (build_txt_reply(reply, &rlen, 0, "", ack, 1, 512) == 0) {
+            send_udp_reply(&sess->client_addr, reply, rlen);
+        }
+    }
+
     free(cr->payload);
     free(cr);
 }
@@ -719,15 +732,35 @@ static void on_server_recv(uv_udp_t *h,
                                         free(cr);
                                     }
                                 } else if (atype == 0x01) {
-                                    /* IPv4 address - connect directly */
-                                    struct sockaddr_in up_addr;
-                                    uv_ip4_addr(target_host, target_port, &up_addr);
-                                    uv_tcp_connect(&cr->connect, &sess->upstream_tcp, (const struct sockaddr*)&up_addr, on_upstream_connect);
+                                    /* IPv4 address - use getaddrinfo for robustness (handles invalid IPs gracefully) */
+                                    struct addrinfo hints = {0};
+                                    hints.ai_family = AF_INET;  /* IPv4 only */
+                                    hints.ai_socktype = SOCK_STREAM;
+                                    char port_str[6];
+                                    snprintf(port_str, sizeof(port_str), "%d", target_port);
+                                    uv_getaddrinfo_t *resolver = malloc(sizeof(*resolver));
+                                    resolver->data = cr;
+                                    int r = uv_getaddrinfo(g_loop, resolver, on_upstream_resolve, target_host, port_str, &hints);
+                                    if (r != 0) {
+                                        LOG_ERR("Failed to resolve IPv4 address %s:%d\n", target_host, target_port);
+                                        free(resolver);
+                                        free(cr);
+                                    }
                                 } else if (atype == 0x04) {
-                                    /* IPv6 address - connect directly */
-                                    struct sockaddr_in6 up_addr6;
-                                    uv_ip6_addr(target_host, target_port, &up_addr6);
-                                    uv_tcp_connect(&cr->connect, &sess->upstream_tcp, (const struct sockaddr*)&up_addr6, on_upstream_connect);
+                                    /* IPv6 address - use getaddrinfo for robustness */
+                                    struct addrinfo hints = {0};
+                                    hints.ai_family = AF_INET6;  /* IPv6 only */
+                                    hints.ai_socktype = SOCK_STREAM;
+                                    char port_str[6];
+                                    snprintf(port_str, sizeof(port_str), "%d", target_port);
+                                    uv_getaddrinfo_t *resolver = malloc(sizeof(*resolver));
+                                    resolver->data = cr;
+                                    int r = uv_getaddrinfo(g_loop, resolver, on_upstream_resolve, target_host, port_str, &hints);
+                                    if (r != 0) {
+                                        LOG_ERR("Failed to resolve IPv6 address %s:%d\n", target_host, target_port);
+                                        free(resolver);
+                                        free(cr);
+                                    }
                                 } else {
                                     /* Unknown address type - reject */
                                     LOG_ERR("Unknown SOCKS5 address type: %d for %s:%d\n", atype, target_host, target_port);

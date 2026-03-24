@@ -24,8 +24,10 @@
 #define DNSTUN_MAX_LABEL_LEN     63
 #define DNSTUN_MAX_QNAME_LEN     253
 
-/* Buffer sizes for large downstream MTU (up to 4096 bytes) */
-#define DNSTUN_MAX_DOWNSTREAM_MTU   4096
+/* Buffer sizes for downstream MTU
+ * Default to 512 for DNS TXT compatibility (many resolvers drop >512 byte responses)
+ * Server will use this unless client reports different preference via handshake */
+#define DNSTUN_MAX_DOWNSTREAM_MTU   512    /* Conservative default for DNS TXT */
 #define DNSTUN_SERVER_BUFFER_SIZE   65536  /* 64KB */
 #define DNSTUN_CLIENT_BUFFER_SIZE   65536  /* 64KB */
 
