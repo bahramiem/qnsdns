@@ -464,7 +464,7 @@ static int build_txt_reply_with_seq(uint8_t *outbuf, size_t *outlen,
 typedef struct {
     uv_udp_send_t    send_req;
     struct sockaddr_in dest;
-    uint8_t          reply_buf[512]; /* Fix: was DNS_BUFFER_UDP which is only 64 bytes on 64-bit systems */
+    uint8_t          reply_buf[4096]; /* Larger buffer for EDNS0 / multi-RR replies */
     size_t           reply_len;
 } udp_reply_t;
 
@@ -804,6 +804,9 @@ static void on_server_recv(uv_udp_t *h,
                                 }
                                 LOG_INFO("Connecting upstream for session %d to %s:%d (hdr_sz=%zu, payload_len=%zu)\n",
                                          sidx, target_host, target_port, hdr_sz, cr->payload_len);
+                                
+                                /* Reset downstream sequence for the new connection in this session index */
+                                sess->downstream_seq = 0;
                                 uv_tcp_init(g_loop, &sess->upstream_tcp);
                                 /* Enable TCP_NODELAY to minimize latency for interactive traffic */
                                 uv_tcp_nodelay(&sess->upstream_tcp, 1);
@@ -895,7 +898,7 @@ static void on_server_recv(uv_udp_t *h,
         }
         uv_mutex_unlock(&g_swarm_lock);
 
-        uint8_t reply[512]; /* Fix: was DNS_BUFFER_UDP which is only 64 bytes on 64-bit systems */
+        uint8_t reply[4096]; 
         size_t  rlen = sizeof(reply);
         if (build_txt_reply_with_seq(reply, &rlen, query_id, qname,
                             (const uint8_t*)swarm_text,
@@ -917,7 +920,7 @@ static void on_server_recv(uv_udp_t *h,
     }
 
     /* ── Build reply — stuff any pending upstream data ───────────── */
-        uint8_t reply[512]; /* Fix: was DNS_BUFFER_UDP which is only 64 bytes on 64-bit systems */
+        uint8_t reply[4096]; 
         size_t  rlen = sizeof(reply);
     uint16_t mtu = sess->cl_downstream_mtu;
     if (mtu < 16 || mtu > 4096) mtu = 512;
