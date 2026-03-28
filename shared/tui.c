@@ -95,6 +95,13 @@
 #define BAR_LEFT        "▌"
 #define BAR_RIGHT       "▐"
 
+/* ── Menu Arrow Character (Windows-compatible) ─────────────────────────────*/
+#ifdef _WIN32
+#define MENU_ARROW      ">"
+#else
+#define MENU_ARROW      "▶"
+#endif
+
 /* ── Layout Constants ──────────────────────────────────────────────────────*/
 #define SIDEBAR_WIDTH   22
 #define LOG_HEIGHT      8
@@ -228,15 +235,15 @@ static void draw_sidebar(tui_ctx_t *t, int x, int y, int height) {
     printf("\033[%d;%dH" ANSI_BOLD ANSI_BR_CYAN " ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓" ANSI_RESET, y + 4, x + 1);
     
     /* Menu Items */
-    const char *items[] = {"Dashboard", "Resolvers", "Config", "Debug Logs", "Help"};
-    const char *keys[] = {"1", "2", "3", "4", "5"};
+    const char *items[] = {"Dashboard", "Resolvers", "Config", "Debug Logs", "Help", "Page 6"};
+    const char *keys[] = {"1", "2", "3", "4", "5", "6"};
     
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 6; i++) {
         int row = y + 7 + i * 2;
         int is_selected = (t->panel == i);
         
         if (is_selected) {
-            printf("\033[%d;%dH" ANSI_BG_BLUE ANSI_BR_WHITE " ▶ %s. %-14s " ANSI_RESET, 
+            printf("\033[%d;%dH" ANSI_BG_BLUE ANSI_BR_WHITE " " MENU_ARROW " %s. %-14s " ANSI_RESET, 
                    row, x + 1, keys[i], items[i]);
         } else {
             printf("\033[%d;%dH" ANSI_GRAY "   %s." ANSI_RESET " %-14s ", 
