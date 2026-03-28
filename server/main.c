@@ -743,6 +743,8 @@ static void on_server_recv(uv_udp_t *h,
     /* chunk_info: high nibble = chunk_total-1, low nibble = fec_k */
     uint8_t chunk_total = chunk_get_total(hdr.chunk_info);
     uint8_t fec_k = chunk_get_fec_k(hdr.chunk_info);
+    LOG_INFO("DEBUG FEC: chunk_total=%u, fec_k=%u, flags=0x%02x, payload_len=%zu\n",
+             chunk_total, fec_k, hdr.flags, payload_len);
 
     /* Extract capability header from payload (if present).
      * This tells the server the client's MTU/encoding for optimal response sizing.
