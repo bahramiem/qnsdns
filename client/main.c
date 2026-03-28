@@ -2138,9 +2138,14 @@ static size_t socks5_handle_data(socks5_client_t *c,
             LOG_ERR("state 1: min_len is 0, not queuing CONNECT request\n");
         }
 
-        /* Don't send success yet - wait for server acknowledgment.
-         * The SOCKS5 success will be sent when we receive the first upstream response. */
-        LOG_INFO("SOCKS5 state 1 -> 2 (Tunnel). Consumed %zu bytes.\n", min_len);
+        /* [Fix] Optimistic Acknowledge:
+         * Standard SOCKS5 clients (like curl) wait for our "Success" reply before sending data.
+         * Previously, we waited for a server DNS ACK, which often timed out curl.
+         * Now we reply 'connected' immediately to pull the user data into our buffer. */
+        uint8_t reply[10] = {0x05, 0x00, 0x00, 0x01, 0,0,0,0,0,0};
+        socks5_send(c, reply, 10);
+        
+        LOG_INFO("SOCKS5 state 1 -> 2 (Tunnel). Consumed %zu bytes. (Optimistic ACK sent)\n", min_len);
         return min_len;
     }
 
