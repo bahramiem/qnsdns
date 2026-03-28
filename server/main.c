@@ -682,6 +682,7 @@ static void on_server_recv(uv_udp_t *h,
     /* Extract fields from new 8-bit header */
     bool is_poll = (hdr.flags & CHUNK_FLAG_POLL) != 0;
     bool is_encrypted = (hdr.flags & CHUNK_FLAG_ENCRYPTED) != 0;
+    bool is_sync = false;
     uint8_t session_id = chunk_get_session_id(&hdr);
     uint16_t seq = hdr.seq;
     
@@ -796,7 +797,7 @@ static void on_server_recv(uv_udp_t *h,
                 codec_result_t dret = {0};
 
                 /* 1. DECRYPT (Optional) */
-                if (hdr.flags & 0x01) {
+                if (is_encrypted) {
                     dret = codec_decrypt(fdec.data, fdec.len, g_cfg.psk);
                     if (!dret.error) {
                         dec_in = dret.data;
