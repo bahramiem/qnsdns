@@ -113,6 +113,7 @@ typedef struct resolver {
     /* Loss */
     double             loss_rate;      /* EWMA 0.0–1.0 */
     uint32_t           fec_k;          /* current FEC redundancy ratio */
+    int                fail_count;     /* consecutive failures for death threshold */
 
     /* Penalty box */
     double             cooldown_ms;    /* measured recovery duration */

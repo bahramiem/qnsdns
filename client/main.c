@@ -1554,7 +1554,9 @@ static void resolver_init_phase(void) {
         return;
     }
 
-    int wait_ms = (g_cfg.test_timeout_ms > 0) ? g_cfg.test_timeout_ms + 1000 : 2500;
+    /* [Fix] Increase wait_ms for Linux/High-latency networks
+       From 2500ms to 5000ms to give slow resolvers a chance to respond. */
+    int wait_ms = (g_cfg.test_timeout_ms > 0) ? g_cfg.test_timeout_ms + 1000 : 5000;
 
     /* ─── Phase 1: Long QNAME Test ─── */
     LOG_INFO("--- Phase 1: Testing Long QNAME support ---\n");
@@ -2509,6 +2511,13 @@ static void on_dns_recv(uv_udp_t *h,
     }
 
     if (!uv_is_closing((uv_handle_t*)&q->udp)) {
+        /* [Fix] Resolver Resilience - Only penalise after 20 consecutive losses */
+        resolver_t *r = &g_pool.resolvers[ridx];
+        if (r->fail_count >= 20) {
+            LOG_ERR("Resolver %s exceeded 20 failures, penalising...\n", r->ip);
+            rpool_penalise(&g_pool, ridx);
+            r->fail_count = 0; /* Clear after penalty */
+        }
         uv_close((uv_handle_t*)&q->udp, on_dns_query_close);
         uv_close((uv_handle_t*)&q->timer, on_dns_query_close);
     }
@@ -2518,6 +2527,9 @@ static void on_dns_send(uv_udp_send_t *sr, int status) {
     if (status != 0) {
         dns_query_ctx_t *q = sr->handle->data;
         if (!uv_is_closing((uv_handle_t*)&q->udp)) {
+            /* [Fix] Linux UDP Send Error Logging */
+            LOG_ERR("uv_udp_send failed with status %d (%s) for resolver %d\n", 
+                    status, uv_strerror(status), q->resolver_idx);
             rpool_on_loss(&g_pool, q->resolver_idx);
             g_stats.queries_lost++;
             uv_close((uv_handle_t*)&q->udp, on_dns_query_close);
@@ -2627,7 +2639,8 @@ static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
 
     uv_timer_init(g_loop, &q->timer);
     q->timer.data = q;
-    uv_timer_start(&q->timer, on_dns_timeout, 5000, 0);  /* 5 second timeout */
+    /* [Fix] Increase DNS timeout from 5s to 8s for Linux/unstable paths */
+    uv_timer_start(&q->timer, on_dns_timeout, 8000, 0);
 
     uv_udp_recv_start(&q->udp, on_dns_alloc, on_dns_recv);
 

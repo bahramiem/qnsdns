@@ -146,6 +146,7 @@ void rpool_on_ack(resolver_pool_t *pool, int idx, double rtt_ms) {
 
     /* EWMA loss rate: successful ACK drives it down */
     r->loss_rate = 0.95 * r->loss_rate + 0.05 * 0.0;
+    r->fail_count = 0; /* Success resets the consecutive failure counter */
 
     uv_mutex_unlock(&pool->stat_locks[idx % 64]);
 }
@@ -161,6 +162,7 @@ void rpool_on_loss(resolver_pool_t *pool, int idx) {
 
     /* EWMA loss update */
     r->loss_rate = 0.95 * r->loss_rate + 0.05 * 1.0;
+    r->fail_count++;
 
     uv_mutex_unlock(&pool->stat_locks[idx % 64]);
 }
