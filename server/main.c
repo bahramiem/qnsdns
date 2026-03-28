@@ -727,7 +727,7 @@ static void on_server_recv(uv_udp_t *h,
     sess->client_addr       = *src;
     
     /* MTU values from server config (no longer in header) */
-    sess->cl_downstream_mtu = DNSTUN_MAX_DOWNSTREAM_MTU;
+    sess->cl_downstream_mtu = g_cfg.downstream_mtu;
     sess->cl_enc_format     = 0; /* Will be determined by client request */
     sess->cl_loss_pct       = 0;  /* No longer in header - could add later if needed */
     sess->cl_fec_k          = fec_k;

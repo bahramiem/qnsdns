@@ -1646,7 +1646,7 @@ static void resolver_init_phase(void) {
                                  true, 0);
             
             init_mtu_binary_search(&results[i].down_mtu_search,
-                                 0, g_cfg.max_download_mtu > 0 ? g_cfg.max_download_mtu : 1200,
+                                 0, g_cfg.downstream_mtu > 0 ? g_cfg.downstream_mtu : 220,
                                  30, g_cfg.min_download_mtu,
                                  g_cfg.mtu_test_retries > 0 ? g_cfg.mtu_test_retries : 2,
                                  false, results[i].upstream_mtu);
