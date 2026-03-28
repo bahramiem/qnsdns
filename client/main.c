@@ -1703,10 +1703,16 @@ static void resolver_init_phase(void) {
             free_mtu_binary_search(&results[i].up_mtu_search);
             free_mtu_binary_search(&results[i].down_mtu_search);
         } else if (results[i].longname_supported && results[i].nxdomain_correct) {
-            /* Passed Phase 1 and 2, but failed Phase 3 - no EDNS/TXT support */
-            strncpy(r->fail_reason, "no EDNS/TXT support", sizeof(r->fail_reason) - 1);
-            r->fail_reason[sizeof(r->fail_reason) - 1] = '\0';
-            rpool_set_state(&g_pool, i, RSV_DEAD);
+            /* Passed Phase 1 and 2, but failed Phase 3 - restrict to minimal MTU and proceed */
+            LOG_WARN("Resolver %s failed Phase 3 (no EDNS/TXT), using minimal MTU fallback\n", r->ip);
+            r->upstream_mtu = 512;
+            r->downstream_mtu = 220;
+            r->edns0_supported = false;
+            rpool_set_state(&g_pool, i, RSV_ACTIVE);
+            active++;
+            
+            free_mtu_binary_search(&results[i].up_mtu_search);
+            free_mtu_binary_search(&results[i].down_mtu_search);
         }
         /* Resolvers that failed Phase 1 or Phase 2 already have fail_reason set */
     }
@@ -2404,7 +2410,7 @@ static void on_dns_recv(uv_udp_t *h,
                                     while (reorder_buffer_flush(&s->reorder_buf, flush_buf, sizeof(flush_buf), &flush_len) > 0) {
                                         size_t data_start = 0;
                                         
-                                        /* Detect the ACK/status byte at the start of the sequence */
+                                        /* Detect the ACK/status byte at the start of the sequence (only once per session) */
                                         if (flush_len >= 1 && !s->socks5_connected) {
                                             uint8_t status_byte = flush_buf[0];
                                             if (s->client_ptr) {
