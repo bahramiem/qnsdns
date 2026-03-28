@@ -71,9 +71,9 @@ jobs:
         path: |
           build/Release/dnstun-client-windows-amd64.exe
 
-  release:
+  release-linux:
     name: Auto Release
-    needs: [build-linux, build-windows]
+    needs: [build-linux]
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
     runs-on: ubuntu-latest
     permissions:
@@ -85,6 +85,25 @@ jobs:
         name: dnstun-linux-amd64
         path: release-artifacts
 
+    - name: Create GitHub Release
+      uses: ncipollo/release-action@v1
+      with:
+        tag: "latest"
+        name: "Latest Build"
+        body: "Automated deployment of the latest commit on the main branch. Includes Linux (Client + Server) and Windows (Client only)."
+        artifacts: "release-artifacts/*"
+        allowUpdates: true
+        replacesArtifacts: true
+        draft: false
+        makeLatest: true
+  release-win:
+    name: Auto Release
+    needs: [build-windows]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
     - name: Download Windows Artifacts
       uses: actions/download-artifact@v4
       with:
@@ -102,3 +121,4 @@ jobs:
         replacesArtifacts: true
         draft: false
         makeLatest: true
+   
