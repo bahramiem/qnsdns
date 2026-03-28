@@ -694,13 +694,13 @@ static void on_server_recv(uv_udp_t *h,
         return;  /* Placeholder - needs server-side signing implementation */
     }
     
-    /* Normal tunnel traffic: extract b32 payload from parts[payload_start_idx .. part_count-domain_parts-1]
+    /* Normal tunnel traffic: extract b32 payload from parts[0 .. payload_start_idx-1]
      * CRITICAL: Do NOT add dots back - they were DNS label separators, not part of base32 data!
      * The client's inline_dotify adds dots every 57 chars to split into DNS labels.
      * When strtok parses the QNAME, dots are removed as delimiters.
      * We must concatenate parts WITHOUT dots to reconstruct the original base32. */
     char b32_payload[512] = {0};
-    for (int i = payload_start_idx; i < part_count - domain_parts; i++) {
+    for (int i = 0; i < payload_start_idx; i++) {
         strncat(b32_payload, parts[i], sizeof(b32_payload) - strlen(b32_payload) - 1);
     }
     
