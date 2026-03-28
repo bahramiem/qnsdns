@@ -13,6 +13,10 @@
 #include <ctype.h>
 
 #ifdef _WIN32
+/* Include winsock2.h BEFORE windows.h to prevent winsock.h conflicts */
+#define WIN32_LEAN_AND_MEAN
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 #ifndef ENABLE_VIRTUAL_TERMINAL_PROCESSING
 #define ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004

@@ -5,6 +5,13 @@
  * Uses libuv for async I/O and supports multiple simultaneous TUI clients.
  */
 
+#ifdef _WIN32
+/* Include winsock2.h BEFORE any headers that might include windows.h */
+#define WIN32_LEAN_AND_MEAN
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#endif
+
 #include "mgmt.h"
 #include "tui.h"
 #include <stdio.h>
@@ -12,9 +19,7 @@
 #include <string.h>
 #include <time.h>
 
-#ifdef _WIN32
-#include <winsock2.h>
-#else
+#ifndef _WIN32
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <sys/un.h>
