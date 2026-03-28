@@ -2736,10 +2736,19 @@ static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
     
     hdr.seq = seq;
     
-    /* chunk_info: high nibble = chunk_total-1, low nibble = fec_k */
+    /* chunk_info: high nibble = chunk_total-1, low nibble = fec_k
+     * fec_k represents the redundancy (r), NOT the original symbol count (k).
+     * Server calculates: k_est = total - fec_k = (k+r) - r = k
+     * This tells the server how many symbols are needed to decode (k original symbols). */
     uint8_t chunk_total = (uint8_t)(total_symbols > 0 ? total_symbols : 1);
-    uint8_t fec_k = (uint8_t)(r->fec_k > 15 ? 15 : r->fec_k);
-    chunk_set_info(&hdr.chunk_info, chunk_total, fec_k);
+    uint8_t fec_k_val = (uint8_t)(r->fec_k > 15 ? 15 : r->fec_k);
+    /* fec_k in header should be r (redundancy count), calculated as total - k
+     * But we don't have k directly, so we use fec_k_val from resolver config
+     * which represents the estimated redundancy. If 0, assume k=1, r=total-1 */
+    if (fec_k_val == 0 && chunk_total > 1) {
+        fec_k_val = chunk_total - 1;  /* Assume k=1, so r = total - 1 */
+    }
+    chunk_set_info(&hdr.chunk_info, chunk_total, fec_k_val);
 
     int didx = rpool_flux_domain(&g_cfg);
     const char *domain = (g_cfg.domain_count > 0)
