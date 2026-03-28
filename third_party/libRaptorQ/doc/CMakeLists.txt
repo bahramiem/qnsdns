@@ -18,7 +18,7 @@
 # along with libRaptorQ.  If not, see <http://www.gnu.org/licenses/>.
 
 PROJECT(libRaptorQ_Doc)
-CMAKE_MINIMUM_REQUIRED(VERSION 2.8)
+CMAKE_MINIMUM_REQUIRED(VERSION 3.5)
 
 INCLUDE(../cmake/UseLATEX.cmake)
 

@@ -11,6 +11,10 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 # Without this, MSVC defaults to /MD (dynamic CRT), causing LNK4098.
 if(MSVC)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    # Force include compatibility header for all files on MSVC
+    add_compile_options("/FI${CMAKE_CURRENT_SOURCE_DIR}/shared/msvc_compat.h")
+    # Mask common warnings
+    add_compile_options("/wd4057" "/wd4100" "/wd4127" "/wd4244" "/wd4267" "/wd4018" "/wd4146")
 endif()
 
 # ── Common libRaptorQ options (LZ4 disabled: only used for optional caching) ──
@@ -48,18 +52,47 @@ elseif(WIN32)
     # GitHub Windows runners ship vcpkg at $env:VCPKG_INSTALLATION_ROOT.
     # The CI passes -DCMAKE_TOOLCHAIN_FILE to activate vcpkg.
     # Packages needed: libuv libsodium zstd  (install via vcpkg before cmake)
-    find_package(libuv   CONFIG REQUIRED)
+    find_package(libuv     CONFIG QUIET)
     find_package(libsodium CONFIG QUIET)
-    if(NOT libsodium_FOUND)
-        find_package(unofficial-sodium CONFIG REQUIRED)
-        set(SODIUM_LIBRARIES unofficial-sodium::sodium)
-    else()
-        set(SODIUM_LIBRARIES sodium)
-    endif()
-    find_package(zstd CONFIG REQUIRED)
+    find_package(zstd      CONFIG QUIET)
 
-    set(UV_LIBRARIES   $<IF:$<TARGET_EXISTS:libuv::uv_a>,libuv::uv_a,libuv::uv>)
-    set(ZSTD_LIBRARIES $<IF:$<TARGET_EXISTS:zstd::libzstd_static>,zstd::libzstd_static,zstd::libzstd_shared>)
+    # ── Fallback to third_party versions if vcpkg is empty ──────────────────
+    if(NOT libuv_FOUND)
+        message(STATUS "vcpkg libuv not found, using third_party/libuv")
+        set(LIBUV_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+        add_subdirectory(third_party/libuv EXCLUDE_FROM_ALL)
+        set(UV_LIBRARIES uv_a)
+        set(UV_INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libuv/include")
+    else()
+        set(UV_LIBRARIES $<IF:$<TARGET_EXISTS:libuv::uv_a>,libuv::uv_a,libuv::uv>)
+    endif()
+
+    if(NOT libsodium_FOUND)
+        message(STATUS "vcpkg libsodium not found, using third_party/libsodium")
+        # libsodium third_party might need custom setup if it doesn't have a good CMake
+        add_subdirectory(third_party/libsodium EXCLUDE_FROM_ALL)
+        set(SODIUM_LIBRARIES sodium)
+    else()
+        find_package(unofficial-sodium CONFIG QUIET)
+        if(unofficial-sodium_FOUND)
+            set(SODIUM_LIBRARIES unofficial-sodium::sodium)
+        else()
+            set(SODIUM_LIBRARIES sodium)
+        endif()
+    endif()
+
+    if(NOT zstd_FOUND)
+        message(STATUS "vcpkg zstd not found, using third_party/zstd")
+        set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+        set(ZSTD_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+        set(ZSTD_BUILD_STATIC   ON  CACHE BOOL "" FORCE)
+        add_subdirectory(third_party/zstd/build/cmake EXCLUDE_FROM_ALL)
+        set(ZSTD_LIBRARIES libzstd_static)
+    else()
+        set(ZSTD_LIBRARIES $<IF:$<TARGET_EXISTS:zstd::libzstd_static>,zstd::libzstd_static,zstd::libzstd_shared>)
+    endif()
+
+    set(ZSTD_LIBRARIES ${ZSTD_LIBRARIES})
 
     set(EIGEN3_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libRaptorQ/external/eigen3")
     add_subdirectory(third_party/libRaptorQ EXCLUDE_FROM_ALL)
@@ -67,6 +100,9 @@ elseif(WIN32)
 
     # vcpkg puts headers in standard places; find_package sets the import targets
     set(EXTRA_INCLUDES
+        ${UV_INCLUDE_DIRS}
+        ${SODIUM_INCLUDE_DIRS}
+        ${ZSTD_INCLUDE_DIRS}
         third_party/libRaptorQ/src
     )
 

@@ -28,3 +28,7 @@ target_compile_definitions(sodium PRIVATE
 
 # Note: In a real environment, you'd run ./configure once to generate a proper config.h
 # For now, we assume a basic build is sufficient for the DNS tunnel's needs.
+
+if(MSVC)
+    target_compile_definitions(sodium PRIVATE HAVE_CONFIG_H)
+endif()

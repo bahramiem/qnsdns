@@ -17,7 +17,7 @@
 # and a copy of the GNU Lesser General Public License
 # along with libRaptorQ.  If not, see <http://www.gnu.org/licenses/>.
 
-cmake_minimum_required (VERSION 2.8.12)
+cmake_minimum_required (VERSION 3.5)
 project (libRaptorQ)
 enable_language(CXX)
 enable_language(C)

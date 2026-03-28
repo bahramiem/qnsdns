@@ -46,6 +46,8 @@
 #define DNSTUN_ENC_BASE64       0      /* Default */
 #define DNSTUN_ENC_HEX          1
 
+#define DNSTUN_DEBUG_PREFIX "TEST_"      /* Unified prefix for 'x' key tests */
+
 /* ──────────────────────────────────────────────
    Resolver Health States
 ────────────────────────────────────────────── */

@@ -696,8 +696,9 @@ static void on_server_recv(uv_udp_t *h,
     /* Handshake detection: version matches and length is correct */
     bool is_handshake = (payload_len == 5 && payload[0] == DNSTUN_VERSION);
 
-    /* DEBUG packet: payload starts with "DEBUG_" (ASCII) - echo back through normal pipeline */
-    bool is_debug = (payload_len >= 6 && memcmp(payload, "DEBUG_", 6) == 0);
+    /* DEBUG packet: payload starts with standardized test prefix - echo back through normal pipeline */
+    bool is_debug = (payload_len >= strlen(DNSTUN_DEBUG_PREFIX) && 
+                     memcmp(payload, DNSTUN_DEBUG_PREFIX, strlen(DNSTUN_DEBUG_PREFIX)) == 0);
     if (is_debug) {
         /* Echo the payload back through the normal response path */
         uint8_t reply[512];
