@@ -431,11 +431,11 @@ static int build_txt_reply_with_seq(uint8_t *outbuf, size_t *outlen,
                            const uint8_t *data, size_t data_len,
                            uint16_t mtu, uint16_t seq, uint8_t session_id)
 {
-    /* DEBUG: Log buffer sizes to diagnose truncation */
-    fprintf(stderr, "[DEBUG] build_txt_reply: data_len=%zu mtu=%u outbuf_max=%zu\n",
-            data_len, mtu, *outlen);
-
-    if (data_len > mtu) data_len = mtu;
+    /* [Fix] MTU Adjustment: Ensure the final Base64-encoded record 
+     * stays within the requested MTU limit (e.g. 220 characters).
+     * Binary size = MTU * 3 / 4. */
+    size_t binary_mtu = (mtu * 3) / 4;
+    if (data_len > binary_mtu) data_len = binary_mtu;
 
     /* Build header with sequence number */
     server_response_header_t hdr = {0};
@@ -729,8 +729,10 @@ static void on_server_recv(uv_udp_t *h,
     /* MTU values from server config (no longer in header) */
     sess->cl_downstream_mtu = g_cfg.downstream_mtu;
     sess->cl_enc_format     = 0; /* Will be determined by client request */
-    sess->cl_loss_pct       = 0;  /* No longer in header - could add later if needed */
-    sess->cl_fec_k          = fec_k;
+    sess->cl_loss_pct       = 0;  
+    /* [Fix] Increased FEC K: Force at least 2 redundant symbols 
+     * per block for sequenced sessions to survive lossy DNS paths. */
+    sess->cl_fec_k          = (fec_k > 2) ? fec_k : 2;
 
     /* Adaptive FEC based on loss rate if reported */
     if (sess->cl_loss_pct > 0) {
@@ -1290,9 +1292,6 @@ int main(int argc, char *argv[]) {
     g_tui.get_clients_cb = get_active_clients;
 
     /* Timers */
-    uv_timer_init(g_loop, &g_tui_timer);
-    uv_timer_start(&g_tui_timer, on_tui_timer, 1000, 1000);
-
     uv_timer_init(g_loop, &g_idle_timer);
     uv_timer_start(&g_idle_timer, on_idle_timer, 1000, 1000);
 
