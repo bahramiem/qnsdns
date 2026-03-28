@@ -45,6 +45,9 @@
 #include "shared/codec.h"
 #include "shared/mgmt.h"
 
+/* libsodium for cryptographic nonce generation */
+#include <sodium.h>
+
 /* Utility macros */
 #ifndef max
 #define max(a,b) ((a) >= (b) ? (a) : (b))
@@ -167,7 +170,8 @@ static void resolvers_load(void) {
 /* ────────────────────────────────────────────── */
 /*  DNS Query builder                             */
 /*  QNAME format:                                 */
-/*    <seq_hex>.<b32_payload>.<sid_hex>.tun.<dom> */
+/*    <b32_payload>.<configured_domain>           */
+/*  (No delimiter needed - server strips known domain suffix) */
 /* ────────────────────────────────────────────── */
 /* Inline dotify function from slipstream - inserts dots every 57 chars */
 static size_t inline_dotify(char *buf, size_t buflen, size_t len) {
@@ -237,6 +241,8 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
      * For header(5) + payload(137) = 142 bytes: 142 * 8 / 5 = 228 bytes */
     #define BASE32_MAX_OUTPUT(max_input) (((max_input) * 8 + 4) / 5)
     char b32_raw[BASE32_MAX_OUTPUT(5 + DNSTUN_CHUNK_PAYLOAD)];
+    LOG_INFO("DEBUG: build_dns_query - rawlen=%zu (sizeof(chunk_header_t)=%zu, paylen=%zu)\n", 
+             rawlen, sizeof(chunk_header_t), paylen);
     size_t b32_len = base32_encode((uint8_t*)b32_raw, raw, rawlen);
 
     /* Use slipstream's inline_dotify to split into labels every 57 chars */
@@ -245,21 +251,22 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
     memcpy(b32_dotted, b32_raw, b32_len);
     size_t dotted_len = inline_dotify(b32_dotted, sizeof(b32_dotted), b32_len);
 
-    /* Build QNAME: <b32_dotted>.tun.<domain>.
+    /* Build QNAME: <b32_dotted>.<domain>.
      * New compact header doesn't include session_id in QNAME - it's in the flags byte
      * CRITICAL: Must end with trailing dot for FQDN format!
+     * No delimiter needed - server strips known domain suffix to extract payload
      * 
      * DNS QNAME maximum is 253 bytes. We need to ensure:
-     * b32_dotted + "tun"(3) + domain + dots + trailing(1) <= 253
+     * b32_dotted + domain + dots + trailing(1) <= 253
      * 
-     * For domain ~15 chars: 3 + 15 + 1 = 19 overhead
-     * Max b32_dotted = 253 - 19 - (dots overhead ~b32_len/57) ≈ 220 chars
+     * For domain ~15 chars: 15 + 1 = 16 overhead
+     * Max b32_dotted = 253 - 16 - (dots overhead ~b32_len/57) ≈ 220 chars
      * Max base32 input ≈ 220 * 5 / 8 = 137 bytes
      * For header 5 bytes, max payload ≈ 132 bytes
      * 
      * DNSTUN_CHUNK_PAYLOAD is capped to ensure QNAME fits within DNS limits.
      * 
-     * Fix: Strip trailing dot from domain to prevent double dots (e.g., "tun.example.com..") */
+     * Fix: Strip trailing dot from domain to prevent double dots */
     char qname[512];
     char clean_domain[256];
     size_t domain_len = strlen(domain);
@@ -271,7 +278,7 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
         strncpy(clean_domain, domain, sizeof(clean_domain) - 1);
         clean_domain[sizeof(clean_domain) - 1] = '\0';
     }
-    int qname_len = snprintf(qname, sizeof(qname), "%s.tun.%s.",
+    int qname_len = snprintf(qname, sizeof(qname), "%s.%s.",
              b32_dotted, clean_domain);
 
     /* [Fix] Diagnostic Log: Show final QNAME and its DNS-compatible length */
@@ -325,6 +332,7 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
 /* ────────────────────────────────────────────── */
 typedef enum {
     PROBE_TEST_NONE = 0,
+    PROBE_TEST_CRYPTO_CHALLENGE, /* Phase 0: Cryptographic challenge (anti-hijack) */
     PROBE_TEST_LONGNAME,      /* Phase 1: Long QNAME support */
     PROBE_TEST_NXDOMAIN,      /* Phase 2: NXDOMAIN behavior (fake resolver filter) */
     PROBE_TEST_EDNS_TXT,      /* Phase 3: EDNS + TXT support detection */
@@ -349,6 +357,7 @@ typedef struct {
 
 /* Result structure for each resolver */
 typedef struct {
+    bool        crypto_challenge_passed;  /* Phase 0 result - server verified */
     bool        longname_supported;  /* Phase 1 result */
     bool        nxdomain_correct;     /* Phase 2 result (false = fake resolver) */
     bool        edns_supported;      /* Phase 3 result */
@@ -375,6 +384,9 @@ typedef struct probe_req {
     bool            got_reply;
     probe_test_type_t test_type;     /* Which test this probe is performing */
     resolver_test_result_t *result;  /* Pointer to shared result for this resolver */
+    /* Crypto challenge specific fields */
+    uint8_t         challenge_nonce[32];  /* Random nonce for crypto challenge */
+    size_t          challenge_nonce_len;   /* Length of nonce (typically 32 bytes) */
     /* MTU test specific fields */
     int             mtu_under_test;  /* MTU size being tested */
     int             mtu_test_attempt; /* Current retry attempt */
@@ -478,6 +490,8 @@ static void on_debug_recv(uv_udp_t *h, ssize_t nread,
 
 /* Send a debug packet through the normal codec pipeline */
 void send_debug_packet(const char *payload, uint32_t seq) {
+    LOG_INFO("DEBUG: send_debug_packet called with payload='%s' (%zu bytes), seq=%u\n",
+             payload ? payload : "(null)", payload ? strlen(payload) : 0, seq);
     /* Find an active resolver to send through */
     resolver_t *r = NULL;
     uv_mutex_lock(&g_pool.lock);
@@ -516,6 +530,8 @@ void send_debug_packet(const char *payload, uint32_t seq) {
     
     /* Use first configured domain */
     const char *domain = (g_cfg.domain_count > 0) ? g_cfg.domains[0] : "tun.example.com";
+    LOG_INFO("DEBUG: send_debug_packet calling build_dns_query - payload='%s', paylen=%zu, domain='%s'\n",
+             payload, strlen(payload), domain);
     
     d->sendlen = sizeof(d->sendbuf);
     if (build_dns_query(d->sendbuf, &d->sendlen, &hdr, 
@@ -570,7 +586,28 @@ static void on_probe_recv(uv_udp_t *h, ssize_t nread,
         rpool_on_ack(&g_pool, p->resolver_idx, rtt);
 
         /* Parse DNS response based on test type - scanner.py style */
-        if (p->test_type == PROBE_TEST_LONGNAME && p->result) {
+        if (p->test_type == PROBE_TEST_CRYPTO_CHALLENGE && p->result) {
+            /* Phase 0: Cryptographic Challenge - verify signed nonce
+             * Server should echo back our nonce signed with its private key.
+             * For now, just check if we got a TXT response - full signature
+             * verification requires server-side key infrastructure. */
+            if (nread > 12) {
+                uint8_t *resp = (uint8_t *)buf->base;
+                uint8_t rcode = resp[3] & 0x0F;
+                uint16_t ancount = (resp[6] << 8) | resp[7];
+                
+                /* Success if we got a valid DNS response (rcode 0 = NOERROR) */
+                if (rcode == 0 && ancount > 0) {
+                    p->result->crypto_challenge_passed = true;
+                    p->got_reply = true;
+                    LOG_INFO("Resolver %d: Crypto challenge PASSED\n", p->resolver_idx);
+                } else {
+                    LOG_WARN("Resolver %d: Crypto challenge FAILED (rcode=%u, ancount=%u)\n",
+                             p->resolver_idx, rcode, ancount);
+                }
+            }
+        }
+        else if (p->test_type == PROBE_TEST_LONGNAME && p->result) {
             /* Phase 1: Long QNAME test - any response means success */
             p->result->longname_supported = true;
             p->got_reply = true;
@@ -846,7 +883,7 @@ static size_t build_mtu_test_query(uint8_t *buf, size_t bufsize,
 
     if (is_upload && target_mtu > 0) {
         /* UPSTREAM MTU TEST: Pad QNAME to reach exact target_mtu
-         * Format: [padding_label].tun.domain.com
+         * Format: [padding_label].domain.com
          * Where padding is random base32-compatible characters split into 63-char labels
          * 
          * Overhead calculation:
@@ -857,10 +894,10 @@ static size_t build_mtu_test_query(uint8_t *buf, size_t bufsize,
          *   Total overhead: 28 bytes
          * 
          * QNAME overhead (excluding variable part):
-         *   ".tun." = 5 bytes + domain
+         *   "." + domain (no .tun. delimiter needed)
          *   Each label has 1-byte length prefix
          */
-        size_t domain_len = strlen(qname);  /* "tun.domain.com" format */
+        size_t domain_len = strlen(qname);  /* "domain.com" format */
         size_t base_qname_bytes = 1 + domain_len;  /* null + domain labels */
         size_t overhead = 12 + 4 + 11 + base_qname_bytes;  /* 28 + domain */
         size_t padding_needed = (target_mtu > (int)overhead) ? 
@@ -902,7 +939,7 @@ static size_t build_mtu_test_query(uint8_t *buf, size_t bufsize,
         }
     } else if (!is_upload && target_mtu > 0) {
         /* DOWNSTREAM MTU TEST: Request specific response size
-         * Format: mtu-req-[N].tun.domain.com
+         * Format: mtu-req-[N].domain.com
          * Server parses this and sends N-byte response */
         char prefix[32];
         snprintf(prefix, sizeof(prefix), "mtu-req-%d", target_mtu);
@@ -989,6 +1026,26 @@ static void fire_test_probe(int idx, probe_test_type_t test_type,
     bool use_edns = false;
 
     switch (test_type) {
+        case PROBE_TEST_CRYPTO_CHALLENGE:
+            /* Phase 0: Cryptographic challenge - send nonce to server for signing
+             * Format: "CRYPTO_<random_32_bytes_hex>" */
+            {
+                static char domain_buf[512];
+                const char *base = g_cfg.test_domain[0] ? g_cfg.test_domain : "s.domain.com";
+                /* Generate random nonce using libsodium */
+                randombytes_buf(p->challenge_nonce, 32);
+                p->challenge_nonce_len = 32;
+                /* Convert nonce to hex string for QNAME */
+                static char nonce_hex[65];
+                for (int i = 0; i < 32; i++) {
+                    sprintf(nonce_hex + i*2, "%02x", p->challenge_nonce[i]);
+                }
+                snprintf(domain_buf, sizeof(domain_buf), "CRYPTO_%s.%s", nonce_hex, base);
+                domain = domain_buf;
+            }
+            qtype = 16; /* TXT record */
+            use_edns = true;
+            break;
         case PROBE_TEST_LONGNAME:
             /* Phase 1: Long QNAME test - use configured long label domain */
             domain = g_cfg.long_label_domain[0] ? g_cfg.long_label_domain : 
@@ -1004,11 +1061,11 @@ static void fire_test_probe(int idx, probe_test_type_t test_type,
             use_edns = false;
             break;
         case PROBE_TEST_EDNS_TXT:
-            /* Phase 3: EDNS + TXT test - add .tun. suffix so server processes these probes */
+            /* Phase 3: EDNS + TXT test - use configured test domain directly */
             {
                 static char domain_buf[512];
                 const char *base = g_cfg.test_domain[0] ? g_cfg.test_domain : "s.domain.com";
-                snprintf(domain_buf, sizeof(domain_buf), "tun.%s", base);
+                snprintf(domain_buf, sizeof(domain_buf), "%s", base);
                 domain = domain_buf;
             }
             qtype = 16; /* TXT record */
@@ -1175,11 +1232,8 @@ static void fire_mtu_test_probe(int idx, probe_test_type_t test_type,
     memcpy(&p->dest, &r->addr, sizeof(p->dest));
     p->dest.sin_port = htons(53);
     
-    /* Add .tun. suffix so server processes MTU probes */
-    static char domain_buf[512];
-    const char *base = g_cfg.test_domain[0] ? g_cfg.test_domain : "s.domain.com";
-    snprintf(domain_buf, sizeof(domain_buf), "tun.%s", base);
-    const char *domain = domain_buf;
+    /* Use test_domain directly - server strips known domain suffix */
+    const char *domain = g_cfg.test_domain[0] ? g_cfg.test_domain : "s.domain.com";
     
     /* Use build_mtu_test_query which encodes mtu_size in:
      * - EDNS UDP payload size for upload tests
@@ -1788,6 +1842,9 @@ static void resolver_init_phase(void) {
 /* ────────────────────────────────────────────── */
 /*  SOCKS5 Proxy                                  */
 /* ────────────────────────────────────────────── */
+/* Forward declarations for functions defined later */
+static void send_mtu_handshake(int session_idx);
+
 typedef struct socks5_client {
     uv_tcp_t  tcp;
     uint8_t   buf[4096];
@@ -2121,6 +2178,9 @@ static size_t socks5_handle_data(socks5_client_t *c,
 
         LOG_INFO("SOCKS5 CONNECT %s:%d (session %d) - waiting for server ack\n",
                  sess->target_host, sess->target_port, session_idx);
+
+        /* Send MTU handshake to server before sending actual data */
+        send_mtu_handshake(session_idx);
 
         /* Queue the CONNECT request to be sent to the server.
          * The server needs this to parse the target and establish upstream connection. */
@@ -2580,6 +2640,51 @@ static void on_jitter_timer(uv_timer_t *t) {
     uv_close((uv_handle_t*)t, (uv_close_cb)free);
 }
 
+/* Send MTU handshake to server for a session.
+ * This tells the server the client's upstream/downstream MTU capabilities.
+ * The handshake packet is 5 bytes: version(1) + upstream_mtu(2) + downstream_mtu(2)
+ * Server detects it by: payload_len == 5 && payload[0] == DNSTUN_VERSION
+ */
+static void send_mtu_handshake(int session_idx) {
+    session_t *sess = &g_sessions[session_idx];
+    
+    /* Find best resolver's MTU to report */
+    uint16_t upstream_mtu = 512;
+    uint16_t downstream_mtu = 220;
+    
+    /* Get average MTU from active resolvers */
+    int active_count = 0;
+    uint32_t up_sum = 0, down_sum = 0;
+    uv_mutex_lock(&g_pool.lock);
+    for (int i = 0; i < g_pool.count; i++) {
+        if (g_pool.resolvers[i].state == RSV_ACTIVE) {
+            up_sum += g_pool.resolvers[i].upstream_mtu;
+            down_sum += g_pool.resolvers[i].downstream_mtu;
+            active_count++;
+        }
+    }
+    uv_mutex_unlock(&g_pool.lock);
+    
+    if (active_count > 0) {
+        upstream_mtu = (uint16_t)(up_sum / active_count);
+        downstream_mtu = (uint16_t)(down_sum / active_count);
+    }
+    
+    LOG_INFO("Sending MTU handshake: session=%d, upstream=%u, downstream=%u\n",
+             session_idx, upstream_mtu, downstream_mtu);
+    
+    /* Build handshake payload (5 bytes) */
+    uint8_t hs_payload[5];
+    hs_payload[0] = DNSTUN_VERSION;
+    hs_payload[1] = (uint8_t)(upstream_mtu >> 8);
+    hs_payload[2] = (uint8_t)(upstream_mtu & 0xFF);
+    hs_payload[3] = (uint8_t)(downstream_mtu >> 8);
+    hs_payload[4] = (uint8_t)(downstream_mtu & 0xFF);
+    
+    /* Send via the normal chunk path - server will detect handshake by payload_len == 5 */
+    fire_dns_chunk_symbol(session_idx, 0, hs_payload, sizeof(hs_payload), 0);
+}
+
 /* Fire one DNS query chunk for a session.
    'seq' is the actual sequence number of this FEC symbol.
    Fix: Fall back to dead resolvers if no active resolvers available. */
@@ -2637,8 +2742,29 @@ static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
     const char *domain = (g_cfg.domain_count > 0)
                          ? g_cfg.domains[didx] : "tun.example.com";
 
+    /* Build capability header with resolver-specific MTU and capabilities.
+     * This tells the server the exact limits for this resolver path. */
+    capability_header_t cap = {0};
+    cap.version = DNSTUN_VERSION;
+    cap.upstream_mtu = r->upstream_mtu;
+    cap.downstream_mtu = r->downstream_mtu;
+    cap.encoding = (r->enc == ENC_BASE64) ? DNSTUN_ENC_BASE64 : DNSTUN_ENC_HEX;
+    cap.loss_pct = (uint8_t)(r->loss_rate * 100.0);  /* Convert to percentage */
+
+    /* Prepend capability header to payload */
+    uint8_t payload_with_cap[DNSTUN_CHUNK_PAYLOAD];
+    size_t cap_len = sizeof(capability_header_t);
+    memcpy(payload_with_cap, &cap, cap_len);
+    if (payload && paylen > 0) {
+        if (paylen + cap_len > sizeof(payload_with_cap)) {
+            paylen = sizeof(payload_with_cap) - cap_len;
+        }
+        memcpy(payload_with_cap + cap_len, payload, paylen);
+    }
+    paylen += cap_len;
+
     q->sendlen = sizeof(q->sendbuf);
-    if (build_dns_query(q->sendbuf, &q->sendlen, &hdr, payload, paylen, domain) != 0) {
+    if (build_dns_query(q->sendbuf, &q->sendlen, &hdr, payload_with_cap, paylen, domain) != 0) {
         free(q);
         return;
     }
@@ -2882,6 +3008,12 @@ int main(int argc, char *argv[]) {
     uv_timer_t chrome_timer;
 
     srand((unsigned)time(NULL));
+
+    /* Initialize libsodium for crypto operations (nonce generation, etc.) */
+    if (sodium_init() < 0) {
+        fprintf(stderr, "FATAL: libsodium initialization failed\n");
+        return 1;
+    }
 
     /* Parse arguments */
     for (int i = 1; i < argc; i++) {

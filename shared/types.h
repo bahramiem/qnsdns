@@ -49,6 +49,22 @@
 #define DNSTUN_DEBUG_PREFIX "TEST_"      /* Unified prefix for 'x' key tests */
 
 /* ──────────────────────────────────────────────
+   Client Capability Header (prepended to every query)
+   This tells the server the client's capabilities for this resolver path.
+   Format: version(1) + upstream_mtu(2) + downstream_mtu(2) + encoding(1) + loss_pct(1)
+   Total: 7 bytes
+────────────────────────────────────────────── */
+#pragma pack(push, 1)
+typedef struct {
+    uint8_t  version;         /* DNSTUN_VERSION */
+    uint16_t upstream_mtu;    /* Client's upstream MTU for this resolver */
+    uint16_t downstream_mtu;  /* Client's downstream MTU for this resolver */
+    uint8_t  encoding;        /* DNSTUN_ENC_BASE64 or DNSTUN_ENC_HEX */
+    uint8_t  loss_pct;       /* Observed loss rate (0-100) */
+} capability_header_t;
+#pragma pack(pop)
+
+/* ──────────────────────────────────────────────
    Resolver Health States
 ────────────────────────────────────────────── */
 typedef enum {

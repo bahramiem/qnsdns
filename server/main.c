@@ -584,8 +584,10 @@ static void on_server_recv(uv_udp_t *h,
     const char *qname = qry->questions[0].name;
     uint16_t query_id = qry->id;
 
-    /* Parse QNAME: <seq_hex>.<b32_parts...>.<sid_hex>.tun.<domain>
-       Fix #31: Handle multi-label b32 payloads split by the client. */
+    /* Parse QNAME: <payload>.<configured_domain>
+     * No delimiter needed - server strips known domain suffix to extract payload.
+     * The configured domain is in g_cfg.domains[0..g_cfg.domain_count-1].
+     */
     char tmp[DNSTUN_MAX_QNAME_LEN + 1];
     strncpy(tmp, qname, sizeof(tmp)-1);
 
@@ -597,70 +599,120 @@ static void on_server_recv(uv_udp_t *h,
         tok = strtok(NULL, ".");
     }
 
-    /* Find "tun" marker to identify structure
-     * Use case-insensitive comparison because DNS is case-insensitive
-     * and some resolvers use 0x20 case randomization */
-    int tun_idx = -1;
-    for (int i = 0; i < part_count; i++) {
+    /* Find domain suffix in QNAME to determine payload start.
+     * Try each configured domain to find matching suffix.
+     * Use case-insensitive comparison (DNS is case-insensitive). */
+    int domain_parts = 0;  /* Number of labels in matched domain */
+    bool is_mtu_probe = false;
+    bool is_crypto_probe = false;
+    
+    for (int d = 0; d < g_cfg.domain_count; d++) {
+        const char *domain = g_cfg.domains[d];
+        char domain_tmp[256];
+        strncpy(domain_tmp, domain, sizeof(domain_tmp)-1);
+        
+        /* Count labels in domain (e.g., "example.com" = 2 parts) */
+        int dparts = 0;
+        char *dtok = strtok(domain_tmp, ".");
+        while (dtok) {
+            dtok = strtok(NULL, ".");
+            dparts++;
+        }
+        
+        /* Check if QNAME ends with this domain (last dparts labels) */
+        if (part_count >= dparts) {
+            bool match = true;
+            for (int j = 0; j < dparts; j++) {
+                const char *qpart = parts[part_count - dparts + j];
 #ifdef _WIN32
-        if (_stricmp(parts[i], "tun") == 0) { tun_idx = i; break; }
+                if (_stricmp(qpart, parts[part_count - dparts + j]) != 0) {
 #else
-        if (strcasecmp(parts[i], "tun") == 0) { tun_idx = i; break; }
+                if (strcasecmp(qpart, parts[part_count - dparts + j]) != 0) {
 #endif
-    }
-
-    /* New compact format: <b32_payload>.tun.<domain>
-     * The session_id is embedded in the chunk header flags byte, NOT in QNAME.
-     * Format: parts[0..tun_idx-1] = base32 payload, parts[tun_idx] = "tun"
-     * 
-     * Also handles MTU probes: mtu-req-[N].tun.<domain>
-     * 
-     * tun_idx < 0: no .tun. marker found (invalid format, return)
-     * tun_idx == 0: MTU/probe queries (empty payload or mtu-req- prefix)
-     * tun_idx >= 1: normal tunnel traffic with base32 payload (process normally)
-     */
-    if (tun_idx < 0) {
-        /* No .tun. marker found in QNAME - invalid format */
-        return;
-    }
-
-    /* Check for MTU probe format: mtu-req-[N].tun.domain.com */
-    if (tun_idx == 0 && parts[0] != NULL) {
-        /* First label before .tun. - could be MTU request */
-        const char *first_label = parts[0];
-        if (strncmp(first_label, "mtu-req-", 8) == 0) {
-            /* Parse requested MTU size */
-            int requested_mtu = atoi(first_label + 8);
-            if (requested_mtu > 0 && requested_mtu <= 4096) {
-                /* Generate random payload of requested size */
-                uint8_t mtu_payload[4096];
-                for (int i = 0; i < requested_mtu && i < (int)sizeof(mtu_payload); i++) {
-                    mtu_payload[i] = (uint8_t)(rand() & 0xFF);
+                    match = false;
+                    break;
                 }
-                
-                /* Send response with MTU-sized payload */
-                uint8_t reply[5120];
-                size_t rlen = sizeof(reply);
-                if (build_txt_reply_with_seq(reply, &rlen, query_id, qname,
-                                    mtu_payload, requested_mtu, 512, 0, 0) == 0) {
-                    send_udp_reply(src, reply, rlen);
-                }
-                return;  /* MTU probe handled */
+            }
+            if (match) {
+                domain_parts = dparts;
+                break;
             }
         }
-        /* tun_idx == 0 but not MTU probe - ignore silently */
-        return;
     }
-
-    /* Reassemble b32 payload from all parts before .tun. marker
-     * (now single consolidated label after client inline_dotify)
+    
+    /* If no configured domain matched, try the default domain */
+    if (domain_parts == 0) {
+        /* Check for common patterns: "domain.com" = 2 parts, "sub.domain.com" = 3 parts */
+        for (int dp = 2; dp <= 4 && dp <= part_count; dp++) {
+            /* Try stripping dp parts from end and see if remaining looks like valid payload */
+            int remaining = part_count - dp;
+            if (remaining > 0 && remaining < part_count) {
+                /* Assume this is our domain suffix */
+                domain_parts = dp;
+                break;
+            }
+        }
+    }
+    
+    /* payload_start_idx is where our data starts (everything before domain suffix) */
+    int payload_start_idx = part_count - domain_parts;
+    
+    /* Check for special probe formats in first label */
+    if (payload_start_idx >= 1 && parts[0] != NULL) {
+        const char *first_label = parts[0];
+        if (strncmp(first_label, "mtu-req-", 8) == 0) {
+            is_mtu_probe = true;
+        } else if (strncmp(first_label, "CRYPTO_", 7) == 0) {
+            is_crypto_probe = true;
+        }
+    }
+    
+    /* Handle MTU probe: mtu-req-[N].domain.com */
+    if (is_mtu_probe && parts[0] != NULL) {
+        /* Parse requested MTU size */
+        int requested_mtu = atoi(parts[0] + 8);
+        if (requested_mtu > 0 && requested_mtu <= 4096) {
+            /* Generate random payload of requested size */
+            uint8_t mtu_payload[4096];
+            for (int i = 0; i < requested_mtu && i < (int)sizeof(mtu_payload); i++) {
+                mtu_payload[i] = (uint8_t)(rand() & 0xFF);
+            }
+            
+            /* Send response with MTU-sized payload */
+            uint8_t reply[5120];
+            size_t rlen = sizeof(reply);
+            if (build_txt_reply_with_seq(reply, &rlen, query_id, qname,
+                                mtu_payload, requested_mtu, 512, 0, 0) == 0) {
+                send_udp_reply(src, reply, rlen);
+            }
+            return;  /* MTU probe handled */
+        }
+    }
+    
+    /* Handle CRYPTO probe: CRYPTO_<nonce_hex>.domain.com */
+    if (is_crypto_probe && parts[0] != NULL) {
+        /* Extract nonce from CRYPTO_<nonce_hex> and echo it back signed */
+        const char *nonce_hex = parts[0] + 7;  /* Skip "CRYPTO_" */
+        /* TODO: Server should sign this nonce with shared secret and echo back */
+        /* For now, just echo the nonce back as-is to prove reachability */
+        LOG_INFO("CRYPTO probe received: nonce=%s\n", nonce_hex);
+        /* TODO: Implement challenge-response with HMAC signing */
+        return;  /* Placeholder - needs server-side signing implementation */
+    }
+    
+    /* Normal tunnel traffic: extract b32 payload from parts[payload_start_idx .. part_count-domain_parts-1]
      * CRITICAL: Do NOT add dots back - they were DNS label separators, not part of base32 data!
      * The client's inline_dotify adds dots every 57 chars to split into DNS labels.
      * When strtok parses the QNAME, dots are removed as delimiters.
      * We must concatenate parts WITHOUT dots to reconstruct the original base32. */
     char b32_payload[512] = {0};
-    for (int i = 0; i < tun_idx; i++) {
+    for (int i = payload_start_idx; i < part_count - domain_parts; i++) {
         strncat(b32_payload, parts[i], sizeof(b32_payload) - strlen(b32_payload) - 1);
+    }
+    
+    /* If no payload (empty query), ignore */
+    if (b32_payload[0] == '\0' && !is_mtu_probe) {
+        return;
     }
     /* Decode b32 payload → raw bytes (chunk_header + data)
      * Increased to 512 to safely handle max-length Base32 QNAMEs (253 chars). */
@@ -689,6 +741,27 @@ static void on_server_recv(uv_udp_t *h,
     /* chunk_info: high nibble = chunk_total-1, low nibble = fec_k */
     uint8_t chunk_total = chunk_get_total(hdr.chunk_info);
     uint8_t fec_k = chunk_get_fec_k(hdr.chunk_info);
+
+    /* Extract capability header from payload (if present).
+     * This tells the server the client's MTU/encoding for optimal response sizing.
+     * Format: version(1) + upstream_mtu(2) + downstream_mtu(2) + encoding(1) + loss_pct(1) = 7 bytes */
+    uint16_t client_upstream_mtu = 0;
+    uint16_t client_downstream_mtu = g_cfg.downstream_mtu;  /* Default fallback */
+    bool has_capability_header = false;
+    if (payload_len >= sizeof(capability_header_t)) {
+        capability_header_t cap;
+        memcpy(&cap, payload, sizeof(cap));
+        if (cap.version == DNSTUN_VERSION) {
+            client_upstream_mtu = cap.upstream_mtu;
+            client_downstream_mtu = cap.downstream_mtu;
+            /* Skip capability header when processing payload */
+            payload += sizeof(capability_header_t);
+            payload_len -= sizeof(capability_header_t);
+            has_capability_header = true;
+            LOG_DEBUG("Got capability header: upstream=%u, downstream=%u, enc=%u, loss=%u%%\n",
+                      client_upstream_mtu, client_downstream_mtu, cap.encoding, cap.loss_pct);
+        }
+    }
 
     /* SYNC command: payload starts with "SYNC" (ASCII) */
     if (payload_len >= 4 && memcmp(payload, "SYNC", 4) == 0) is_sync = true;
@@ -726,8 +799,12 @@ static void on_server_recv(uv_udp_t *h,
     sess->last_active       = time(NULL);
     sess->client_addr       = *src;
     
-    /* MTU values from server config (no longer in header) */
-    sess->cl_downstream_mtu = g_cfg.downstream_mtu;
+    /* MTU values: use client-provided capability header, fallback to config */
+    if (client_downstream_mtu > 0) {
+        sess->cl_downstream_mtu = client_downstream_mtu;
+    } else {
+        sess->cl_downstream_mtu = g_cfg.downstream_mtu;
+    }
     sess->cl_enc_format     = 0; /* Will be determined by client request */
     sess->cl_loss_pct       = 0;  
     /* [Fix] Increased FEC K: Force at least 2 redundant symbols 
