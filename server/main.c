@@ -598,7 +598,7 @@ static void on_server_recv(uv_udp_t *h,
         parts[part_count++] = tok;
         tok = strtok(NULL, ".");
     }
-
+    
     /* Find domain suffix in QNAME to determine payload start.
      * Try each configured domain to find matching suffix.
      * Use case-insensitive comparison (DNS is case-insensitive). */
@@ -611,12 +611,13 @@ static void on_server_recv(uv_udp_t *h,
         char domain_tmp[256];
         strncpy(domain_tmp, domain, sizeof(domain_tmp)-1);
         
-        /* Count labels in domain (e.g., "example.com" = 2 parts) */
+        /* Parse domain into labels */
+        char *domain_labels[8];
         int dparts = 0;
         char *dtok = strtok(domain_tmp, ".");
-        while (dtok) {
+        while (dtok && dparts < 8) {
+            domain_labels[dparts++] = dtok;
             dtok = strtok(NULL, ".");
-            dparts++;
         }
         
         /* Check if QNAME ends with this domain (last dparts labels) */
@@ -625,9 +626,9 @@ static void on_server_recv(uv_udp_t *h,
             for (int j = 0; j < dparts; j++) {
                 const char *qpart = parts[part_count - dparts + j];
 #ifdef _WIN32
-                if (_stricmp(qpart, parts[part_count - dparts + j]) != 0) {
+                if (_stricmp(qpart, domain_labels[j]) != 0) {
 #else
-                if (strcasecmp(qpart, parts[part_count - dparts + j]) != 0) {
+                if (strcasecmp(qpart, domain_labels[j]) != 0) {
 #endif
                     match = false;
                     break;
@@ -640,18 +641,14 @@ static void on_server_recv(uv_udp_t *h,
         }
     }
     
-    /* If no configured domain matched, try the default domain */
+    /* If no configured domain matched, assume it's a 2-part domain (e.g., "example.com") */
     if (domain_parts == 0) {
-        /* Check for common patterns: "domain.com" = 2 parts, "sub.domain.com" = 3 parts */
-        for (int dp = 2; dp <= 4 && dp <= part_count; dp++) {
-            /* Try stripping dp parts from end and see if remaining looks like valid payload */
-            int remaining = part_count - dp;
-            if (remaining > 0 && remaining < part_count) {
-                /* Assume this is our domain suffix */
-                domain_parts = dp;
-                break;
-            }
-        }
+        domain_parts = 2;  /* Default: assume domain like "example.com" */
+    }
+    
+    /* Ensure we don't strip more parts than exist */
+    if (domain_parts > part_count) {
+        domain_parts = part_count;
     }
     
     /* payload_start_idx is where our data starts (everything before domain suffix) */
@@ -1371,6 +1368,9 @@ int main(int argc, char *argv[]) {
     /* Timers */
     uv_timer_init(g_loop, &g_idle_timer);
     uv_timer_start(&g_idle_timer, on_idle_timer, 1000, 1000);
+
+    uv_timer_init(g_loop, &g_tui_timer);
+    uv_timer_start(&g_tui_timer, on_tui_timer, 1000, 1000);
 
     /* Management server for headless TUI connections */
     {
