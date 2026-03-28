@@ -274,6 +274,9 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
     int qname_len = snprintf(qname, sizeof(qname), "%s.tun.%s.",
              b32_dotted, clean_domain);
 
+    /* [Fix] Diagnostic Log: Show final QNAME and its DNS-compatible length */
+    LOG_INFO("Generated QNAME (%d bytes): %s\n", qname_len, qname);
+
     if (qname_len > DNSTUN_MAX_QNAME_LEN) {
         LOG_ERR("QNAME too long: %d bytes (max %d). Reduce DNSTUN_CHUNK_PAYLOAD.\n",
                 qname_len, DNSTUN_MAX_QNAME_LEN);
@@ -2686,7 +2689,14 @@ static void on_poll_timer(uv_timer_t *t) {
                K is derived based on the observed loss rate. */
             int k = (int)ceil((double)enc_len / (double)DNSTUN_CHUNK_PAYLOAD);
             if (k == 0) k = 1;
-            int r = rpool_fec_k(&g_pool, 0, k); /* Use first resolver's state for simplicity in this tick */
+
+            /* [Fix] Handshake Redundancy: 
+             * If the SOCKS5 connection is not yet established, force high redundancy (r=5).
+             * This ensures the critical CONNECT packet survives lossy DNS resolvers. */
+            int r = rpool_fec_k(&g_pool, 0, k);
+            if (!sess->socks5_connected) {
+                if (r < 5) r = 5;
+            }
             
             fec_encoded_t fec = codec_fec_encode(enc_in, enc_len, k, r);
             if (fec.total_count > 0) {
