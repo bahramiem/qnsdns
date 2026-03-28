@@ -582,14 +582,62 @@ static void render_config_view(tui_ctx_t *t, int x, int y, int width, int height
     draw_log_panel(t, x, y + content_height, width, LOG_HEIGHT);
 }
 
+/* ── Protocol Test View ──────────────────────────────────────────────────────*/
+static void render_proto_test_view(tui_ctx_t *t, int x, int y, int width, int height) {
+    int content_height = height - LOG_HEIGHT - 2;
+    
+    draw_box(x, y, width, content_height, ANSI_BR_MAGENTA, " Protocol Test ");
+    
+    int row = y + 2;
+    int col = x + 2;
+    
+    /* Test status */
+    printf("\033[%d;%dH" ANSI_BOLD "Protocol Loopback Test" ANSI_RESET, row++, col);
+    row++;
+    
+    if (t->proto_test.test_pending) {
+        uint64_t now = uv_hrtime() / 1000000ULL;
+        uint64_t elapsed = now - t->proto_test.last_test_sent_ms;
+        printf("\033[%d;%dH" ANSI_BR_YELLOW "◉ PENDING" ANSI_RESET " - waiting for response (%llums)", 
+               row++, col, (unsigned long long)elapsed);
+    } else if (t->proto_test.last_test_sent_ms > 0) {
+        uint64_t latency = t->proto_test.last_test_recv_ms - t->proto_test.last_test_sent_ms;
+        if (t->proto_test.last_test_success) {
+            printf("\033[%d;%dH" ANSI_BR_GREEN "✓ SUCCESS" ANSI_RESET " - Latency: %llu ms", 
+                   row++, col, (unsigned long long)latency);
+        } else {
+            printf("\033[%d;%dH" ANSI_BR_RED "✗ TIMEOUT" ANSI_RESET " - No response received", 
+                   row++, col);
+        }
+    } else {
+        printf("\033[%d;%dH" ANSI_DIM "No test performed yet" ANSI_RESET, row++, col);
+    }
+    row++;
+    
+    /* Last test details */
+    printf("\033[%d;%dH" ANSI_BOLD "Last Test Details:" ANSI_RESET, row++, col);
+    printf("\033[%d;%dH" ANSI_CYAN "  Seq:     " ANSI_RESET "%u", row++, col, t->proto_test.test_sequence);
+    printf("\033[%d;%dH" ANSI_CYAN "  Payload: " ANSI_RESET "%s", row++, col, 
+           *t->proto_test.test_payload ? t->proto_test.test_payload : "(none)");
+    row++;
+    
+    /* Instructions */
+    printf("\033[%d;%dH" ANSI_BOLD ANSI_BR_CYAN "Instructions:" ANSI_RESET, row++, col);
+    printf("\033[%d;%dH" ANSI_CYAN "  [x] or [X]" ANSI_RESET " - Send new protocol test packet", row++, col);
+    printf("\033[%d;%dH" ANSI_CYAN "  [6]      " ANSI_RESET " - Return to this panel", row++, col);
+    
+    /* Live Log Panel */
+    draw_log_panel(t, x, y + content_height, width, LOG_HEIGHT);
+}
+
 /* ── Debug View (Full Screen Logs) ─────────────────────────────────────────*/
 static void render_debug_view(tui_ctx_t *t, int x, int y, int width, int height) {
     /* Full-screen log view */
-    draw_box(x, y, width, height - 1, ANSI_BR_YELLOW, " Debug Logs (Full Screen) ");
+    draw_box(x, y, width, height - 1, ANSI_BR_YELLOW, " Debug Logs (Panel 4) ");
     
-    /* Log level controls */
-    printf("\033[%d;%dH" ANSI_DIM "[0-3] Set Level  [↑↓] Scroll  [Home] Top  [End] Bottom" ANSI_RESET,
-           y, x + width - 55);
+    /* Log level controls - context dependent */
+    printf("\033[%d;%dH" ANSI_BR_CYAN "[0]" ANSI_RESET "Err  " ANSI_BR_CYAN "[!]" ANSI_RESET "Wrn  " ANSI_BR_CYAN "[@]" ANSI_RESET "Inf  " ANSI_BR_CYAN "[#]" ANSI_RESET "Vrb  " ANSI_DIM "[↑↓]Scroll" ANSI_RESET,
+           y, x + 2);
     
     /* More log lines */
     int lines_to_show = height - 4;
@@ -635,6 +683,7 @@ static void render_help_view(tui_ctx_t *t, int x, int y, int width, int height) 
     printf("\033[%d;%dH" ANSI_CYAN "  3  " ANSI_RESET "Configuration Editor", row++, col);
     printf("\033[%d;%dH" ANSI_CYAN "  4  " ANSI_RESET "Debug Logs (full screen)", row++, col);
     printf("\033[%d;%dH" ANSI_CYAN "  5  " ANSI_RESET "This Help Guide", row++, col);
+    printf("\033[%d;%dH" ANSI_CYAN "  6  " ANSI_RESET "Protocol Test", row++, col);
     printf("\033[%d;%dH" ANSI_BR_WHITE "╰────────────────────────────────────────" ANSI_RESET, row++, col);
     
     row++; /* spacing */
@@ -652,8 +701,8 @@ static void render_help_view(tui_ctx_t *t, int x, int y, int width, int height) 
     
     row++; /* spacing */
     
-    /* Left Column: Log Level */
-    printf("\033[%d;%dH" ANSI_BOLD ANSI_BR_WHITE "╭─ Debug Log Level ───────────────────" ANSI_RESET, row++, col);
+    /* Left Column: Log Level (Debug panel only) */
+    printf("\033[%d;%dH" ANSI_BOLD ANSI_BR_WHITE "╭─ Log Level (in Debug panel) ─────────" ANSI_RESET, row++, col);
     printf("\033[%d;%dH" ANSI_CYAN "  0  " ANSI_RESET "Errors only", row++, col);
     printf("\033[%d;%dH" ANSI_CYAN "  !  " ANSI_RESET "Warnings + Errors", row++, col);
     printf("\033[%d;%dH" ANSI_CYAN "  @  " ANSI_RESET "Info + Warnings + Errors", row++, col);
@@ -692,14 +741,17 @@ static void render_help_view(tui_ctx_t *t, int x, int y, int width, int height) 
     printf("\033[%d;%dH" ANSI_CYAN " $ " ANSI_RESET "./dnstun-tui --host localhost", right_row++, right_col);
     printf("\033[%d;%dH" ANSI_BR_WHITE "╰────────────────────────────────────────" ANSI_RESET, right_row++, right_col);
     
-    /* Info Box at Bottom */
-    row = y + content_height - 12;
-    int info_box_width = width - 4;
-    printf("\033[%d;%dH" ANSI_BOLD ANSI_BR_CYAN "┌%.*s┐" ANSI_RESET, row, col, info_box_width, "───────────────────────────────────────────────────────────────────────────────────────");
-    printf("\033[%d;%dH" ANSI_BOLD ANSI_BR_CYAN "│" ANSI_RESET ANSI_BOLD ANSI_BR_WHITE " NOTE: " ANSI_RESET " Press [Q] to detach TUI. The tunnel continues running in the background.", row + 1, col);
-    printf("\033[%d;%dH" ANSI_BOLD ANSI_BR_CYAN "│" ANSI_RESET " This allows you to close the terminal without stopping the DNS tunnel connection.", row + 2, col);
-    printf("\033[%d;%dH" ANSI_BOLD ANSI_BR_CYAN "│" ANSI_RESET " Run ./dnstun-client or ./dnstun-server again to reconnect the TUI.", row + 3, col);
-    printf("\033[%d;%dH" ANSI_BOLD ANSI_BR_CYAN "└%.*s┘" ANSI_RESET, row + 4, col, info_box_width, "───────────────────────────────────────────────────────────────────────────────────────");
+    /* Info Box at Bottom - properly sized NOTE */
+    int note_box_width = width - 4;
+    row = y + content_height - 9;
+    printf("\033[%d;%dH" ANSI_BR_CYAN "┌%.*s┐" ANSI_RESET, row, col, note_box_width, "──────────────────────────────────────────────────────────────────────────────");
+    row++;
+    printf("\033[%d;%dH" ANSI_BR_CYAN "│" ANSI_RESET " " ANSI_BOLD ANSI_BR_WHITE "NOTE:" ANSI_RESET " Press [Q] to detach TUI. Tunnel continues running!");
+    printf("\033[%d;%dH" ANSI_BR_CYAN "│" ANSI_RESET, row++);
+    printf("\033[%d;%dH" ANSI_BR_CYAN "│" ANSI_RESET " Close terminal or Ctrl+C to exit TUI only. Run ./dnstun-client");
+    printf("\033[%d;%dH" ANSI_BR_CYAN "│" ANSI_RESET " again to reconnect TUI.", row++);
+    row++;
+    printf("\033[%d;%dH" ANSI_BR_CYAN "└%.*s┘" ANSI_RESET, row, col, note_box_width, "──────────────────────────────────────────────────────────────────────────────");
     
     /* Live Log Panel */
     draw_log_panel(t, x, y + content_height, width, LOG_HEIGHT);
@@ -764,6 +816,7 @@ void tui_render(tui_ctx_t *t) {
         case 2: render_config_view(t, content_x, 1, content_width, content_height); break;
         case 3: render_debug_view(t, content_x, 1, content_width, content_height); break;
         case 4: render_help_view(t, content_x, 1, content_width, content_height); break;
+        case 5: render_proto_test_view(t, content_x, 1, content_width, content_height); break;
         default: render_dashboard(t, content_x, 1, content_width, content_height); break;
     }
     
@@ -802,16 +855,30 @@ void tui_handle_key(tui_ctx_t *t, int key) {
         case '3': t->panel = 2; break;
         case '4': t->panel = 3; break;
         case '5': t->panel = 4; break;
+        case '6': t->panel = 5; break;
+        case 'x':
+        case 'X':
+            t->panel = 5;  /* Protocol Test panel */
+            /* Trigger protocol test */
+            if (t->send_debug_cb && !t->proto_test.test_pending) {
+                t->proto_test.test_sequence++;
+                snprintf(t->proto_test.test_payload, sizeof(t->proto_test.test_payload),
+                         "PROTO_TEST_%u", t->proto_test.test_sequence);
+                t->proto_test.last_test_sent_ms = uv_hrtime() / 1000000ULL;
+                t->proto_test.test_pending = 1;
+                t->send_debug_cb(t->proto_test.test_payload, t->proto_test.test_sequence);
+            }
+            break;
         case 'q': 
         case 'Q': 
             t->running = 0; 
             break;
             
-        /* Debug log controls - use shifted numbers */
-        case '0': tui_debug_set_level(t, 0); break;
-        case '!': tui_debug_set_level(t, 1); break;  /* Shift+1 = ! */
-        case '@': tui_debug_set_level(t, 2); break;  /* Shift+2 = @ */
-        case '#': tui_debug_set_level(t, 3); break;  /* Shift+3 = # */
+        /* Debug log controls - only when on debug panel (panel 3) */
+        case '0': if (t->panel == 3) tui_debug_set_level(t, 0); break;
+        case '!': if (t->panel == 3) tui_debug_set_level(t, 1); break;  /* Shift+1 = ! */
+        case '@': if (t->panel == 3) tui_debug_set_level(t, 2); break;  /* Shift+2 = @ */
+        case '#': if (t->panel == 3) tui_debug_set_level(t, 3); break;  /* Shift+3 = # */
         
         /* Scroll controls in debug view */
         case 'A': /* Up arrow - need proper escape sequence handling */

@@ -49,6 +49,17 @@
 #define min(a,b) ((a) <= (b) ? (a) : (b))
 #endif
 
+/* Platform fallbacks */
+#ifdef _WIN32
+static char* strndup(const char* s, size_t n) {
+    size_t len = strnlen(s, n);
+    char* news = (char*)malloc(len + 1);
+    if (!news) return NULL;
+    news[len] = '\0';
+    return (char*)memcpy(news, s, len);
+}
+#endif
+
 /* ────────────────────────────────────────────── */
 /*  Global state                                  */
 /* ────────────────────────────────────────────── */
@@ -91,7 +102,7 @@ static uint16_t rand_u16(void) {
 
 /* Generate a random 4-bit session ID (0-15, embedded in chunk header flags) */
 static uint8_t make_session_id(void) {
-    return (uint8_t)(random() & 0x0F);  /* Only use lower 4 bits */
+    return (uint8_t)(rand() & 0x0F);  /* Only use lower 4 bits */
 }
 
 /* ────────────────────────────────────────────── */
