@@ -2728,12 +2728,14 @@ static void on_poll_timer(uv_timer_t *t) {
             int k = (int)ceil((double)enc_len / (double)DNSTUN_CHUNK_PAYLOAD);
             if (k == 0) k = 1;
 
-            /* [Fix] Handshake Redundancy: 
-             * If the SOCKS5 connection is not yet established, force high redundancy (r=5).
-             * This ensures the critical CONNECT packet survives lossy DNS resolvers. */
+            /* [Fix] Extreme Handshake Redundancy: 
+             * If the session is new (tx_next < 50) or the SOCKS5 handshake is not 
+             * yet fully established (socks5_connected == false), force extreme 
+             * redundancy (r=10). This ensures critical early packets (CONNECT/GET) 
+             * survive lossy DNS resolvers. */
             int r = rpool_fec_k(&g_pool, 0, k);
-            if (!sess->socks5_connected) {
-                if (r < 5) r = 5;
+            if (!sess->socks5_connected || sess->tx_next < 50) {
+                if (r < 10) r = 10;
             }
             
             fec_encoded_t fec = codec_fec_encode(enc_in, enc_len, k, r);
