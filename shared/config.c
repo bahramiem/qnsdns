@@ -46,6 +46,7 @@ void config_defaults(dnstun_config_t *cfg, bool is_server) {
     cfg->cwnd_init            = 16.0;
     cfg->cwnd_max             = 512.0;
     cfg->idle_timeout_sec     = 120;
+    cfg->downstream_mtu      = 220;
 
     /* mtu_testing - Binary search MTU testing like client.py */
     cfg->max_upload_mtu       = 512;     /* Maximum upload MTU to test */
@@ -143,7 +144,8 @@ int config_set_key(dnstun_config_t *cfg,
         else if (strcmp(key,"fec_window")==0)       cfg->fec_window       = atoi(value);
         else if (strcmp(key,"cwnd_init")==0)        cfg->cwnd_init        = atof(value);
         else if (strcmp(key,"cwnd_max")==0)         cfg->cwnd_max         = atof(value);
-        else if (strcmp(key,"idle_timeout_sec")==0) cfg->idle_timeout_sec = atoi(value);
+        else if (strcmp(key,"idle_timeout_sec")==0)  cfg->idle_timeout_sec  = atoi(value);
+        else if (strcmp(key,"downstream_mtu")==0)    cfg->downstream_mtu   = atoi(value);
     }
     /* [mtu_testing] - Binary search MTU testing like client.py */
     else if (strcmp(section,"mtu_testing")==0) {

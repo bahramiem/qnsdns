@@ -37,6 +37,7 @@ typedef struct dnstun_config {
     double   cwnd_init;         /* starting cong window */
     double   cwnd_max;          /* max cong window */
     int      idle_timeout_sec;
+    int      downstream_mtu;    /* Configurable downstream MTU (default: 220) */
 
     /* [mtu_testing] - Binary search MTU testing like client.py */
     int      max_upload_mtu;       /* Maximum upload MTU to test (default: 512) */
