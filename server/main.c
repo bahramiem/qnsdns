@@ -662,8 +662,9 @@ static void on_server_recv(uv_udp_t *h,
     for (int i = 0; i < tun_idx; i++) {
         strncat(b32_payload, parts[i], sizeof(b32_payload) - strlen(b32_payload) - 1);
     }
-    /* Decode b32 payload → raw bytes (chunk_header + data) */
-    uint8_t raw[sizeof(chunk_header_t) + DNSTUN_CHUNK_PAYLOAD + 4];
+    /* Decode b32 payload → raw bytes (chunk_header + data)
+     * Increased to 512 to safely handle max-length Base32 QNAMEs (253 chars). */
+    uint8_t raw[512];
     size_t b32_len = strlen(b32_payload);
     ssize_t rawlen = base32_decode(raw, b32_payload, b32_len);
     if (rawlen < (ssize_t)sizeof(chunk_header_t)) {
@@ -688,9 +689,11 @@ static void on_server_recv(uv_udp_t *h,
     uint8_t chunk_total = chunk_get_total(hdr.chunk_info);
     uint8_t fec_k = chunk_get_fec_k(hdr.chunk_info);
 
-    bool is_sync = false;
     /* SYNC command: payload starts with "SYNC" (ASCII) */
     if (payload_len >= 4 && memcmp(payload, "SYNC", 4) == 0) is_sync = true;
+
+    /* Handshake detection: version matches and length is correct */
+    bool is_handshake = (payload_len == 5 && payload[0] == DNSTUN_VERSION);
 
     /* DEBUG packet: payload starts with "DEBUG_" (ASCII) - echo back through normal pipeline */
     bool is_debug = (payload_len >= 6 && memcmp(payload, "DEBUG_", 6) == 0);
@@ -734,6 +737,18 @@ static void on_server_recv(uv_udp_t *h,
         if (fec_k > 64) fec_k = 64;
     }
     sess->cl_fec_k = fec_k;
+
+    /* Handle handshake MTU signaling */
+    if (is_handshake) {
+        handshake_packet_t hs;
+        memcpy(&hs, payload, sizeof(hs));
+        /* Only accept reasonable MTU values (min 128, max 4096) */
+        if (hs.downstream_mtu >= 128 && hs.downstream_mtu <= 4096) {
+            sess->cl_downstream_mtu = hs.downstream_mtu;
+            LOG_INFO("Session %d: MTU handshake - Up=%u, Down=%u\n", 
+                     sidx, hs.upstream_mtu, hs.downstream_mtu);
+        }
+    }
 
     /* ── Handle FEC Burst Reassembly ──────────────────────────────────── */
     if (chunk_total > 0) {

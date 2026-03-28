@@ -25,21 +25,21 @@
 #define DNSTUN_MAX_QNAME_LEN     253
 
 /* Buffer sizes for downstream MTU
- * Default to 512 for DNS TXT compatibility (many resolvers drop >512 byte responses)
+ * DEFAULT: 320 for DNS TXT compatibility (ensures total response < 512 bytes)
  * Server will use this unless client reports different preference via handshake */
-#define DNSTUN_MAX_DOWNSTREAM_MTU   512    /* Conservative default for DNS TXT */
+#define DNSTUN_MAX_DOWNSTREAM_MTU   320    /* Maximally compatible default for DNS TXT */
 #define DNSTUN_SERVER_BUFFER_SIZE   65536  /* 64KB */
 #define DNSTUN_CLIENT_BUFFER_SIZE   65536  /* 64KB */
 
 /* max payload bytes per DNS query
- * With new 4-byte header and base32 encoding:
- * - chunk_header_t (4 bytes)
- * - base32 encoding overhead (4 * 8/5 = 7 bytes)
+ * With new 5-byte header and base32 encoding:
+ * - chunk_header_t (5 bytes)
+ * - base32 encoding overhead (~1.6x)
  * - QNAME prefix (~22 bytes)
  * - base32 dotify overhead
- * Safe max payload ≈ 137 bytes */
-#define DNSTUN_CHUNK_PAYLOAD     137    /* max base32 payload bytes per DNS query */
-#define DNSTUN_SESSION_ID_LEN    4
+ * Reduced to 110 to keep total QNAME < 253 even with longer domains. */
+#define DNSTUN_CHUNK_PAYLOAD     110    /* max base32 payload bytes per DNS query */
+#define DNSTUN_SESSION_ID_LEN    8
 #define DNSTUN_VERSION           1
 
 /* Downstream encoding types (for server → client) */
@@ -127,7 +127,7 @@ typedef struct resolver {
 } resolver_t;
 
 /* ──────────────────────────────────────────────
-   New Compact DNS Tunnel chunk header (4 bytes)
+   New Compact DNS Tunnel chunk header (5 bytes)
    Used for upstream: Client → Server (Base32 in QNAME)
 ────────────────────────────────────────────── */
 #pragma pack(push, 1)
@@ -361,7 +361,7 @@ typedef struct {
 #define MAX_SESSION_BUFFER (10 * 1024 * 1024)
 
 typedef struct session {
-    uint8_t   session_id;    /* 4-bit session ID (0-15), embedded in chunk header */
+    uint8_t   session_id;    /* 8-bit session ID (0-255) */
     char      target_host[256];
     uint16_t  target_port;
     bool      established;

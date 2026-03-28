@@ -236,7 +236,7 @@ static void draw_sidebar(tui_ctx_t *t, int x, int y, int height) {
     printf("\033[%d;%dH" ANSI_BOLD ANSI_BR_CYAN " ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓" ANSI_RESET, y + 4, x + 1);
     
     /* Menu Items */
-    const char *items[] = {"Dashboard", "Resolvers", "Config", "Debug Logs", "Help", "Page 6"};
+    const char *items[] = {"Dashboard", "Resolvers", "Config", "Debug Logs", "Help", "Test"};
     const char *keys[] = {"1", "2", "3", "4", "5", "6"};
     
     for (int i = 0; i < 6; i++) {
@@ -797,6 +797,9 @@ void tui_init(tui_ctx_t *t, tui_stats_t *stats,
     t->send_debug_cb = NULL;
 
 #ifdef _WIN32
+    /* Set console to UTF-8 for box-drawing characters */
+    SetConsoleOutputCP(CP_UTF8);
+    
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
     if (hOut != INVALID_HANDLE_VALUE) {
         DWORD dwMode = 0;
@@ -882,10 +885,22 @@ void tui_handle_key(tui_ctx_t *t, int key) {
                 t->send_debug_cb(t->proto_test.test_payload, t->proto_test.test_sequence);
             }
             break;
+        case 'x':
         case 'X':
-            /* Close tunnel (graceful) */
-            if (t->send_command_cb) {
-                t->send_command_cb(MGMT_CMD_CLOSE_TUNNEL);
+            if (t->panel == 5) {
+                if (t->send_debug_cb) {
+                    char payload[16];
+                    snprintf(payload, sizeof(payload), "TEST_%u", t->proto_test.test_sequence);
+                    t->send_debug_cb(payload, t->proto_test.test_sequence++);
+                    t->proto_test.test_pending = 1;
+                    t->proto_test.last_test_sent_ms = uv_hrtime() / 1000000ULL;
+                    strncpy(t->proto_test.test_payload, payload, sizeof(t->proto_test.test_payload) - 1);
+                }
+            } else {
+                /* Legacy key for closing tunnel */
+                if (t->send_command_cb) {
+                    t->send_command_cb(MGMT_CMD_CLOSE_TUNNEL);
+                }
             }
             break;
         case 'R':

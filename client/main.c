@@ -1911,9 +1911,11 @@ static bool reorder_buffer_insert(reorder_buffer_t *rb, uint16_t seq,
     return true;
 }
 
-/* Flush consecutive packets starting from expected_seq */
-static size_t reorder_buffer_flush(reorder_buffer_t *rb, uint8_t *out_buf,
+/* Flush consecutive packets starting from expected_seq
+ * Returns number of packets flushed (including 0-byte ACKs). */
+static int reorder_buffer_flush(reorder_buffer_t *rb, uint8_t *out_buf,
                                   size_t out_cap, size_t *out_len) {
+    int packets = 0;
     size_t total = 0;
     *out_len = 0;
 
@@ -1947,8 +1949,9 @@ static size_t reorder_buffer_flush(reorder_buffer_t *rb, uint8_t *out_buf,
         memcpy(out_buf + total, slot->data, slot->len);
         total += slot->len;
         
-        /* Update expected sequence */
+        /* Update expected sequence and metrics */
         rb->expected_seq++;
+        packets++;
         
         /* Free this slot and compact remaining slots */
         free(slot->data);
@@ -1970,7 +1973,7 @@ static size_t reorder_buffer_flush(reorder_buffer_t *rb, uint8_t *out_buf,
     }
     
     *out_len = total;
-    return total;
+    return packets;
 }
 
 /* Flush received data from server to SOCKS5 client */
@@ -2405,6 +2408,7 @@ static void on_dns_recv(uv_udp_t *h,
                                     /* Drain all consecutive ready packets from the buffer */
                                     uint8_t flush_buf[16384];
                                     size_t flush_len = 0;
+                                    /* Loop while packets are being flushed from the reorder buffer */
                                     while (reorder_buffer_flush(&s->reorder_buf, flush_buf, sizeof(flush_buf), &flush_len) > 0) {
                                         size_t data_start = 0;
                                         
