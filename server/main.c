@@ -103,6 +103,9 @@ typedef struct srv_session {
     int       burst_received;
     uint8_t **burst_symbols;
     size_t    burst_symbol_len;
+    uint64_t  burst_oti_common;     /* OTI Common from first symbol of burst */
+    uint32_t  burst_oti_scheme;     /* OTI Scheme from first symbol of burst */
+    bool      burst_has_oti;        /* true if OTI has been set for this burst */
 
     /* Downstream sequencing (Server → Client) */
     uint16_t  downstream_seq;   /* Next seq to assign for downstream packets */
@@ -727,7 +730,7 @@ static void on_server_recv(uv_udp_t *h,
     LOG_INFO("DEBUG decode: rawlen=%zd, first_bytes=%02x%02x%02x%02x%02x\n",
              rawlen, raw[0], raw[1], raw[2], raw[3], raw[4]);
 
-    /* Parse new compact 5-byte header */
+    /* Parse extended 17-byte header with OTI for FEC decoding */
     chunk_header_t hdr;
     memcpy(&hdr, raw, sizeof(hdr));
     const uint8_t  *payload = raw + sizeof(hdr);
@@ -853,6 +856,12 @@ static void on_server_recv(uv_udp_t *h,
             sess->burst_received      = 0;
             sess->burst_symbols       = calloc(chunk_total, sizeof(uint8_t*));
             sess->burst_symbol_len    = payload_len;
+            /* Store OTI from chunk header for FEC decoding */
+            sess->burst_oti_common    = hdr.oti_common;
+            sess->burst_oti_scheme   = hdr.oti_scheme;
+            sess->burst_has_oti      = (hdr.oti_common != 0 || hdr.oti_scheme != 0);
+            LOG_INFO("DEBUG FEC: captured OTI common=0x%llx scheme=0x%x has_oti=%d\n",
+                     (unsigned long long)sess->burst_oti_common, sess->burst_oti_scheme, sess->burst_has_oti);
         }
 
         int offset = seq - sess->burst_seq_start;
@@ -878,12 +887,22 @@ static void on_server_recv(uv_udp_t *h,
             fec.symbols      = sess->burst_symbols;
             fec.symbol_len   = sess->burst_symbol_len;
             fec.total_count  = sess->burst_count_needed;
+            fec.oti_common   = sess->burst_oti_common;
+            fec.oti_scheme   = sess->burst_oti_scheme;
+            fec.has_oti      = sess->burst_has_oti;
 
-            /* Rough estimation of original len based on symbol count */
-            size_t orig_len_est = (size_t)k_est * DNSTUN_CHUNK_PAYLOAD;
-            LOG_INFO("DEBUG FEC: calling codec_fec_decode with orig_len_est=%zu\n", orig_len_est);
+            LOG_INFO("DEBUG FEC: has_oti=%d, using codec_fec_decode_oti\n", fec.has_oti);
 
-            codec_result_t fdec = codec_fec_decode(&fec, orig_len_est);
+            codec_result_t fdec;
+            if (fec.has_oti) {
+                /* Use OTI-based decoding - this handles size automatically */
+                fdec = codec_fec_decode_oti(&fec);
+            } else {
+                /* Fallback to size-based decoding */
+                size_t orig_len_est = sess->burst_symbol_len;
+                LOG_INFO("DEBUG FEC: no OTI, using legacy decode with orig_len_est=%zu\n", orig_len_est);
+                fdec = codec_fec_decode(&fec, orig_len_est);
+            }
             LOG_INFO("DEBUG FEC: decode result: error=%d, len=%zu\n", fdec.error, fdec.len);
             if (!fdec.error) {
                 const uint8_t *dec_in = fdec.data;
@@ -1051,6 +1070,9 @@ static void on_server_recv(uv_udp_t *h,
             sess->burst_symbols = NULL;
             sess->burst_count_needed = 0;
             sess->burst_received = 0;
+            sess->burst_has_oti = false;
+            sess->burst_oti_common = 0;
+            sess->burst_oti_scheme = 0;
 
         skip_fec_processing:
             ;  /* Empty statement for label */

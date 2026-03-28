@@ -41,11 +41,17 @@ typedef struct {
     uint8_t **symbols;
     size_t    symbol_len;
     int       total_count;
+    uint64_t  oti_common;           /* OTI Common (includes data size) */
+    uint32_t  oti_scheme;           /* OTI Scheme Specific */
+    bool      has_oti;              /* true if OTI is valid */
 } fec_encoded_t;
 
 fec_encoded_t codec_fec_encode(const uint8_t *in, size_t inlen, int k, int r);
 
-/* 6. FEC DECODE (RaptorQ) */
+/* 6. FEC DECODE (RaptorQ) - using OTI (preferred, size-independent) */
+codec_result_t codec_fec_decode_oti(fec_encoded_t *encoded);
+
+/* Legacy decode with explicit size (for backwards compatibility) */
 codec_result_t codec_fec_decode(fec_encoded_t *encoded, size_t original_len);
 
 void codec_fec_free(fec_encoded_t *f);

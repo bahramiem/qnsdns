@@ -334,6 +334,11 @@ fec_encoded_t codec_fec_encode(const uint8_t *in, size_t inlen, int k, int r) {
     struct RFC6330_ptr *enc = api->Encoder(RQ_ENC_8, (void*)in, inlen, 4, T, 1024*1024);
     if (!enc) return res;
 
+    /* Extract OTI from encoder before freeing it */
+    res.oti_common = api->OTI_Common(enc);
+    res.oti_scheme = api->OTI_Scheme_Specific(enc);
+    res.has_oti = true;
+
     /* Synchronous computation */
     struct RFC6330_future *f = api->compute(enc, RQ_COMPUTE_COMPLETE);
     if (f) {
@@ -383,6 +388,68 @@ fec_encoded_t codec_fec_encode(const uint8_t *in, size_t inlen, int k, int r) {
  * Fix #9: symbols must be added and end_of_input called BEFORE compute().
  * Correct order: add_symbol_id* → end_of_input → compute → future_wait.
  */
+
+/* FEC DECODE using OTI (Object Transmission Information)
+ * This is the preferred method as it handles size automatically.
+ * The OTI contains the original data size encoded by the encoder.
+ */
+codec_result_t codec_fec_decode_oti(fec_encoded_t *encoded) {
+    codec_result_t res = {0};
+    struct RFC6330_v1 *api = get_rq_api();
+    if (!api) { res.error = true; return res; }
+
+    if (!encoded->has_oti) {
+        /* Fallback: can't decode without OTI */
+        res.error = true;
+        return res;
+    }
+
+    /* Decoder(type, OTI_Common, OTI_Scheme_Specific) - size is embedded in OTI */
+    struct RFC6330_ptr *dec = api->Decoder(RQ_DEC_8, encoded->oti_common, encoded->oti_scheme);
+    if (!dec) { res.error = true; return res; }
+
+    uint16_t T = (uint16_t)encoded->symbol_len;
+
+    /* Step 1: add all available symbols */
+    for (int i = 0; i < encoded->total_count; i++) {
+        if (encoded->symbols[i]) {
+            void *p = encoded->symbols[i];
+            /* add_symbol_id(dec, data, size, id) where id = esi (sbn=0) */
+            api->add_symbol_id(dec, &p, T, (uint32_t)i);
+        }
+    }
+
+    /* Step 2: signal no more input */
+    api->end_of_input(dec, RQ_NO_FILL);
+
+    /* Step 3: trigger computation and wait */
+    struct RFC6330_future *f = api->compute(dec, RQ_COMPUTE_COMPLETE);
+    if (f) {
+        api->future_wait(f);
+        api->future_free(&f);
+    }
+
+    /* Step 4: extract decoded data
+     * The decoder knows the exact size from OTI, so we just need a buffer.
+     * Allocate extra space for alignment. */
+    size_t max_size = 65536; /* reasonable max for our use case */
+    res.data = buffer_pool_acquire(max_size);
+    if (!res.data) { api->free(&dec); res.error = true; return res; }
+
+    void *out = res.data;
+    struct RFC6330_Dec_Result dres = api->decode_aligned(dec, &out, (uint64_t)max_size, 0);
+    if (dres.written == 0 || dres.written > max_size) {
+        buffer_pool_release(res.data, max_size);
+        res.data = NULL;
+        res.error = true;
+    } else {
+        res.len = (size_t)dres.written;
+    }
+
+    api->free(&dec);
+    return res;
+}
+
 codec_result_t codec_fec_decode(fec_encoded_t *encoded, size_t original_len) {
     codec_result_t res = {0};
     struct RFC6330_v1 *api = get_rq_api();
@@ -433,11 +500,13 @@ codec_result_t codec_fec_decode(fec_encoded_t *encoded, size_t original_len) {
 }
 
 void codec_fec_free(fec_encoded_t *f) {
-    if (!f->symbols) return;
-    for (int i = 0; i < f->total_count; i++) {
-        if (f->symbols[i]) free(f->symbols[i]);
+    if (!f) return;
+    if (f->symbols) {
+        for (int i = 0; i < f->total_count; i++) {
+            if (f->symbols[i]) free(f->symbols[i]);
+        }
+        free(f->symbols);
     }
-    free(f->symbols);
     memset(f, 0, sizeof(*f));
 }
 

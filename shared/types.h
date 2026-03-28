@@ -147,7 +147,7 @@ typedef struct resolver {
 
 /* ──────────────────────────────────────────────
    New Compact DNS Tunnel chunk header (5 bytes)
-   Used for upstream: Client → Server (Base32 in QNAME)
+    Used for upstream: Client → Server (Base32 in QNAME)
 ────────────────────────────────────────────── */
 #pragma pack(push, 1)
 typedef struct {
@@ -155,7 +155,10 @@ typedef struct {
     uint8_t  flags;          /* protocol flags (FEC, Poll, etc.) */
     uint16_t seq;            /* sequence number (2 bytes) */
     uint8_t  chunk_info;     /* high nibble: chunk_total-1, low nibble: fec_k */
-} chunk_header_t;            /* Total: 5 bytes */
+    /* OTI (Object Transmission Information) for FEC decoder - 12 bytes */
+    uint64_t oti_common;     /* OTI Common (includes data size) */
+    uint32_t oti_scheme;     /* OTI Scheme Specific */
+} chunk_header_t;            /* Total: 17 bytes */
 #pragma pack(pop)
 
 /* ──────────────────────────────────────────────

@@ -218,8 +218,9 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
                             const char *domain)
 {
     /* Encode header + payload into a single base32 blob */
-    /* New header is 5 bytes, payload can be up to DNSTUN_CHUNK_PAYLOAD */
-    uint8_t raw[5 + DNSTUN_CHUNK_PAYLOAD];
+    /* Extended header is 17 bytes (with OTI), payload can be up to DNSTUN_CHUNK_PAYLOAD */
+    #define HDR_AND_PAYLOAD_MAX (17 + DNSTUN_CHUNK_PAYLOAD)
+    uint8_t raw[HDR_AND_PAYLOAD_MAX];
     size_t  rawlen = 0;
     memcpy(raw, hdr, sizeof(chunk_header_t));   rawlen += sizeof(chunk_header_t);
     if (payload && paylen > 0) {
@@ -238,16 +239,16 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
 
     /* Base32 encode the raw data (UPPERCASE for DNS compatibility)
      * Formula: base32 output = ceil(input_len * 8 / 5)
-     * For header(5) + payload(137) = 142 bytes: 142 * 8 / 5 = 228 bytes */
+     * For header(17) + payload(110) = 127 bytes: 127 * 8 / 5 = 204 bytes */
     #define BASE32_MAX_OUTPUT(max_input) (((max_input) * 8 + 4) / 5)
-    char b32_raw[BASE32_MAX_OUTPUT(5 + DNSTUN_CHUNK_PAYLOAD)];
+    char b32_raw[BASE32_MAX_OUTPUT(HDR_AND_PAYLOAD_MAX)];
     LOG_INFO("DEBUG: build_dns_query - rawlen=%zu (sizeof(chunk_header_t)=%zu, paylen=%zu)\n", 
              rawlen, sizeof(chunk_header_t), paylen);
     size_t b32_len = base32_encode((uint8_t*)b32_raw, raw, rawlen);
 
     /* Use slipstream's inline_dotify to split into labels every 57 chars */
     /* Add extra space for dots: approximately raw_len/57 extra chars */
-    char b32_dotted[BASE32_MAX_OUTPUT(5 + DNSTUN_CHUNK_PAYLOAD) + 64];
+    char b32_dotted[BASE32_MAX_OUTPUT(HDR_AND_PAYLOAD_MAX) + 64];
     memcpy(b32_dotted, b32_raw, b32_len);
     size_t dotted_len = inline_dotify(b32_dotted, sizeof(b32_dotted), b32_len);
 
@@ -2685,7 +2686,7 @@ static void send_mtu_handshake(int session_idx) {
     hs_payload[4] = (uint8_t)(downstream_mtu & 0xFF);
     
     /* Send via the normal chunk path - server will detect handshake by payload_len == 5 */
-    fire_dns_chunk_symbol(session_idx, 0, hs_payload, sizeof(hs_payload), 0);
+    fire_dns_chunk_symbol(session_idx, 0, hs_payload, sizeof(hs_payload), 0, 0, 0);
 }
 
 /* Fire one DNS query chunk for a session.
@@ -2693,7 +2694,8 @@ static void send_mtu_handshake(int session_idx) {
    Fix: Fall back to dead resolvers if no active resolvers available. */
 static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
                                   const uint8_t *payload, size_t paylen,
-                                  int total_symbols)
+                                  int total_symbols,
+                                  uint64_t oti_common, uint32_t oti_scheme)
 {
     int ridx = rpool_next(&g_pool);
     
@@ -2725,7 +2727,7 @@ static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
 
     session_t *sess = &g_sessions[session_idx];
 
-    /* Build chunk header (new compact 4-byte format) */
+    /* Build chunk header (extended 17-byte format with OTI) */
     chunk_header_t hdr = {0};
     hdr.flags          = (g_cfg.encryption ? CHUNK_FLAG_ENCRYPTED : 0) | CHUNK_FLAG_COMPRESSED;
     if (paylen == 0) hdr.flags |= CHUNK_FLAG_POLL; /* poll flag */
@@ -2749,6 +2751,10 @@ static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
         fec_k_val = chunk_total - 1;  /* Assume k=1, so r = total - 1 */
     }
     chunk_set_info(&hdr.chunk_info, chunk_total, fec_k_val);
+    
+    /* Include OTI for FEC decoding (only valid if has_oti is true) */
+    hdr.oti_common = oti_common;
+    hdr.oti_scheme = oti_scheme;
 
     int didx = rpool_flux_domain(&g_cfg);
     const char *domain = (g_cfg.domain_count > 0)
@@ -2880,9 +2886,10 @@ static void on_poll_timer(uv_timer_t *t) {
             
             fec_encoded_t fec = codec_fec_encode(enc_in, enc_len, k, r);
             if (fec.total_count > 0) {
-                /* 4. SEND SYMBOLS */
+                /* 4. SEND SYMBOLS - include OTI for server-side FEC decoding */
                 for (int s = 0; s < fec.total_count; s++) {
-                    fire_dns_chunk_symbol(i, sess->tx_next++, fec.symbols[s], fec.symbol_len, fec.total_count);
+                    fire_dns_chunk_symbol(i, sess->tx_next++, fec.symbols[s], fec.symbol_len, fec.total_count,
+                                         fec.has_oti ? fec.oti_common : 0, fec.has_oti ? fec.oti_scheme : 0);
                 }
             }
 
@@ -2892,14 +2899,14 @@ static void on_poll_timer(uv_timer_t *t) {
             sess->send_len = 0;
         } else {
             /* No upload — send empty POLL to pull downstream data */
-            fire_dns_chunk_symbol(i, sess->tx_next++, NULL, 0, 0);
+            fire_dns_chunk_symbol(i, sess->tx_next++, NULL, 0, 0, 0, 0);
 
             /* 5. CHAFFING (Decoy) */
             if (g_cfg.chaffing && (rand() % 10 == 0)) {
                 /* Send a random-length decoy query once in a while */
                 uint8_t chaff[32];
                 for (int c=0; c<32; c++) chaff[c] = (uint8_t)(rand() & 0xFF);
-                fire_dns_chunk_symbol(i, 0xFFFF, chaff, 16 + (rand() % 16), 0);
+                fire_dns_chunk_symbol(i, 0xFFFF, chaff, 16 + (rand() % 16), 0, 0, 0);
             }
         }
     }
