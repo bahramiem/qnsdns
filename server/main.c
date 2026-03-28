@@ -600,12 +600,14 @@ static void on_server_recv(uv_udp_t *h,
     }
     
     /* Find domain suffix in QNAME to determine payload start.
-     * Try each configured domain to find matching suffix.
+     * Strategy: Try stripping domain labels from the end and check if remaining
+     * parts look like valid base32 data (non-empty, starts with alphanumeric).
      * Use case-insensitive comparison (DNS is case-insensitive). */
-    int domain_parts = 0;  /* Number of labels in matched domain */
+    int domain_parts = 2;  /* Default: assume domain like "example.com" */
     bool is_mtu_probe = false;
     bool is_crypto_probe = false;
     
+    /* Try to match against configured domains first */
     for (int d = 0; d < g_cfg.domain_count; d++) {
         const char *domain = g_cfg.domains[d];
         char domain_tmp[256];
@@ -641,14 +643,9 @@ static void on_server_recv(uv_udp_t *h,
         }
     }
     
-    /* If no configured domain matched, assume it's a 2-part domain (e.g., "example.com") */
-    if (domain_parts == 0) {
-        domain_parts = 2;  /* Default: assume domain like "example.com" */
-    }
-    
     /* Ensure we don't strip more parts than exist */
-    if (domain_parts > part_count) {
-        domain_parts = part_count;
+    if (domain_parts > part_count - 1) {  /* Keep at least 1 part for payload */
+        domain_parts = part_count - 1;
     }
     
     /* payload_start_idx is where our data starts (everything before domain suffix) */
@@ -711,6 +708,10 @@ static void on_server_recv(uv_udp_t *h,
     if (b32_payload[0] == '\0' && !is_mtu_probe) {
         return;
     }
+    
+    LOG_INFO("DEBUG QNAME parse: qname='%s', parts=%d, domain_parts=%d, payload_start=%d, payload='%s'\n",
+             qname, part_count, domain_parts, payload_start_idx, b32_payload);
+    
     /* Decode b32 payload → raw bytes (chunk_header + data)
      * Increased to 512 to safely handle max-length Base32 QNAMEs (253 chars). */
     uint8_t raw[512];
@@ -721,6 +722,9 @@ static void on_server_recv(uv_udp_t *h,
                 src_ip, rawlen, sizeof(chunk_header_t));
         return;
     }
+    
+    LOG_INFO("DEBUG decode: rawlen=%zd, first_bytes=%02x%02x%02x%02x%02x\n",
+             rawlen, raw[0], raw[1], raw[2], raw[3], raw[4]);
 
     /* Parse new compact 5-byte header */
     chunk_header_t hdr;
@@ -769,6 +773,8 @@ static void on_server_recv(uv_udp_t *h,
     /* DEBUG packet: payload starts with standardized test prefix - echo back through normal pipeline */
     bool is_debug = (payload_len >= strlen(DNSTUN_DEBUG_PREFIX) && 
                      memcmp(payload, DNSTUN_DEBUG_PREFIX, strlen(DNSTUN_DEBUG_PREFIX)) == 0);
+    LOG_INFO("DEBUG check: payload_len=%zu, is_debug=%d, session_id=%u, seq=%u\n",
+             payload_len, is_debug, session_id, seq);
     if (is_debug) {
         /* Echo the payload back through the normal response path */
         uint8_t reply[512];
