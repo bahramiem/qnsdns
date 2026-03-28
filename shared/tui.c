@@ -1,5 +1,6 @@
 #include "tui.h"
 #include "config.h"
+#include "mgmt_protocol.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>

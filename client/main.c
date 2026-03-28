@@ -2594,7 +2594,7 @@ static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
     if (total_symbols > 0) hdr.flags |= CHUNK_FLAG_FEC; /* fec flag */
     
     /* Session ID in bits 4-7 of flags */
-    chunk_set_session_id(&hdr.flags, (uint8_t)session_idx);
+    chunk_set_session_id(&hdr, (uint8_t)session_idx);
     
     hdr.seq = seq;
     
