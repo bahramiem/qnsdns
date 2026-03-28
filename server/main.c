@@ -867,7 +867,11 @@ static void on_server_recv(uv_udp_t *h,
         int k_est = sess->burst_count_needed - (int)sess->cl_fec_k;
         if (k_est < 1) k_est = 1;
 
+        LOG_INFO("DEBUG FEC decode check: burst_received=%d, k_est=%d, count_needed=%d, cl_fec_k=%d\n",
+                 sess->burst_received, k_est, sess->burst_count_needed, sess->cl_fec_k);
+
         if (sess->burst_received >= k_est) {
+            LOG_INFO("DEBUG FEC: Starting decode with %d symbols (need %d)\n", sess->burst_received, k_est);
             fec_encoded_t fec = {0};
             fec.symbols      = sess->burst_symbols;
             fec.symbol_len   = sess->burst_symbol_len;
@@ -875,8 +879,10 @@ static void on_server_recv(uv_udp_t *h,
 
             /* Rough estimation of original len based on symbol count */
             size_t orig_len_est = (size_t)k_est * DNSTUN_CHUNK_PAYLOAD;
+            LOG_INFO("DEBUG FEC: calling codec_fec_decode with orig_len_est=%zu\n", orig_len_est);
 
             codec_result_t fdec = codec_fec_decode(&fec, orig_len_est);
+            LOG_INFO("DEBUG FEC: decode result: error=%d, len=%zu\n", fdec.error, fdec.len);
             if (!fdec.error) {
                 const uint8_t *dec_in = fdec.data;
                 size_t         dec_len = fdec.len;
@@ -896,6 +902,7 @@ static void on_server_recv(uv_udp_t *h,
 
                 /* 2. DECOMPRESS (0 = auto-detect size via decompress_bound) */
                 codec_result_t zdec = codec_decompress(dec_in, dec_len, 0);
+                LOG_INFO("DEBUG DECOMPRESS: result: error=%d, len=%zu\n", zdec.error, zdec.len);
                 if (!zdec.error) {
                     /* SUCCESS: Forward reassembled, decrypted, decompressed packet */
                     if (!sess->tcp_connected) {
