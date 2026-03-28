@@ -437,6 +437,24 @@ static void render_dashboard(tui_ctx_t *t, int x, int y, int width, int height) 
     printf("\033[%d;%dH" ANSI_BOLD "Lost:     " ANSI_RESET "%6llu", session_y + 15, x + 2,
            (unsigned long long)t->stats->queries_lost);
     
+    /* SOCKS5 Activity */
+    if (strcmp(t->stats->mode, "CLIENT") == 0) {
+        printf("\033[%d;%dH" ANSI_DIM "SOCKS5 Activity ──────" ANSI_RESET, session_y + 17, x + 2);
+        printf("\033[%d;%dH" ANSI_BOLD "Total:    " ANSI_RESET "%6u", session_y + 18, x + 2, t->stats->socks5_total_conns);
+        printf("\033[%d;%dH" ANSI_BOLD "Errors:   " ANSI_RESET ANSI_RED "%6u" ANSI_RESET, session_y + 19, x + 2, t->stats->socks5_total_errors);
+        
+        if (t->stats->socks5_last_target[0]) {
+            printf("\033[%d;%dH" ANSI_DIM "Last target:" ANSI_RESET, session_y + 20, x + 2);
+            printf("\033[%d;%dH" ANSI_CYAN " %s" ANSI_RESET, session_y + 21, x + 2, t->stats->socks5_last_target);
+            
+            if (t->stats->socks5_last_error != 0) {
+                printf("\033[%d;%dH" ANSI_BR_RED " ! Error 0x%02x" ANSI_RESET, session_y + 22, x + 2, t->stats->socks5_last_error);
+            } else {
+                printf("\033[%d;%dH" ANSI_BR_GREEN " ✓ Connected" ANSI_RESET, session_y + 22, x + 2);
+            }
+        }
+    }
+    
     /* Resolvers Panel */
     draw_box(mid_x, session_y, panel_w, session_h, ANSI_BR_CYAN, " Resolvers ");
     

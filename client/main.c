@@ -2076,6 +2076,12 @@ static size_t socks5_handle_data(socks5_client_t *c,
         c->state = 2;
         sess->client_ptr = c;  /* Link session back to SOCKS5 client */
         sess->socks5_connected = false;  /* Don't ack until server confirms */
+        
+        /* Update TUI stats */
+        g_stats.socks5_total_conns++;
+        snprintf(g_stats.socks5_last_target, sizeof(g_stats.socks5_last_target),
+                 "%s:%d", sess->target_host, sess->target_port);
+        
         g_stats.active_sessions++;
 
         LOG_INFO("SOCKS5 CONNECT %s:%d (session %d) - waiting for server ack\n",
@@ -2382,6 +2388,7 @@ static void on_dns_recv(uv_udp_t *h,
                                                     uint8_t ok[10] = {0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0};
                                                     socks5_send(c, ok, 10);
                                                     s->socks5_connected = true;
+                                                    g_stats.socks5_last_error = 0;
                                                     LOG_INFO("Session %d: SOCKS5 success (ACK processed in sequence)\n", sidx);
                                                 } else {
                                                     /* Mapped Error: status_byte from server mapped to SOCKS5 reply field */
@@ -2389,6 +2396,8 @@ static void on_dns_recv(uv_udp_t *h,
                                                      * 0x04=Host unreachable, 0x05=Refused, etc. */
                                                     uint8_t err[10] = {0x05, status_byte, 0x00, 0x01, 0, 0, 0, 0, 0, 0};
                                                     socks5_send(c, err, 10);
+                                                    g_stats.socks5_total_errors++;
+                                                    g_stats.socks5_last_error = status_byte;
                                                     LOG_WARN("Session %d: SOCKS5 error %02x from server\n", sidx, status_byte);
                                                     uv_close((uv_handle_t*)&c->tcp, on_socks5_close);
                                                 }

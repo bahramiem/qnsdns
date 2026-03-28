@@ -25,6 +25,12 @@ typedef struct {
     uint64_t last_server_rx_ms;  /* time of last successful TXT response from server */
     int      server_connected;   /* 1 = client has connected to server */
     char     mode[32];           /* "CLIENT" or "SERVER" */
+    
+    /* SOCKS5 Telemetry */
+    uint32_t socks5_total_conns;
+    uint32_t socks5_total_errors;
+    char     socks5_last_target[64]; /* host:port */
+    uint8_t  socks5_last_error;      /* Last SOCKS5 error code */
 } tui_stats_t;
 
 /* ──────────────────────────────────────────────
