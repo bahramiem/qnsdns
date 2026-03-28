@@ -19,7 +19,7 @@
    Constants
 ────────────────────────────────────────────── */
 #define DNSTUN_MAX_RESOLVERS     4096
-#define DNSTUN_MAX_SESSIONS      16     /* 4-bit session ID: 0-15 */
+#define DNSTUN_MAX_SESSIONS      256    /* 8-bit session ID: 0-255 */
 #define DNSTUN_MAX_DOMAINS       32
 #define DNSTUN_MAX_LABEL_LEN     63
 #define DNSTUN_MAX_QNAME_LEN     253
@@ -132,10 +132,11 @@ typedef struct resolver {
 ────────────────────────────────────────────── */
 #pragma pack(push, 1)
 typedef struct {
-    uint8_t  flags;          /* bits 0-3: flags, bits 4-7: session_id (4 bits = 0-15) */
+    uint8_t  session_id;     /* 8-bit session ID (0-255) */
+    uint8_t  flags;          /* protocol flags (FEC, Poll, etc.) */
     uint16_t seq;            /* sequence number (2 bytes) */
     uint8_t  chunk_info;     /* high nibble: chunk_total-1, low nibble: fec_k */
-} chunk_header_t;            /* Total: 4 bytes */
+} chunk_header_t;            /* Total: 5 bytes */
 #pragma pack(pop)
 
 /* ──────────────────────────────────────────────
@@ -145,10 +146,10 @@ typedef struct {
 ────────────────────────────────────────────── */
 #pragma pack(push, 1)
 typedef struct {
+    uint8_t  session_id;     /* 8-bit session ID (0-255) */
     uint8_t  flags;          /* bit 0: encoding_type (0=base64, 1=hex)
                               * bit 1: has_sequence (1 = seq field is valid)
                               * bits 2-7: reserved */
-    uint8_t  session_id;     /* session ID (4 bits used, 0-15) */
     uint16_t seq;            /* sequence number (2 bytes) */
 } server_response_header_t;   /* Total: 4 bytes */
 #pragma pack(pop)
@@ -208,8 +209,6 @@ typedef struct {
 #define CHUNK_FLAG_COMPRESSED  0x02
 #define CHUNK_FLAG_FEC        0x04
 #define CHUNK_FLAG_POLL       0x08
-#define CHUNK_SESSION_MASK    0xF0
-#define CHUNK_SESSION_SHIFT   4
 
 /* Flag bit masks for server_response_header_t */
 #define RESP_ENC_MASK        0x01  /* 0=base64, 1=hex */
@@ -287,12 +286,12 @@ static inline int decode_varint16(const uint8_t *in, size_t len, uint16_t *out) 
 }
 
 /* Inline functions for header manipulation */
-static inline uint8_t chunk_get_session_id(uint8_t flags) {
-    return (flags & CHUNK_SESSION_MASK) >> CHUNK_SESSION_SHIFT;
+static inline uint8_t chunk_get_session_id(const chunk_header_t *hdr) {
+    return hdr->session_id;
 }
 
-static inline void chunk_set_session_id(uint8_t *flags, uint8_t sid) {
-    *flags = (*flags & ~CHUNK_SESSION_MASK) | ((sid << CHUNK_SESSION_SHIFT) & CHUNK_SESSION_MASK);
+static inline void chunk_set_session_id(chunk_header_t *hdr, uint8_t sid) {
+    hdr->session_id = sid;
 }
 
 static inline uint8_t chunk_get_chunk_total(uint8_t chunk_info) {

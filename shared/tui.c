@@ -674,6 +674,24 @@ static void render_debug_view(tui_ctx_t *t, int x, int y, int width, int height)
 static void render_help_view(tui_ctx_t *t, int x, int y, int width, int height) {
     int content_height = height - LOG_HEIGHT - 2;
     
+#ifdef _WIN32
+    /* Use ASCII box-drawing for Windows compatibility */
+    #define BOX_TL "+"
+    #define BOX_TR "+"
+    #define BOX_BL "+"
+    #define BOX_BR "+"
+    #define BOX_V  "|"
+    #define BOX_H  "-"
+#else
+    /* Use Unicode box-drawing for better aesthetics on Unix */
+    #define BOX_TL "\xe2\x94\x8c"
+    #define BOX_TR "\xe2\x94\x90"
+    #define BOX_BL "\xe2\x94\x94"
+    #define BOX_BR "\xe2\x94\x98"
+    #define BOX_V  "\xe2\x94\x82"
+    #define BOX_H  "\xe2\x94\x80"
+#endif
+    
     draw_box(x, y, width, content_height, ANSI_BR_CYAN, " DNSTUN Help Guide ");
     
     int row = y + 2;
@@ -681,19 +699,19 @@ static void render_help_view(tui_ctx_t *t, int x, int y, int width, int height) 
     int section_width = (width - 6) / 2;
     
     /* Left Column: Navigation */
-    printf("\033[%d;%dH" ANSI_BOLD ANSI_BR_WHITE "╭─ Navigation ─────────────────────" ANSI_RESET, row++, col);
+    printf("\033[%d;%dH" ANSI_BOLD ANSI_BR_WHITE BOX_TL BOX_H BOX_H BOX_H " Navigation " BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_TR ANSI_RESET, row++, col);
     printf("\033[%d;%dH" ANSI_CYAN "  1  " ANSI_RESET "Dashboard (main stats view)", row++, col);
     printf("\033[%d;%dH" ANSI_CYAN "  2  " ANSI_RESET "Resolver Pool", row++, col);
     printf("\033[%d;%dH" ANSI_CYAN "  3  " ANSI_RESET "Configuration Editor", row++, col);
     printf("\033[%d;%dH" ANSI_CYAN "  4  " ANSI_RESET "Debug Logs (full screen)", row++, col);
     printf("\033[%d;%dH" ANSI_CYAN "  5  " ANSI_RESET "This Help Guide", row++, col);
     printf("\033[%d;%dH" ANSI_CYAN "  6  " ANSI_RESET "Protocol Test", row++, col);
-    printf("\033[%d;%dH" ANSI_BR_WHITE "╰────────────────────────────────────────" ANSI_RESET, row++, col);
+    printf("\033[%d;%dH" ANSI_BR_WHITE BOX_BL BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_BR ANSI_RESET, row++, col);
     
     row++; /* spacing */
     
     /* Left Column: Config Panel Commands */
-    printf("\033[%d;%dH" ANSI_BOLD ANSI_BR_WHITE "╭─ Config Panel Commands ─────────────" ANSI_RESET, row++, col);
+    printf("\033[%d;%dH" ANSI_BOLD ANSI_BR_WHITE BOX_TL BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H " Config Commands " BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_TR ANSI_RESET, row++, col);
     printf("\033[%d;%dH" ANSI_CYAN "  d  " ANSI_RESET "Toggle Encryption", row++, col);
     printf("\033[%d;%dH" ANSI_CYAN "  f  " ANSI_RESET "Toggle Jitter", row++, col);
     printf("\033[%d;%dH" ANSI_CYAN "  g  " ANSI_RESET "Toggle Padding", row++, col);
@@ -701,61 +719,44 @@ static void render_help_view(tui_ctx_t *t, int x, int y, int width, int height) 
     printf("\033[%d;%dH" ANSI_CYAN "  i  " ANSI_RESET "Toggle Chrome Cover", row++, col);
     printf("\033[%d;%dH" ANSI_CYAN "  j  " ANSI_RESET "Toggle DNS Flux", row++, col);
     printf("\033[%d;%dH" ANSI_CYAN "  r  " ANSI_RESET "Add Resolver", row++, col);
-    printf("\033[%d;%dH" ANSI_BR_WHITE "╰────────────────────────────────────────" ANSI_RESET, row++, col);
+    printf("\033[%d;%dH" ANSI_BR_WHITE BOX_BL BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_BR ANSI_RESET, row++, col);
     
     row++; /* spacing */
     
-    /* Left Column: Log Level (Debug panel only) */
-    printf("\033[%d;%dH" ANSI_BOLD ANSI_BR_WHITE "╭─ Log Level (in Debug panel) ─────────" ANSI_RESET, row++, col);
-    printf("\033[%d;%dH" ANSI_CYAN "  0  " ANSI_RESET "Errors only", row++, col);
-    printf("\033[%d;%dH" ANSI_CYAN "  !  " ANSI_RESET "Warnings + Errors", row++, col);
-    printf("\033[%d;%dH" ANSI_CYAN "  @  " ANSI_RESET "Info + Warnings + Errors", row++, col);
-    printf("\033[%d;%dH" ANSI_CYAN "  #  " ANSI_RESET "Verbose (all messages)", row++, col);
-    printf("\033[%d;%dH" ANSI_BR_WHITE "╰────────────────────────────────────────" ANSI_RESET, row++, col);
+    /* Left Column: Tunnel Control */
+    printf("\033[%d;%dH" ANSI_BOLD ANSI_BR_WHITE BOX_TL BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H " Tunnel Control " BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_TR ANSI_RESET, row++, col);
+    printf("\033[%d;%dH" ANSI_BR_RED   "  X  " ANSI_RESET "Close Tunnel (graceful)", row++, col);
+    printf("\033[%d;%dH" ANSI_BR_GREEN  "  R  " ANSI_RESET "Restart Tunnel", row++, col);
+    printf("\033[%d;%dH" ANSI_BR_YELLOW "  Q  " ANSI_RESET "Quit TUI (tunnel keeps running)", row++, col);
+    printf("\033[%d;%dH" ANSI_BR_WHITE BOX_BL BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_BR ANSI_RESET, row++, col);
     
-    /* Right Column: TUI Control */
+    /* Right Column: Log Level (Debug panel only) */
     int right_col = col + section_width + 4;
     int right_row = y + 2;
     
-    printf("\033[%d;%dH" ANSI_BOLD ANSI_BR_GREEN "╭─ TUI & Tunnel Control ──────────────" ANSI_RESET, right_row++, right_col);
-    printf("\033[%d;%dH" ANSI_BR_YELLOW "  Q  " ANSI_RESET "Quit TUI (tunnel keeps running!)", right_row++, right_col);
-    printf("\033[%d;%dH" ANSI_BR_YELLOW "      " ANSI_RESET "Close this terminal or press", right_row++, right_col);
-    printf("\033[%d;%dH" ANSI_BR_YELLOW "      " ANSI_RESET "Ctrl+C to exit TUI only.", right_row++, right_col);
-    printf("\033[%d;%dH" ANSI_BR_YELLOW "      " ANSI_RESET "The tunnel will continue in", right_row++, right_col);
-    printf("\033[%d;%dH" ANSI_BR_YELLOW "      " ANSI_RESET "background.", right_row++, right_col);
-    printf("\033[%d;%dH" ANSI_BR_WHITE "╰────────────────────────────────────────" ANSI_RESET, right_row++, right_col);
-    
-    right_row++; /* spacing */
-    
-    /* Right Column: Reconnect Info */
-    printf("\033[%d;%dH" ANSI_BOLD ANSI_BR_MAGENTA "╭─ Reconnecting TUI ─────────────────" ANSI_RESET, right_row++, right_col);
-    printf("\033[%d;%dH" ANSI_WHITE "  To re-open the TUI after closing:" ANSI_RESET, right_row++, right_col);
-    printf("\033[%d;%dH" ANSI_CYAN "      $ " ANSI_RESET "./dnstun-client", right_row++, right_col);
-    printf("\033[%d;%dH" ANSI_CYAN "      $ " ANSI_RESET "./dnstun-server", right_row++, right_col);
-    printf("\033[%d;%dH" ANSI_WHITE "  (run again from another terminal)" ANSI_RESET, right_row++, right_col);
-    printf("\033[%d;%dH" ANSI_BR_WHITE "╰────────────────────────────────────────" ANSI_RESET, right_row++, right_col);
+    printf("\033[%d;%dH" ANSI_BOLD ANSI_BR_WHITE BOX_TL BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H " Log Level " BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_TR ANSI_RESET, right_row++, right_col);
+    printf("\033[%d;%dH" ANSI_CYAN "  0  " ANSI_RESET "Errors only", right_row++, right_col);
+    printf("\033[%d;%dH" ANSI_CYAN "  !  " ANSI_RESET "Warnings + Errors", right_row++, right_col);
+    printf("\033[%d;%dH" ANSI_CYAN "  @  " ANSI_RESET "Info + Warnings + Errors", right_row++, right_col);
+    printf("\033[%d;%dH" ANSI_CYAN "  #  " ANSI_RESET "Verbose (all messages)", right_row++, right_col);
+    printf("\033[%d;%dH" ANSI_BR_WHITE BOX_BL BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_BR ANSI_RESET, right_row++, right_col);
     
     right_row++; /* spacing */
     
     /* Right Column: Remote Management */
-    printf("\033[%d;%dH" ANSI_BOLD ANSI_BR_BLUE "╭─ Remote Management ─────────────────" ANSI_RESET, right_row++, right_col);
+    printf("\033[%d;%dH" ANSI_BOLD ANSI_BR_BLUE BOX_TL BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H " Remote Access " BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_TR ANSI_RESET, right_row++, right_col);
     printf("\033[%d;%dH" ANSI_WHITE "  SSH tunnel for remote TUI:" ANSI_RESET, right_row++, right_col);
     printf("\033[%d;%dH" ANSI_CYAN " $ " ANSI_RESET "ssh -L 9090:localhost:9090", right_row++, right_col);
-    printf("\033[%d;%dH" ANSI_CYAN "   " ANSI_RESET " user@your-server", right_row++, right_col);
+    printf("\033[%d;%dH" ANSI_CYAN "     " ANSI_RESET " user@your-server", right_row++, right_col);
     printf("\033[%d;%dH" ANSI_CYAN " $ " ANSI_RESET "./dnstun-tui --host localhost", right_row++, right_col);
-    printf("\033[%d;%dH" ANSI_BR_WHITE "╰────────────────────────────────────────" ANSI_RESET, right_row++, right_col);
+    printf("\033[%d;%dH" ANSI_BR_WHITE BOX_BL BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_H BOX_BR ANSI_RESET, right_row++, right_col);
     
-    /* Info Box at Bottom - properly sized NOTE */
-    int note_box_width = width - 4;
-    row = y + content_height - 9;
-    printf("\033[%d;%dH" ANSI_BR_CYAN "┌%.*s┐" ANSI_RESET, row, col, note_box_width, "──────────────────────────────────────────────────────────────────────────────");
-    row++;
-    printf("\033[%d;%dH" ANSI_BR_CYAN "│" ANSI_RESET " " ANSI_BOLD ANSI_BR_WHITE "NOTE:" ANSI_RESET " Press [Q] to detach TUI. Tunnel continues running!", row++, col);
-    printf("\033[%d;%dH" ANSI_BR_CYAN "│" ANSI_RESET, row++, col);
-    printf("\033[%d;%dH" ANSI_BR_CYAN "│" ANSI_RESET " Close terminal or Ctrl+C to exit TUI only. Run ./dnstun-client", row++, col);
-    printf("\033[%d;%dH" ANSI_BR_CYAN "│" ANSI_RESET " again to reconnect TUI.", row++, col);
-    row++;
-    printf("\033[%d;%dH" ANSI_BR_CYAN "└%.*s┘" ANSI_RESET, row, col, note_box_width, "──────────────────────────────────────────────────────────────────────────────");
+#undef BOX_TL
+#undef BOX_TR
+#undef BOX_BL
+#undef BOX_BR
+#undef BOX_V
+#undef BOX_H
     
     /* Live Log Panel */
     draw_log_panel(t, x, y + content_height, width, LOG_HEIGHT);
@@ -860,8 +861,8 @@ void tui_handle_key(tui_ctx_t *t, int key) {
         case '4': t->panel = 3; break;
         case '5': t->panel = 4; break;
         case '6': t->panel = 5; break;
-        case 'x':
-        case 'X':
+        case 't':
+        case 'T':
             t->panel = 5;  /* Protocol Test panel */
             /* Trigger protocol test */
             if (t->send_debug_cb && !t->proto_test.test_pending) {
@@ -871,6 +872,18 @@ void tui_handle_key(tui_ctx_t *t, int key) {
                 t->proto_test.last_test_sent_ms = uv_hrtime() / 1000000ULL;
                 t->proto_test.test_pending = 1;
                 t->send_debug_cb(t->proto_test.test_payload, t->proto_test.test_sequence);
+            }
+            break;
+        case 'X':
+            /* Close tunnel (graceful) */
+            if (t->send_command_cb) {
+                t->send_command_cb(MGMT_CMD_CLOSE_TUNNEL);
+            }
+            break;
+        case 'R':
+            /* Restart tunnel */
+            if (t->send_command_cb) {
+                t->send_command_cb(MGMT_CMD_RESTART_TUNNEL);
             }
             break;
         case 'q': 

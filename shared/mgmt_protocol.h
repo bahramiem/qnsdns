@@ -43,6 +43,8 @@ typedef enum {
     MGMT_CMD_SET_BANDWIDTH_LIMIT= 0x11, /* Set bandwidth limit */
     MGMT_CMD_CLOSE_SESSION    = 0x20,  /* Close specific session */
     MGMT_CMD_CLOSE_ALL_SESSIONS= 0x21, /* Close all sessions */
+    MGMT_CMD_CLOSE_TUNNEL     = 0x22,  /* Gracefully close tunnel */
+    MGMT_CMD_RESTART_TUNNEL   = 0x23,  /* Restart tunnel */
     MGMT_CMD_FLUSH_LOGS       = 0x30,  /* Flush log buffer */
     MGMT_CMD_SHUTDOWN         = 0xFF   /* Shutdown core (dangerous!) */
 } mgmt_command_type_t;

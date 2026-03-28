@@ -104,9 +104,20 @@ static uint16_t rand_u16(void) {
     return (uint16_t)(rand() & 0xFFFF);
 }
 
-/* Generate a random 4-bit session ID (0-15, embedded in chunk header flags) */
-static uint8_t make_session_id(void) {
-    return (uint8_t)(rand() & 0x0F);  /* Only use lower 4 bits */
+/* Generate a unique 8-bit session ID (0-255) */
+static uint8_t get_unused_session_id(void) {
+    for (int i = 0; i < 256; i++) {
+        uint8_t sid = (uint8_t)i;
+        bool in_use = false;
+        for (int j = 0; j < DNSTUN_MAX_SESSIONS; j++) {
+            if (g_sessions[j].established && !g_sessions[j].closed && g_sessions[j].session_id == sid) {
+                in_use = true;
+                break;
+            }
+        }
+        if (!in_use) return sid;
+    }
+    return 0; /* Should not happen with DNSTUN_MAX_SESSIONS <= 256 */
 }
 
 /* ────────────────────────────────────────────── */
@@ -203,10 +214,10 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
                             const char *domain)
 {
     /* Encode header + payload into a single base32 blob */
-    /* New header is 4 bytes, payload can be up to DNSTUN_CHUNK_PAYLOAD */
-    uint8_t raw[4 + DNSTUN_CHUNK_PAYLOAD];
+    /* New header is 5 bytes, payload can be up to DNSTUN_CHUNK_PAYLOAD */
+    uint8_t raw[5 + DNSTUN_CHUNK_PAYLOAD];
     size_t  rawlen = 0;
-    memcpy(raw + rawlen, hdr, sizeof(*hdr));   rawlen += sizeof(*hdr);
+    memcpy(raw, hdr, sizeof(chunk_header_t));   rawlen += sizeof(chunk_header_t);
     if (payload && paylen > 0) {
         /*
          * CRITICAL: Strict bounds checking for FEC compatibility.
@@ -223,14 +234,14 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
 
     /* Base32 encode the raw data (UPPERCASE for DNS compatibility)
      * Formula: base32 output = ceil(input_len * 8 / 5)
-     * For header(4) + payload(137) = 141 bytes: 141 * 8 / 5 = 226 bytes */
+     * For header(5) + payload(137) = 142 bytes: 142 * 8 / 5 = 228 bytes */
     #define BASE32_MAX_OUTPUT(max_input) (((max_input) * 8 + 4) / 5)
-    char b32_raw[BASE32_MAX_OUTPUT(4 + DNSTUN_CHUNK_PAYLOAD)];
+    char b32_raw[BASE32_MAX_OUTPUT(5 + DNSTUN_CHUNK_PAYLOAD)];
     size_t b32_len = base32_encode((uint8_t*)b32_raw, raw, rawlen);
 
     /* Use slipstream's inline_dotify to split into labels every 57 chars */
     /* Add extra space for dots: approximately raw_len/57 extra chars */
-    char b32_dotted[BASE32_MAX_OUTPUT(4 + DNSTUN_CHUNK_PAYLOAD) + 64];
+    char b32_dotted[BASE32_MAX_OUTPUT(5 + DNSTUN_CHUNK_PAYLOAD) + 64];
     memcpy(b32_dotted, b32_raw, b32_len);
     size_t dotted_len = inline_dotify(b32_dotted, sizeof(b32_dotted), b32_len);
 
@@ -244,7 +255,7 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
      * For domain ~15 chars: 3 + 15 + 1 = 19 overhead
      * Max b32_dotted = 253 - 19 - (dots overhead ~b32_len/57) ≈ 220 chars
      * Max base32 input ≈ 220 * 5 / 8 = 137 bytes
-     * For header 4 bytes, max payload ≈ 133 bytes
+     * For header 5 bytes, max payload ≈ 132 bytes
      * 
      * DNSTUN_CHUNK_PAYLOAD is capped to ensure QNAME fits within DNS limits.
      * 
@@ -492,9 +503,9 @@ void send_debug_packet(const char *payload, uint32_t seq) {
     memcpy(&d->dest, &r->addr, sizeof(d->dest));
     d->dest.sin_port = htons(53);
     
-    /* Build chunk header - use session 15 (reserved for debug) */
+    /* Build chunk header - use session 255 (reserved for debug) */
     chunk_header_t hdr = {0};
-    chunk_set_session_id(&hdr.flags, 15);  /* Reserved session for debug */
+    chunk_set_session_id(&hdr, 255);  /* Reserved session for debug */
     hdr.seq = (uint16_t)(seq & 0xFFFF);
     hdr.chunk_info = 0;  /* Single chunk, no FEC */
     
@@ -709,10 +720,10 @@ static void fire_probe_ext(int idx, const uint8_t *payload, size_t paylen, const
     memcpy(&p->dest, &r->addr, sizeof(p->dest));
     p->dest.sin_port = htons(53);
 
-    /* Build a minimal POLL DNS query (compact 4-byte header) */
+    /* Build a minimal POLL DNS query (compact 5-byte header) */
     chunk_header_t hdr = {0};
     hdr.flags   = CHUNK_FLAG_POLL;
-    chunk_set_session_id(&hdr.flags, 0); /* Polls use session 0 */
+    chunk_set_session_id(&hdr, 0); /* Polls use session 0 */
     hdr.seq = 0;
     hdr.chunk_info = 0; /* No FEC, single chunk */
 
@@ -1824,6 +1835,7 @@ static inline bool is_within_window(uint16_t seq, uint16_t expected, int window)
         uint16_t diff = seq - expected;
         return diff < (uint16_t)window;
     }
+    return true;
 }
 
 /* Initialize reorder buffer for a session */
@@ -2061,7 +2073,7 @@ static size_t socks5_handle_data(socks5_client_t *c,
 
         session_t *sess = &g_sessions[session_idx];
         memset(sess, 0, sizeof(*sess));
-        sess->session_id = make_session_id();
+        sess->session_id = get_unused_session_id();
         sess->established = true;
         sess->closed      = false;
         sess->last_active = time(NULL);
@@ -2366,6 +2378,9 @@ static void on_dns_recv(uv_udp_t *h,
                                 if (decoded_len >= sizeof(server_response_header_t)) {
                                     server_response_header_t hdr;
                                     memcpy(&hdr, decoded, sizeof(hdr));
+                                    
+                                    if (hdr.session_id != s->session_id) continue;
+
                                     has_seq = (hdr.flags & RESP_FLAG_HAS_SEQ) != 0;
                                     if (has_seq) {
                                         seq = hdr.seq;

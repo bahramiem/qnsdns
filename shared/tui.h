@@ -76,6 +76,10 @@ typedef struct {
 /* Callback for sending debug packet from TUI */
 typedef void (*tui_send_debug_cb)(const char *payload, uint32_t seq);
 
+/* Callback for sending tunnel control commands from TUI */
+/* cmd: MGMT_CMD_CLOSE_TUNNEL, MGMT_CMD_RESTART_TUNNEL, etc. */
+typedef void (*tui_send_command_cb)(uint32_t cmd);
+
 /* ──────────────────────────────────────────────
    TUI context
 ────────────────────────────────────────────── */
@@ -106,6 +110,7 @@ typedef struct tui_ctx {
     /* Protocol test screen */
     tui_proto_test_t  proto_test;       /* protocol loopback test state */
     tui_send_debug_cb send_debug_cb;    /* callback to send debug packet */
+    tui_send_command_cb send_command_cb; /* callback to send tunnel control commands */
 } tui_ctx_t;
 
 /* Debug API */

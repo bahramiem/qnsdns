@@ -75,7 +75,7 @@ static uv_timer_t       g_idle_timer;
 typedef struct srv_session {
     bool      used;
 
-    /* 4-bit session ID (0-15, embedded in chunk header flags) */
+    /* 8-bit session ID (0-255) */
     uint8_t   session_id;
 
     /* upstream TCP */
@@ -107,6 +107,7 @@ typedef struct srv_session {
     /* Downstream sequencing (Server → Client) */
     uint16_t  downstream_seq;   /* Next seq to assign for downstream packets */
 
+    bool      status_sent;
     time_t    last_active;
 } srv_session_t;
 
@@ -176,7 +177,7 @@ static void swarm_load(void) {
 /*  Session lookup / alloc                        */
 /* ────────────────────────────────────────────── */
 
-/* Find session by 4-bit session ID */
+/* Find session by 8-bit session ID */
 static int session_find_by_id(uint8_t id) {
     for (int i = 0; i < SRV_MAX_SESSIONS; i++)
         if (g_sessions[i].used && g_sessions[i].session_id == id)
@@ -184,7 +185,7 @@ static int session_find_by_id(uint8_t id) {
     return -1;
 }
 
-/* Allocate new session with 4-bit session ID */
+/* Allocate new session with 8-bit session ID */
 static int session_alloc_by_id(uint8_t id) {
     for (int i = 0; i < SRV_MAX_SESSIONS; i++) {
         if (!g_sessions[i].used) {
@@ -309,15 +310,23 @@ static void on_upstream_read(uv_stream_t *s, ssize_t nread,
 /* Send a SOCKS5 status/ACK byte (0x00=success, 0x01-0x08=SOCKS5 errors) to the client */
 static void session_send_status(int sidx, uint8_t status) {
     srv_session_t *sess = &g_sessions[sidx];
+    if (sess->status_sent) return;
+
     size_t need = sess->upstream_len + 1;
     if (need > sess->upstream_cap) {
         sess->upstream_buf = realloc(sess->upstream_buf, need + 8192);
         sess->upstream_cap = need + 8192;
     }
+    
     if (sess->upstream_buf) {
-        sess->upstream_buf[sess->upstream_len] = status;
+        /* Prepend status byte if data already exists, though it should be empty */
+        if (sess->upstream_len > 0) {
+            memmove(sess->upstream_buf + 1, sess->upstream_buf, sess->upstream_len);
+        }
+        sess->upstream_buf[0] = status;
         sess->upstream_len++;
-        LOG_DEBUG("Session %d: queued SOCKS5 status %02x\n", sidx, status);
+        sess->status_sent = true;
+        LOG_DEBUG("Session %d: prioritized SOCKS5 status %02x\n", sidx, status);
     }
 }
 
@@ -430,9 +439,9 @@ static int build_txt_reply_with_seq(uint8_t *outbuf, size_t *outlen,
 
     /* Build header with sequence number */
     server_response_header_t hdr = {0};
+    hdr.session_id = session_id;
     hdr.flags = 0;  /* base64 encoding (default) */
     hdr.flags |= RESP_FLAG_HAS_SEQ;  /* Mark as sequenced */
-    hdr.session_id = session_id;
     hdr.seq = seq;
 
     /* Build packet: header + payload */
@@ -663,16 +672,16 @@ static void on_server_recv(uv_udp_t *h,
         return;
     }
 
-    /* Parse new compact 4-byte header */
+    /* Parse new compact 5-byte header */
     chunk_header_t hdr;
     memcpy(&hdr, raw, sizeof(hdr));
-    const uint8_t  *payload = raw + sizeof(chunk_header_t);
-    size_t          payload_len = (size_t)(rawlen - (ssize_t)sizeof(chunk_header_t));
+    const uint8_t  *payload = raw + sizeof(hdr);
+    size_t          payload_len = (size_t)(rawlen - (ssize_t)sizeof(hdr));
 
-    /* Extract fields from new compact header */
+    /* Extract fields from new 8-bit header */
     bool is_poll = (hdr.flags & CHUNK_FLAG_POLL) != 0;
     bool is_encrypted = (hdr.flags & CHUNK_FLAG_ENCRYPTED) != 0;
-    uint8_t session_id = chunk_get_session_id(hdr.flags);
+    uint8_t session_id = chunk_get_session_id(&hdr);
     uint16_t seq = hdr.seq;
     
     /* chunk_info: high nibble = chunk_total-1, low nibble = fec_k */
