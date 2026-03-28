@@ -381,9 +381,9 @@ static void process_read_buffer(mgmt_client_t *client) {
             case MGMT_FRAME_HELLO:
                 fprintf(stderr, "[MGMT] Client connected: %s:%d\n", 
                         client->ip, client->port);
-                if (server->config.callbacks.on_connect) {
-                    server->config.callbacks.on_connect(client, 
-                        server->config.callbacks.user_data);
+                if (client->server->config.callbacks.on_connect) {
+                    client->server->config.callbacks.on_connect(client, 
+                        client->server->config.callbacks.user_data);
                 }
                 break;
                 

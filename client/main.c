@@ -975,7 +975,7 @@ static void fire_test_probe(int idx, probe_test_type_t test_type,
         case PROBE_TEST_EDNS_TXT:
             /* Phase 3: EDNS + TXT test - add .tun. suffix so server processes these probes */
             {
-                static char domain_buf[256];
+                static char domain_buf[512];
                 const char *base = g_cfg.test_domain[0] ? g_cfg.test_domain : "s.domain.com";
                 snprintf(domain_buf, sizeof(domain_buf), "tun.%s", base);
                 domain = domain_buf;
@@ -1145,7 +1145,7 @@ static void fire_mtu_test_probe(int idx, probe_test_type_t test_type,
     p->dest.sin_port = htons(53);
     
     /* Add .tun. suffix so server processes MTU probes */
-    static char domain_buf[256];
+    static char domain_buf[512];
     const char *base = g_cfg.test_domain[0] ? g_cfg.test_domain : "s.domain.com";
     snprintf(domain_buf, sizeof(domain_buf), "tun.%s", base);
     const char *domain = domain_buf;
@@ -2319,16 +2319,16 @@ static void on_dns_recv(uv_udp_t *h,
                     } else {
                         /* Decode base64 response from server (server sends base64 by default) */
                         /* DEBUG: Log TXT record size before decoding */
-                        fprintf(stderr, "[DEBUG] TXT record: len=%u text='%.*s'\n",
+                        fprintf(stderr, "[DEBUG] TXT record: len=%zu text='%.*s'\n",
                                 ans->txt.len, (int)ans->txt.len, ans->txt.text);
 
                         uint8_t decoded[4096];
                         ptrdiff_t decoded_len = base64_decode(decoded, ans->txt.text, ans->txt.len);
                         if (decoded_len < 0) {
-                            fprintf(stderr, "[DEBUG] base64_decode FAILED for TXT len=%u\n", ans->txt.len);
+                            fprintf(stderr, "[DEBUG] base64_decode FAILED for TXT len=%zu\n", ans->txt.len);
                             continue;
                         }
-                        fprintf(stderr, "[DEBUG] base64_decode: input=%u output=%td\n",
+                        fprintf(stderr, "[DEBUG] base64_decode: input=%zu output=%td\n",
                                 ans->txt.len, decoded_len);
                         
                         /* Unified packet handling flow:
@@ -2783,7 +2783,7 @@ static void on_tty_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
 /* ────────────────────────────────────────────── */
 int main(int argc, char *argv[]) {
     const char *config_path = NULL;
-    static char auto_config_path[1024] = {0};
+    static char auto_config_path[2048] = {0};
     char *slash;
 #ifdef _WIN32
     char *bslash;

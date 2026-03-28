@@ -5,6 +5,8 @@
 #include "mgmt_protocol.h"
 #include "types.h"
 #include "uv.h"
+#include "tui.h"
+#include "resolver_pool.h"
 
 /* ──────────────────────────────────────────────
    Management Server API

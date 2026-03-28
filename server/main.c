@@ -298,6 +298,8 @@ static void on_upstream_read(uv_stream_t *s, ssize_t nread,
 
     g_stats.rx_total += (size_t)nread;
     g_stats.rx_bytes_sec += (size_t)nread;
+}
+
 /* Send a SOCKS5 status/ACK byte (0x00=success, 0x01-0x08=SOCKS5 errors) to the client */
 static void session_send_status(int sidx, uint8_t status) {
     srv_session_t *sess = &g_sessions[sidx];
