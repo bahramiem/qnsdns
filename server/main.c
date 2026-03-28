@@ -1011,9 +1011,8 @@ static void on_server_recv(uv_udp_t *h,
             send_udp_reply(src, reply, rlen);
         }
     } else {
-        /* Empty reply — acknowledge the query */
-        uint8_t ack[1] = {0};
-        if (build_txt_reply_with_seq(reply, &rlen, query_id, qname, ack, 1, mtu,
+        /* Empty reply — acknowledge the query with NO payload */
+        if (build_txt_reply_with_seq(reply, &rlen, query_id, qname, NULL, 0, mtu,
                             sess->downstream_seq++,
                             sess->session_id) == 0)
             send_udp_reply(src, reply, rlen);
