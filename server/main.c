@@ -298,6 +298,19 @@ static void on_upstream_read(uv_stream_t *s, ssize_t nread,
 
     g_stats.rx_total += (size_t)nread;
     g_stats.rx_bytes_sec += (size_t)nread;
+/* Send a SOCKS5 status/ACK byte (0x00=success, 0x01-0x08=SOCKS5 errors) to the client */
+static void session_send_status(int sidx, uint8_t status) {
+    srv_session_t *sess = &g_sessions[sidx];
+    size_t need = sess->upstream_len + 1;
+    if (need > sess->upstream_cap) {
+        sess->upstream_buf = realloc(sess->upstream_buf, need + 8192);
+        sess->upstream_cap = need + 8192;
+    }
+    if (sess->upstream_buf) {
+        sess->upstream_buf[sess->upstream_len] = status;
+        sess->upstream_len++;
+        LOG_DEBUG("Session %d: queued SOCKS5 status %02x\n", sidx, status);
+    }
 }
 
 static void on_upstream_resolve(uv_getaddrinfo_t *resolver, int status, struct addrinfo *res) {
@@ -308,22 +321,33 @@ static void on_upstream_resolve(uv_getaddrinfo_t *resolver, int status, struct a
     if (status != 0 || res == NULL) {
         LOG_ERR("DNS resolution failed for session %d (%s:%d): %s\n", 
                 sidx, cr->target_host, cr->target_port, uv_strerror(status));
+        
+        /* Map resolver errors to SOCKS5 codes */
+        uint8_t socks_err = 0x04; /* Host unreachable by default */
+        if (status == UV_EAI_NONAME) socks_err = 0x04;
+        
+        session_send_status(sidx, socks_err);
         free(cr->payload);
         free(cr);
         free(resolver);
-        session_close(sidx);
+        /* Don't close session immediately; let client receive the error byte */
         return;
     }
     
-    /* Use the first resolved address */
-    struct sockaddr_in *addr = (struct sockaddr_in*)res->ai_addr;
-    LOG_INFO("DNS resolved %s:%d to %s for session %d\n", 
-             cr->target_host, cr->target_port, 
-             inet_ntoa(addr->sin_addr), sidx);
+    /* Use the first resolved address (could be IPv4 or IPv6) */
+    char addr_str[INET6_ADDRSTRLEN];
+    if (res->ai_family == AF_INET) {
+        inet_ntop(AF_INET, &((struct sockaddr_in*)res->ai_addr)->sin_addr, addr_str, sizeof(addr_str));
+    } else {
+        inet_ntop(AF_INET6, &((struct sockaddr_in6*)res->ai_addr)->sin6_addr, addr_str, sizeof(addr_str));
+    }
     
-    /* Initiate TCP connection */
+    LOG_INFO("DNS resolved %s:%d to %s for session %d\n", 
+             cr->target_host, cr->target_port, addr_str, sidx);
+    
+    /* Initiate TCP connection using the actual ai_addr (supports IPv6) */
     uv_tcp_connect(&cr->connect, &sess->upstream_tcp, 
-                   (const struct sockaddr*)addr, on_upstream_connect);
+                   res->ai_addr, on_upstream_connect);
     
     uv_freeaddrinfo(res);
     free(resolver);
@@ -336,9 +360,17 @@ static void on_upstream_connect(uv_connect_t *req, int status) {
 
     if (status != 0) {
         LOG_ERR("Upstream connect failed for session %d: %s\n", sidx, uv_strerror(status));
+        
+        /* Map connect errors to SOCKS5 codes */
+        uint8_t socks_err = 0x01; /* General failure */
+        if (status == UV_ECONNREFUSED) socks_err = 0x05;
+        else if (status == UV_ETIMEDOUT) socks_err = 0x04;
+        else if (status == UV_ENETUNREACH) socks_err = 0x03;
+        
+        session_send_status(sidx, socks_err);
         free(cr->payload);
         free(cr);
-        session_close(sidx);
+        /* Don't close session immediately; let client receive the error byte */
         return;
     }
     LOG_INFO("Upstream connected for session %d\n", sidx);
@@ -354,20 +386,8 @@ static void on_upstream_connect(uv_connect_t *req, int status) {
     if (cr->payload && cr->payload_len > 0)
         upstream_write_and_read(sidx, cr->payload, cr->payload_len);
 
-    /* Queue SOCKS5 ACK byte for next DNS response
-     * The ACK (0x00) signals that upstream connection is established.
-     * It will be included in the next valid DNS reply to client's query,
-     * avoiding the issue of sending an unsolicited DNS response with
-     * Transaction ID of 0 and empty QNAME. */
-    size_t need = sess->upstream_len + 1;
-    if (need > sess->upstream_cap) {
-        sess->upstream_buf = realloc(sess->upstream_buf, need + 8192);
-        sess->upstream_cap = need + 8192;
-    }
-    if (sess->upstream_buf) {
-        sess->upstream_buf[sess->upstream_len] = 0x00;  /* ACK byte */
-        sess->upstream_len++;
-    }
+    /* Queue SOCKS5 ACK byte (0x00=success) for next DNS response */
+    session_send_status(sidx, 0x00);
 
     free(cr->payload);
     free(cr);
@@ -776,6 +796,11 @@ static void on_server_recv(uv_udp_t *h,
                                     memcpy(target_host, p + 5, dlen);
                                     target_host[dlen] = '\0';
                                     target_port = (uint16_t)((p[5+dlen]<<8)|p[6+dlen]);
+                                }
+                            } else if (atype == 0x04) { /* IPv6 */
+                                if (l >= 22) {
+                                    inet_ntop(AF_INET6, p + 4, target_host, sizeof(target_host));
+                                    target_port = (uint16_t)((p[20]<<8)|p[21]);
                                 }
                             }
                             

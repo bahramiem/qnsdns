@@ -1965,16 +1965,31 @@ static size_t socks5_handle_data(socks5_client_t *c,
 {
     /* SOCKS5 state machine */
     if (c->state == 0) {
-        /* Auth method negotiation: reply NO AUTH
+        /* Auth method negotiation: reply NO AUTH if supported by client
          * SOCKS5 greeting: VER(1) + NMETHODS(1) + METHODS(NMETHODS bytes)
          * Total length = 2 + NMETHODS */
         if (len >= 2 && data[0] == 0x05) {
             uint8_t nmethods = data[1];
             size_t greeting_len = 2 + nmethods;
             if (len >= greeting_len) {
-                uint8_t reply[2] = {0x05, 0x00};
-                socks5_send(c, reply, 2);
-                c->state = 1;
+                bool no_auth_supported = false;
+                for (int i = 0; i < nmethods; i++) {
+                    if (data[2 + i] == 0x00) {
+                        no_auth_supported = true;
+                        break;
+                    }
+                }
+
+                if (no_auth_supported) {
+                    uint8_t reply[2] = {0x05, 0x00};
+                    socks5_send(c, reply, 2);
+                    c->state = 1;
+                } else {
+                    /* No acceptable methods */
+                    uint8_t reply[2] = {0x05, 0xFF};
+                    socks5_send(c, reply, 2);
+                    uv_close((uv_handle_t*)&c->tcp, on_socks5_close);
+                }
                 return greeting_len;  /* Consumed full greeting */
             }
         }
@@ -1997,12 +2012,24 @@ static size_t socks5_handle_data(socks5_client_t *c,
         } else if (atype == 0x04) {
             min_len = 22;  /* IPv6: VER + CMD + RSV + ATYP(1) + IP(16) + PORT(2) */
         } else {
-            return 0;  /* Invalid ATYP, need more data */
+            /* Unsupported address type or malformed request */
+            uint8_t err[10] = {0x05, 0x08, 0x00, 0x01, 0,0,0,0,0,0};
+            socks5_send(c, err, 10);
+            uv_close((uv_handle_t*)&c->tcp, on_socks5_close);
+            return len;
         }
         
         /* Check if we have enough data for CONNECT request */
         if (len < min_len) return 0;
-        if (data[0] != 0x05 || data[1] != 0x01) return 0;  /* Not a CONNECT request */
+        
+        /* Validate SOCKS version and command */
+        if (data[0] != 0x05) return 0;
+        if (data[1] != 0x01) { /* Only CONNECT is supported */
+            uint8_t err[10] = {0x05, 0x07, 0x00, 0x01, 0,0,0,0,0,0}; /* Command not supported */
+            socks5_send(c, err, 10);
+            uv_close((uv_handle_t*)&c->tcp, on_socks5_close);
+            return min_len;
+        }
 
         int session_idx = -1;
         for (int i = 0; i < DNSTUN_MAX_SESSIONS; i++) {
@@ -2038,8 +2065,11 @@ static size_t socks5_handle_data(socks5_client_t *c,
             memcpy(sess->target_host, data+5, dlen);
             sess->target_host[dlen] = '\0';
             sess->target_port = (uint16_t)((data[5+dlen]<<8)|data[6+dlen]);
-        } else { /* IPv6 */
-            return min_len;  /* IPv6 not implemented yet */
+        } else if (atype == 0x04) { /* IPv6 */
+            char ipv6_str[46];
+            inet_ntop(AF_INET6, data + 4, ipv6_str, sizeof(ipv6_str));
+            strncpy(sess->target_host, ipv6_str, sizeof(sess->target_host) - 1);
+            sess->target_port = (uint16_t)((data[20]<<8)|data[21]);
         }
 
         c->session_idx = session_idx;
@@ -2342,16 +2372,28 @@ static void on_dns_recv(uv_udp_t *h,
                                     while (reorder_buffer_flush(&s->reorder_buf, flush_buf, sizeof(flush_buf), &flush_len) > 0) {
                                         size_t data_start = 0;
                                         
-                                        /* Detect the ACK byte (\0) at the start of the sequence */
-                                        if (flush_len >= 1 && flush_buf[0] == '\0') {
-                                            if (s->client_ptr && !s->socks5_connected) {
+                                        /* Detect the ACK/status byte at the start of the sequence */
+                                        if (flush_len >= 1 && !s->socks5_connected) {
+                                            uint8_t status_byte = flush_buf[0];
+                                            if (s->client_ptr) {
                                                 socks5_client_t *c = (socks5_client_t*)s->client_ptr;
-                                                uint8_t ok[10] = {0x05,0x00,0x00,0x01,127,0,0,1,0x04,0x38};
-                                                socks5_send(c, ok, 10);
-                                                s->socks5_connected = true;
-                                                LOG_INFO("Session %d: SOCKS5 success (ACK processed in sequence)\n", sidx);
+                                                if (status_byte == 0x00) {
+                                                    /* Success: Send SOCKS5 success reply (Address Type IPv4, 0.0.0.0:0) */
+                                                    uint8_t ok[10] = {0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0};
+                                                    socks5_send(c, ok, 10);
+                                                    s->socks5_connected = true;
+                                                    LOG_INFO("Session %d: SOCKS5 success (ACK processed in sequence)\n", sidx);
+                                                } else {
+                                                    /* Mapped Error: status_byte from server mapped to SOCKS5 reply field */
+                                                    /* 0x01=General, 0x02=Not allowed, 0x03=Net unreachable, 
+                                                     * 0x04=Host unreachable, 0x05=Refused, etc. */
+                                                    uint8_t err[10] = {0x05, status_byte, 0x00, 0x01, 0, 0, 0, 0, 0, 0};
+                                                    socks5_send(c, err, 10);
+                                                    LOG_WARN("Session %d: SOCKS5 error %02x from server\n", sidx, status_byte);
+                                                    uv_close((uv_handle_t*)&c->tcp, on_socks5_close);
+                                                }
                                             }
-                                            data_start = 1; /* Skip the ACK byte; don't send to application */
+                                            data_start = 1; /* Skip the status byte; don't send to application */
                                         }
 
                                         size_t data_len = flush_len - data_start;
