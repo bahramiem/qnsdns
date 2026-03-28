@@ -838,7 +838,9 @@ static void on_server_recv(uv_udp_t *h,
     }
 
     /* ── Handle FEC Burst Reassembly ──────────────────────────────────── */
-    if (chunk_total > 0) {
+    if (chunk_total > 1) {
+        /* chunk_total > 1 means we have FEC data (k+r where r > 0)
+         * chunk_total = 1 means no FEC, just a single packet */
         /* New burst or continuation? */
         if (sess->burst_count_needed == 0 || seq < sess->burst_seq_start) {
             /* Cleanup old */
@@ -896,7 +898,9 @@ static void on_server_recv(uv_udp_t *h,
                         dec_len = dret.len;
                     } else {
                         LOG_ERR("Decryption failed\n");
-                        goto next_burst;
+                        codec_free_result(&fdec);
+                        /* Don't reset burst - let more symbols arrive */
+                        goto skip_fec_processing;
                     }
                 }
 
@@ -1025,19 +1029,31 @@ static void on_server_recv(uv_udp_t *h,
                         upstream_write_and_read(sidx, zdec.data, zdec.len);
                     }
                     codec_free_result(&zdec);
+                } else {
+                    codec_free_result(&zdec);
                 }
 
                 if (!dret.error && dret.data) codec_free_result(&dret);
                 codec_free_result(&fdec);
+
+                /* SUCCESS: Reset burst after successful decode */
+                goto reset_burst;
             }
 
-        next_burst:
-            /* Reset burst */
+            /* FEC decode failed - don't reset burst, wait for more symbols */
+            codec_free_result(&fdec);
+            goto skip_fec_processing;
+
+        reset_burst:
+            /* Reset burst after successful processing */
             for (int i = 0; i < sess->burst_count_needed; i++) free(sess->burst_symbols[i]);
             free(sess->burst_symbols);
             sess->burst_symbols = NULL;
             sess->burst_count_needed = 0;
             sess->burst_received = 0;
+
+        skip_fec_processing:
+            ;  /* Empty statement for label */
         }
     } else if (is_poll) {
         /* Handle empty poll normally to trigger downstream data push */
