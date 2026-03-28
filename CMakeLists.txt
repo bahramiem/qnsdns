@@ -121,6 +121,9 @@ set(SHARED_SOURCES
 # ── Core Settings ─────────────────────────────────────────────────────────────
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+# ── Options ───────────────────────────────────────────────────────────────────
+option(BUILD_SERVER "Build the tunnel server" ON)
+
 # ── Client ────────────────────────────────────────────────────────────────────
 add_executable(dnstun-client
     client/main.c
@@ -139,20 +142,22 @@ if(WIN32)
 endif()
 
 # ── Server ────────────────────────────────────────────────────────────────────
-add_executable(dnstun-server
-    server/main.c
-    ${SPCDNS_SOURCES}
-    ${SHARED_SOURCES}
-)
-target_include_directories(dnstun-server PRIVATE . shared SPCDNS ${EXTRA_INCLUDES})
-target_link_libraries(dnstun-server
-    ${UV_LIBRARIES} ${ZSTD_LIBRARIES} ${SODIUM_LIBRARIES}
-    ${RAPTORQ_LIBRARIES} ${PLATFORM_LINK_LIBS}
-)
-set_target_properties(dnstun-server PROPERTIES LINKER_LANGUAGE CXX)
-
-if(WIN32)
-    target_link_libraries(dnstun-server ws2_32 iphlpapi userenv)
+if(BUILD_SERVER)
+    add_executable(dnstun-server
+        server/main.c
+        ${SPCDNS_SOURCES}
+        ${SHARED_SOURCES}
+    )
+    target_include_directories(dnstun-server PRIVATE . shared SPCDNS ${EXTRA_INCLUDES})
+    target_link_libraries(dnstun-server
+        ${UV_LIBRARIES} ${ZSTD_LIBRARIES} ${SODIUM_LIBRARIES}
+        ${RAPTORQ_LIBRARIES} ${PLATFORM_LINK_LIBS}
+    )
+    set_target_properties(dnstun-server PROPERTIES LINKER_LANGUAGE CXX)
+    
+    if(WIN32)
+        target_link_libraries(dnstun-server ws2_32 iphlpapi userenv)
+    endif()
 endif()
 
 # ── Standalone TUI ───────────────────────────────────────────────────────────
@@ -164,6 +169,7 @@ endif()
 
 # ── Install ───────────────────────────────────────────────────────────────────
 include(GNUInstallDirs)
-install(TARGETS dnstun-client dnstun-server
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-)
+install(TARGETS dnstun-client RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+if(BUILD_SERVER)
+    install(TARGETS dnstun-server RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()

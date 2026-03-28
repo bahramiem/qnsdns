@@ -56,13 +56,13 @@ jobs:
       run: |
         cmake -B build -DCMAKE_BUILD_TYPE=Release `
           -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
-          -DVCPKG_TARGET_TRIPLET=x64-windows-static
+          -DVCPKG_TARGET_TRIPLET=x64-windows-static `
+          -DBUILD_SERVER=OFF
 
     - name: Build
       run: |
         cmake --build build --config Release --parallel
         ren build\Release\dnstun-client.exe dnstun-client-windows-amd64.exe
-        ren build\Release\dnstun-server.exe dnstun-server-windows-amd64.exe
 
     - name: Upload Artifacts
       uses: actions/upload-artifact@v4
@@ -70,7 +70,6 @@ jobs:
         name: dnstun-windows-amd64
         path: |
           build/Release/dnstun-client-windows-amd64.exe
-          build/Release/dnstun-server-windows-amd64.exe
 
   release:
     name: Auto Release
@@ -97,7 +96,7 @@ jobs:
       with:
         tag: "latest"
         name: "Latest Build"
-        body: "Automated deployment of the latest commit on the main branch for Linux and Windows AMD64."
+        body: "Automated deployment of the latest commit on the main branch. Includes Linux (Client + Server) and Windows (Client only)."
         artifacts: "release-artifacts/*"
         allowUpdates: true
         replacesArtifacts: true
