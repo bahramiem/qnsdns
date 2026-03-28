@@ -39,6 +39,7 @@
 #include "shared/base32.h"
 #include "shared/tui.h"
 #include "shared/codec.h"
+#include "shared/mgmt.h"
 
 /* Utility macros */
 #ifndef max
@@ -62,6 +63,7 @@ static uv_timer_t       g_poll_timer;       /* downstream POLL */
 static uv_timer_t       g_tui_timer;        /* TUI refresh     */
 static uv_timer_t       g_recovery_timer;   /* dead pool probe */
 static uv_timer_t       g_penalty_timer;    /* release penalties */
+static mgmt_server_t    *g_mgmt;            /* Management server for TUI */
 
 /* Active SOCKS5 sessions */
 static session_t        g_sessions[DNSTUN_MAX_SESSIONS];
@@ -2696,6 +2698,11 @@ static void on_tui_timer(uv_timer_t *t) {
     /* Reset per-second counters */
     g_stats.tx_bytes_sec = 0;
     g_stats.rx_bytes_sec = 0;
+    
+    /* Broadcast telemetry to connected management clients */
+    if (g_mgmt) {
+        mgmt_broadcast_telemetry(g_mgmt, &g_stats);
+    }
 }
 
 /* ────────────────────────────────────────────── */
@@ -2966,6 +2973,22 @@ int main(int argc, char *argv[]) {
     uv_timer_init(g_loop, &g_tui_timer);
     uv_timer_start(&g_tui_timer, on_tui_timer, 1000, 1000);
 
+    /* Management server for headless TUI connections */
+    {
+        mgmt_config_t mgmt_cfg = {0};
+        strncpy(mgmt_cfg.bind_addr, "127.0.0.1", sizeof(mgmt_cfg.bind_addr) - 1);
+        mgmt_cfg.port = 9090;
+        mgmt_cfg.telemetry_interval_ms = 1000;
+        mgmt_cfg.callbacks.on_connect = NULL;
+        mgmt_cfg.callbacks.on_disconnect = NULL;
+        mgmt_cfg.callbacks.on_command = NULL;
+        g_mgmt = mgmt_server_create(g_loop, &mgmt_cfg);
+        if (g_mgmt) {
+            mgmt_server_start(g_mgmt);
+            LOG_INFO("Management: 127.0.0.1:9090 (connect TUI here)\n");
+        }
+    }
+
     /* Resolver init phase (probes resolvers, runs loop for ~3s) */
     resolver_init_phase();
 
@@ -2977,6 +3000,10 @@ int main(int argc, char *argv[]) {
     /* Run event loop */
     uv_run(g_loop, UV_RUN_DEFAULT);
 
+    /* Cleanup management server */
+    if (g_mgmt) {
+        mgmt_server_destroy(g_mgmt);
+    }
     tui_shutdown(&g_tui);
     resolvers_save();   /* persist final resolver list on clean exit */
     rpool_destroy(&g_pool);

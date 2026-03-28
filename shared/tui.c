@@ -224,10 +224,10 @@ static void draw_sidebar(tui_ctx_t *t, int x, int y, int height) {
     printf("\033[%d;%dH" ANSI_BOLD ANSI_BR_CYAN " ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓" ANSI_RESET, y + 4, x + 1);
     
     /* Menu Items */
-    const char *items[] = {"Dashboard", "Resolvers", "Config", "Debug Logs"};
-    const char *keys[] = {"1", "2", "3", "4"};
+    const char *items[] = {"Dashboard", "Resolvers", "Config", "Debug Logs", "Help"};
+    const char *keys[] = {"1", "2", "3", "4", "5"};
     
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 5; i++) {
         int row = y + 7 + i * 2;
         int is_selected = (t->panel == i);
         
@@ -600,6 +600,93 @@ static void render_debug_view(tui_ctx_t *t, int x, int y, int width, int height)
            t->debug.count);
 }
 
+/* ── Help View ───────────────────────────────────────────────────────────────*/
+static void render_help_view(tui_ctx_t *t, int x, int y, int width, int height) {
+    int content_height = height - LOG_HEIGHT - 2;
+    
+    draw_box(x, y, width, content_height, ANSI_BR_CYAN, " DNSTUN Help Guide ");
+    
+    int row = y + 2;
+    int col = x + 2;
+    int section_width = (width - 6) / 2;
+    
+    /* Left Column: Navigation */
+    printf("\033[%d;%dH" ANSI_BOLD ANSI_BR_WHITE "╭─ Navigation ─────────────────────" ANSI_RESET, row++, col);
+    printf("\033[%d;%dH" ANSI_CYAN "  1  " ANSI_RESET "Dashboard (main stats view)", row++, col);
+    printf("\033[%d;%dH" ANSI_CYAN "  2  " ANSI_RESET "Resolver Pool", row++, col);
+    printf("\033[%d;%dH" ANSI_CYAN "  3  " ANSI_RESET "Configuration Editor", row++, col);
+    printf("\033[%d;%dH" ANSI_CYAN "  4  " ANSI_RESET "Debug Logs (full screen)", row++, col);
+    printf("\033[%d;%dH" ANSI_CYAN "  5  " ANSI_RESET "This Help Guide", row++, col);
+    printf("\033[%d;%dH" ANSI_BR_WHITE "╰────────────────────────────────────────" ANSI_RESET, row++, col);
+    
+    row++; /* spacing */
+    
+    /* Left Column: Config Panel Commands */
+    printf("\033[%d;%dH" ANSI_BOLD ANSI_BR_WHITE "╭─ Config Panel Commands ─────────────" ANSI_RESET, row++, col);
+    printf("\033[%d;%dH" ANSI_CYAN "  d  " ANSI_RESET "Toggle Encryption", row++, col);
+    printf("\033[%d;%dH" ANSI_CYAN "  f  " ANSI_RESET "Toggle Jitter", row++, col);
+    printf("\033[%d;%dH" ANSI_CYAN "  g  " ANSI_RESET "Toggle Padding", row++, col);
+    printf("\033[%d;%dH" ANSI_CYAN "  h  " ANSI_RESET "Toggle Chaffing", row++, col);
+    printf("\033[%d;%dH" ANSI_CYAN "  i  " ANSI_RESET "Toggle Chrome Cover", row++, col);
+    printf("\033[%d;%dH" ANSI_CYAN "  j  " ANSI_RESET "Toggle DNS Flux", row++, col);
+    printf("\033[%d;%dH" ANSI_CYAN "  r  " ANSI_RESET "Add Resolver", row++, col);
+    printf("\033[%d;%dH" ANSI_BR_WHITE "╰────────────────────────────────────────" ANSI_RESET, row++, col);
+    
+    row++; /* spacing */
+    
+    /* Left Column: Log Level */
+    printf("\033[%d;%dH" ANSI_BOLD ANSI_BR_WHITE "╭─ Debug Log Level ───────────────────" ANSI_RESET, row++, col);
+    printf("\033[%d;%dH" ANSI_CYAN "  0  " ANSI_RESET "Errors only", row++, col);
+    printf("\033[%d;%dH" ANSI_CYAN "  !  " ANSI_RESET "Warnings + Errors", row++, col);
+    printf("\033[%d;%dH" ANSI_CYAN "  @  " ANSI_RESET "Info + Warnings + Errors", row++, col);
+    printf("\033[%d;%dH" ANSI_CYAN "  #  " ANSI_RESET "Verbose (all messages)", row++, col);
+    printf("\033[%d;%dH" ANSI_BR_WHITE "╰────────────────────────────────────────" ANSI_RESET, row++, col);
+    
+    /* Right Column: TUI Control */
+    int right_col = col + section_width + 4;
+    int right_row = y + 2;
+    
+    printf("\033[%d;%dH" ANSI_BOLD ANSI_BR_GREEN "╭─ TUI & Tunnel Control ──────────────" ANSI_RESET, right_row++, right_col);
+    printf("\033[%d;%dH" ANSI_BR_YELLOW "  Q  " ANSI_RESET "Quit TUI (tunnel keeps running!)", right_row++, right_col);
+    printf("\033[%d;%dH" ANSI_BR_YELLOW "      " ANSI_RESET "Close this terminal or press", right_row++, right_col);
+    printf("\033[%d;%dH" ANSI_BR_YELLOW "      " ANSI_RESET "Ctrl+C to exit TUI only.", right_row++, right_col);
+    printf("\033[%d;%dH" ANSI_BR_YELLOW "      " ANSI_RESET "The tunnel will continue in", right_row++, right_col);
+    printf("\033[%d;%dH" ANSI_BR_YELLOW "      " ANSI_RESET "background.", right_row++, right_col);
+    printf("\033[%d;%dH" ANSI_BR_WHITE "╰────────────────────────────────────────" ANSI_RESET, right_row++, right_col);
+    
+    right_row++; /* spacing */
+    
+    /* Right Column: Reconnect Info */
+    printf("\033[%d;%dH" ANSI_BOLD ANSI_BR_MAGENTA "╭─ Reconnecting TUI ─────────────────" ANSI_RESET, right_row++, right_col);
+    printf("\033[%d;%dH" ANSI_WHITE "  To re-open the TUI after closing:" ANSI_RESET, right_row++, right_col);
+    printf("\033[%d;%dH" ANSI_CYAN "      $ " ANSI_RESET "./dnstun-client", right_row++, right_col);
+    printf("\033[%d;%dH" ANSI_CYAN "      $ " ANSI_RESET "./dnstun-server", right_row++, right_col);
+    printf("\033[%d;%dH" ANSI_WHITE "  (run again from another terminal)" ANSI_RESET, right_row++, right_col);
+    printf("\033[%d;%dH" ANSI_BR_WHITE "╰────────────────────────────────────────" ANSI_RESET, right_row++, right_col);
+    
+    right_row++; /* spacing */
+    
+    /* Right Column: Remote Management */
+    printf("\033[%d;%dH" ANSI_BOLD ANSI_BR_BLUE "╭─ Remote Management ─────────────────" ANSI_RESET, right_row++, right_col);
+    printf("\033[%d;%dH" ANSI_WHITE "  SSH tunnel for remote TUI:" ANSI_RESET, right_row++, right_col);
+    printf("\033[%d;%dH" ANSI_CYAN " $ " ANSI_RESET "ssh -L 9090:localhost:9090", right_row++, right_col);
+    printf("\033[%d;%dH" ANSI_CYAN "   " ANSI_RESET " user@your-server", right_row++, right_col);
+    printf("\033[%d;%dH" ANSI_CYAN " $ " ANSI_RESET "./dnstun-tui --host localhost", right_row++, right_col);
+    printf("\033[%d;%dH" ANSI_BR_WHITE "╰────────────────────────────────────────" ANSI_RESET, right_row++, right_col);
+    
+    /* Info Box at Bottom */
+    row = y + content_height - 12;
+    int info_box_width = width - 4;
+    printf("\033[%d;%dH" ANSI_BOLD ANSI_BR_CYAN "┌%.*s┐" ANSI_RESET, row, col, info_box_width, "───────────────────────────────────────────────────────────────────────────────────────");
+    printf("\033[%d;%dH" ANSI_BOLD ANSI_BR_CYAN "│" ANSI_RESET ANSI_BOLD ANSI_BR_WHITE " NOTE: " ANSI_RESET " Press [Q] to detach TUI. The tunnel continues running in the background.", row + 1, col);
+    printf("\033[%d;%dH" ANSI_BOLD ANSI_BR_CYAN "│" ANSI_RESET " This allows you to close the terminal without stopping the DNS tunnel connection.", row + 2, col);
+    printf("\033[%d;%dH" ANSI_BOLD ANSI_BR_CYAN "│" ANSI_RESET " Run ./dnstun-client or ./dnstun-server again to reconnect the TUI.", row + 3, col);
+    printf("\033[%d;%dH" ANSI_BOLD ANSI_BR_CYAN "└%.*s┘" ANSI_RESET, row + 4, col, info_box_width, "───────────────────────────────────────────────────────────────────────────────────────");
+    
+    /* Live Log Panel */
+    draw_log_panel(t, x, y + content_height, width, LOG_HEIGHT);
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
    PUBLIC API IMPLEMENTATION
    ═══════════════════════════════════════════════════════════════════════════ */
@@ -658,6 +745,7 @@ void tui_render(tui_ctx_t *t) {
         case 1: render_resolvers_view(t, content_x, 1, content_width, content_height); break;
         case 2: render_config_view(t, content_x, 1, content_width, content_height); break;
         case 3: render_debug_view(t, content_x, 1, content_width, content_height); break;
+        case 4: render_help_view(t, content_x, 1, content_width, content_height); break;
         default: render_dashboard(t, content_x, 1, content_width, content_height); break;
     }
     
@@ -695,6 +783,7 @@ void tui_handle_key(tui_ctx_t *t, int key) {
         case '2': t->panel = 1; break;
         case '3': t->panel = 2; break;
         case '4': t->panel = 3; break;
+        case '5': t->panel = 4; break;
         case 'q': 
         case 'Q': 
             t->running = 0; 

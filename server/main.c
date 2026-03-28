@@ -39,6 +39,7 @@
 #include "shared/base32.h"
 #include "shared/tui.h"
 #include "shared/codec.h"
+#include "shared/mgmt.h"
 
 /* Forward declarations */
 static int build_txt_reply_with_seq(uint8_t *outbuf, size_t *outlen,
@@ -55,6 +56,7 @@ static dnstun_config_t  g_cfg;
 static tui_ctx_t        g_tui;
 static tui_stats_t      g_stats;
 static uv_loop_t       *g_loop;
+static mgmt_server_t   *g_mgmt;          /* Management server for TUI */
 
 /* UDP listener */
 static uv_udp_t         g_udp_server;
@@ -999,6 +1001,11 @@ static void on_tui_timer(uv_timer_t *t) {
     uv_mutex_unlock(&g_swarm_lock);
 
     tui_render(&g_tui);
+    
+    /* Broadcast telemetry to connected management clients */
+    if (g_mgmt) {
+        mgmt_broadcast_telemetry(g_mgmt, &g_stats);
+    }
 }
 
 /* ────────────────────────────────────────────── */
@@ -1223,6 +1230,22 @@ int main(int argc, char *argv[]) {
 
     uv_timer_init(g_loop, &g_idle_timer);
     uv_timer_start(&g_idle_timer, on_idle_timer, 1000, 1000);
+
+    /* Management server for headless TUI connections */
+    {
+        mgmt_config_t mgmt_cfg = {0};
+        strncpy(mgmt_cfg.bind_addr, "127.0.0.1", sizeof(mgmt_cfg.bind_addr) - 1);
+        mgmt_cfg.port = 9090;
+        mgmt_cfg.telemetry_interval_ms = 1000;
+        mgmt_cfg.callbacks.on_connect = NULL;
+        mgmt_cfg.callbacks.on_disconnect = NULL;
+        mgmt_cfg.callbacks.on_command = NULL;
+        g_mgmt = mgmt_server_create(g_loop, &mgmt_cfg);
+        if (g_mgmt) {
+            mgmt_server_start(g_mgmt);
+            LOG_INFO("  Management : 127.0.0.1:9090 (connect TUI here)\n");
+        }
+    }
 
     LOG_INFO("dnstun-server listening on %s:%d\n", bind_ip, bind_port);
     LOG_INFO("  Workers  : %d\n", g_cfg.workers);

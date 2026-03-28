@@ -115,6 +115,7 @@ set(SHARED_SOURCES
     shared/resolver_pool.c
     shared/tui.c
     shared/codec.c
+    shared/mgmt.c
 )
 
 # ── Core Settings ─────────────────────────────────────────────────────────────
@@ -152,6 +153,12 @@ set_target_properties(dnstun-server PROPERTIES LINKER_LANGUAGE CXX)
 
 if(WIN32)
     target_link_libraries(dnstun-server ws2_32 iphlpapi userenv)
+endif()
+
+# ── Standalone TUI ───────────────────────────────────────────────────────────
+option(BUILD_STANDALONE_TUI "Build standalone TUI executable (connects to core via socket)" ON)
+if(BUILD_STANDALONE_TUI)
+    add_subdirectory(tui-standalone)
 endif()
 
 # ── Install ───────────────────────────────────────────────────────────────────

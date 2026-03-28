@@ -79,7 +79,7 @@ typedef struct tui_ctx {
     dnstun_config_t  *cfg;
     volatile int      running;
     volatile int      restart;
-    int               panel;        /* 0=stats, 1=resolvers, 2=config, 3=debug */
+    int               panel;        /* 0=stats, 1=resolvers, 2=config, 3=debug, 4=help */
     const char       *config_path;  /* path to INI file for saving    */
 
     /* Inline text-input mode */
