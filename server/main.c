@@ -704,13 +704,14 @@ static void on_server_recv(uv_udp_t *h,
         strncat(b32_payload, parts[i], sizeof(b32_payload) - strlen(b32_payload) - 1);
     }
     
-    /* If no payload (empty query), ignore */
-    if (b32_payload[0] == '\0' && !is_mtu_probe) {
-        return;
-    }
-    
     LOG_INFO("DEBUG QNAME parse: qname='%s', parts=%d, domain_parts=%d, payload_start=%d, payload='%s'\n",
              qname, part_count, domain_parts, payload_start_idx, b32_payload);
+    
+    /* If no payload (empty query), ignore */
+    if (b32_payload[0] == '\0' && !is_mtu_probe) {
+        LOG_ERR("DEBUG: Empty payload after parsing QNAME, ignoring\n");
+        return;
+    }
     
     /* Decode b32 payload → raw bytes (chunk_header + data)
      * Increased to 512 to safely handle max-length Base32 QNAMEs (253 chars). */
