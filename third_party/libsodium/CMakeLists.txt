@@ -9,8 +9,8 @@ file(GLOB_RECURSE SODIUM_SOURCES
     "src/libsodium/*.c"
 )
 
-# Exclude some known problematic files if necessary
-# list(REMOVE_ITEM SODIUM_SOURCES ...)
+# Exclude version.c because it requires a generated version.h
+list(FILTER SODIUM_SOURCES EXCLUDE REGEX "src/libsodium/sodium/version\\.c$")
 
 add_library(sodium STATIC ${SODIUM_SOURCES})
 
