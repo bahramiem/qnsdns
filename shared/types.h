@@ -27,7 +27,7 @@
 /* Buffer sizes for downstream MTU
  * DEFAULT: 320 for DNS TXT compatibility (ensures total response < 512 bytes)
  * Server will use this unless client reports different preference via handshake */
-#define DNSTUN_MAX_DOWNSTREAM_MTU   320    /* Maximally compatible default for DNS TXT */
+#define DNSTUN_MAX_DOWNSTREAM_MTU   220    /* Maximally compatible default for DNS TXT */
 #define DNSTUN_SERVER_BUFFER_SIZE   65536  /* 64KB */
 #define DNSTUN_CLIENT_BUFFER_SIZE   65536  /* 64KB */
 

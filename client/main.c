@@ -1958,19 +1958,16 @@ static int reorder_buffer_flush(reorder_buffer_t *rb, uint8_t *out_buf,
         free(slot->data);
         slot->valid = false;
         
-        /* Shift remaining slots down */
-        for (int i = 1; i < RX_REORDER_WINDOW; i++) {
-            if (rb->slots[i].valid) {
-                /* Find first empty slot and move this one there */
-                int empty = i - 1;
-                while (empty >= 0 && !rb->slots[empty].valid) empty--;
-                empty++;  /* First empty position */
-                if (empty != i) {
-                    memmove(&rb->slots[empty], &rb->slots[i], sizeof(rx_buffer_slot_t));
-                    memset(&rb->slots[i], 0, sizeof(rx_buffer_slot_t));
-                }
+        /* Shift all remaining slots down by 1 in a single linear pass */
+        for (int i = 0; i < RX_REORDER_WINDOW - 1; i++) {
+            if (rb->slots[i+1].valid) {
+                memcpy(&rb->slots[i], &rb->slots[i+1], sizeof(rx_buffer_slot_t));
+                memset(&rb->slots[i+1], 0, sizeof(rx_buffer_slot_t));
+            } else {
+                rb->slots[i].valid = false;
             }
         }
+        rb->slots[RX_REORDER_WINDOW-1].valid = false;
     }
     
     *out_len = total;
@@ -2349,9 +2346,8 @@ static void on_dns_recv(uv_udp_t *h,
                         LOG_INFO("Swarm: synced new resolvers from server\n");
                     } else {
                         /* Decode base64 response from server (server sends base64 by default) */
-                        /* DEBUG: Log TXT record size before decoding */
-                        fprintf(stderr, "[DEBUG] TXT record: len=%zu text='%.*s'\n",
-                                ans->txt.len, (int)ans->txt.len, ans->txt.text);
+                        LOG_DEBUG("DNS TXT: RID=%d, Len=%zu (raw), starts with: '%.10s'\n",
+                                 ridx, ans->txt.len, ans->txt.text);
 
                         uint8_t decoded[4096];
                         ptrdiff_t decoded_len = base64_decode(decoded, ans->txt.text, ans->txt.len);
