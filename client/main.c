@@ -2140,6 +2140,7 @@ static size_t socks5_handle_data(socks5_client_t *c,
 
         /* Don't send success yet - wait for server acknowledgment.
          * The SOCKS5 success will be sent when we receive the first upstream response. */
+        LOG_INFO("SOCKS5 state 1 -> 2 (Tunnel). Consumed %zu bytes.\n", min_len);
         return min_len;
     }
 
@@ -2186,11 +2187,16 @@ static size_t socks5_handle_data(socks5_client_t *c,
 static void on_socks5_read(uv_stream_t *s, ssize_t nread, const uv_buf_t *buf) {
     socks5_client_t *c = s->data;
 
-    if (nread <= 0) {
+    if (nread < 0) {
+        LOG_ERR("[SOCKS5] Read error or close: nread=%zd (%s)\n", nread, uv_strerror(nread));
         if (!uv_is_closing((uv_handle_t*)s))
             uv_close((uv_handle_t*)s, on_socks5_close);
         return;
     }
+
+    if (nread == 0) return; /* EAGAIN or similar, ignore */
+
+    LOG_INFO("[SOCKS5] Read Callback: state=%d, nread=%zd\n", c->state, nread);
 
     /* Accumulate incoming data in buffer to handle fragmentation.
      * SOCKS5 handshake packets may arrive fragmented across multiple reads.
@@ -2679,6 +2685,20 @@ static void on_poll_timer(uv_timer_t *t) {
     for (int i = 0; i < DNSTUN_MAX_SESSIONS; i++) {
         session_t *sess = &g_sessions[i];
         if (!sess->established || sess->closed) continue;
+
+        /* [Fix] Stuck Session Detection:
+           If we have an attached SOCKS5 client and it's been in 'tunnel' state (2)
+           for more than 5 seconds but we haven't seen any data upload, log it. */
+        if (sess->client_ptr) {
+            socks5_client_t *c = (socks5_client_t*)sess->client_ptr;
+            if (c->state == 2 && sess->send_len == 0 && (time(NULL) - sess->last_active > 5)) {
+                static time_t last_warn = 0;
+                if (time(NULL) - last_warn > 10) {
+                    LOG_WARN("Session %d: STUCK? Handshake OK but 0 bytes uploaded for 5s.\n", i);
+                    last_warn = time(NULL);
+                }
+            }
+        }
 
         if (sess->send_len > 0) {
             /* 1. COMPRESS */
