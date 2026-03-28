@@ -1958,15 +1958,9 @@ static int reorder_buffer_flush(reorder_buffer_t *rb, uint8_t *out_buf,
         free(slot->data);
         slot->valid = false;
         
-        /* Shift all remaining slots down by 1 in a single linear pass */
-        for (int i = 0; i < RX_REORDER_WINDOW - 1; i++) {
-            if (rb->slots[i+1].valid) {
-                memcpy(&rb->slots[i], &rb->slots[i+1], sizeof(rx_buffer_slot_t));
-                memset(&rb->slots[i+1], 0, sizeof(rx_buffer_slot_t));
-            } else {
-                rb->slots[i].valid = false;
-            }
-        }
+        /* Shift all remaining slots down by 1 in a single memory move */
+        memmove(&rb->slots[0], &rb->slots[1], (RX_REORDER_WINDOW - 1) * sizeof(rx_buffer_slot_t));
+        memset(&rb->slots[RX_REORDER_WINDOW - 1], 0, sizeof(rx_buffer_slot_t));
         rb->slots[RX_REORDER_WINDOW-1].valid = false;
     }
     
@@ -2352,11 +2346,12 @@ static void on_dns_recv(uv_udp_t *h,
                         uint8_t decoded[4096];
                         ptrdiff_t decoded_len = base64_decode(decoded, ans->txt.text, ans->txt.len);
                         if (decoded_len < 0) {
-                            fprintf(stderr, "[DEBUG] base64_decode FAILED for TXT len=%zu\n", ans->txt.len);
+                            LOG_DEBUG("base64_decode FAILED for TXT len=%zu\n", ans->txt.len);
                             continue;
                         }
-                        fprintf(stderr, "[DEBUG] base64_decode: input=%zu output=%td\n",
-                                ans->txt.len, decoded_len);
+                        
+                        LOG_DEBUG("DNS Data: Decoded=%td, RID=%d, starts with: %02x %02x %02x %02x\n",
+                                 decoded_len, ridx, decoded[0], decoded[1], decoded[2], decoded[3]);
                         
                         /* Unified packet handling flow:
                          * 1. Detect packet type (ACK vs Data) and parse header.
