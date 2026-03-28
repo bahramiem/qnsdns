@@ -408,8 +408,21 @@ static void render_dashboard(tui_ctx_t *t, int x, int y, int width, int height) 
     }
     
     printf("\033[%d;%dH" ANSI_BOLD "Status:   %s%s" ANSI_RESET, panel_y + 2, x + 2, status_color, status);
-    printf("\033[%d;%dH" ANSI_BOLD "Latency:  " ANSI_RESET "%.1f ms", panel_y + 3, x + 2, 
-           (double)t->stats->last_server_rx_ms);
+    /* Calculate average latency across active resolvers */
+    double avg_rtt = 0;
+    int active_res = 0;
+    if (t->pool) {
+        for (int i = 0; i < t->pool->count; i++) {
+            if (t->pool->resolvers[i].state == RSV_ACTIVE && t->pool->resolvers[i].rtt_ms < 990.0) {
+                avg_rtt += t->pool->resolvers[i].rtt_ms;
+                active_res++;
+            }
+        }
+    }
+    if (active_res > 0) avg_rtt /= active_res;
+    else avg_rtt = 0.0;
+
+    printf("\033[%d;%dH" ANSI_BOLD "Latency:  " ANSI_RESET "%.1f ms", panel_y + 3, x + 2, avg_rtt);
     printf("\033[%d;%dH" ANSI_BOLD "Loss:     " ANSI_RESET "%.1f%%", panel_y + 4, x + 2,
            t->stats->queries_sent > 0 ? 
            (double)t->stats->queries_lost * 100.0 / t->stats->queries_sent : 0);
