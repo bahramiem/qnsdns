@@ -451,9 +451,11 @@ static void on_debug_recv(uv_udp_t *h, ssize_t nread,
                     ptrdiff_t decoded_len = base64_decode(decoded_payload, ans->txt.text, ans->txt.len);
                     
                     if (decoded_len > 0) {
-                        /* Check if this matches our debug payload */
-                        if ((size_t)decoded_len == strlen(d->expected_payload) &&
-                            memcmp(decoded_payload, d->expected_payload, (size_t)decoded_len) == 0) {
+                        /* Server sends: server_response_header_t (4 bytes) + payload
+                         * We need to skip the header when comparing the debug payload */
+                        size_t payload_start = sizeof(server_response_header_t);
+                        if ((size_t)decoded_len >= payload_start + strlen(d->expected_payload) &&
+                            memcmp(decoded_payload + payload_start, d->expected_payload, strlen(d->expected_payload)) == 0) {
                             /* Success! */
                             LOG_INFO("Debug packet %u loopback successful\n", d->expected_seq);
                             tui_proto_test_on_response(&g_tui, d->expected_seq);
