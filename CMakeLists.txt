@@ -156,7 +156,8 @@ if(WIN32)
 endif()
 
 # ── Standalone TUI ───────────────────────────────────────────────────────────
-option(BUILD_STANDALONE_TUI "Build standalone TUI executable (connects to core via socket)" ON)
+# Note: Building standalone TUI requires fixing Windows SDK include order issues
+option(BUILD_STANDALONE_TUI "Build standalone TUI executable (connects to core via socket)" OFF)
 if(BUILD_STANDALONE_TUI)
     add_subdirectory(tui-standalone)
 endif()

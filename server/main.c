@@ -27,6 +27,7 @@
 #else
 #include <unistd.h>
 #include <arpa/inet.h>
+#include <strings.h>
 #endif
 
 #include "uv.h"
@@ -587,7 +588,11 @@ static void on_server_recv(uv_udp_t *h,
      * and some resolvers use 0x20 case randomization */
     int tun_idx = -1;
     for (int i = 0; i < part_count; i++) {
+#ifdef _WIN32
+        if (_stricmp(parts[i], "tun") == 0) { tun_idx = i; break; }
+#else
         if (strcasecmp(parts[i], "tun") == 0) { tun_idx = i; break; }
+#endif
     }
 
     /* New compact format: <b32_payload>.tun.<domain>

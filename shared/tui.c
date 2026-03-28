@@ -746,10 +746,10 @@ static void render_help_view(tui_ctx_t *t, int x, int y, int width, int height) 
     row = y + content_height - 9;
     printf("\033[%d;%dH" ANSI_BR_CYAN "┌%.*s┐" ANSI_RESET, row, col, note_box_width, "──────────────────────────────────────────────────────────────────────────────");
     row++;
-    printf("\033[%d;%dH" ANSI_BR_CYAN "│" ANSI_RESET " " ANSI_BOLD ANSI_BR_WHITE "NOTE:" ANSI_RESET " Press [Q] to detach TUI. Tunnel continues running!");
-    printf("\033[%d;%dH" ANSI_BR_CYAN "│" ANSI_RESET, row++);
-    printf("\033[%d;%dH" ANSI_BR_CYAN "│" ANSI_RESET " Close terminal or Ctrl+C to exit TUI only. Run ./dnstun-client");
-    printf("\033[%d;%dH" ANSI_BR_CYAN "│" ANSI_RESET " again to reconnect TUI.", row++);
+    printf("\033[%d;%dH" ANSI_BR_CYAN "│" ANSI_RESET " " ANSI_BOLD ANSI_BR_WHITE "NOTE:" ANSI_RESET " Press [Q] to detach TUI. Tunnel continues running!", row++, col);
+    printf("\033[%d;%dH" ANSI_BR_CYAN "│" ANSI_RESET, row++, col);
+    printf("\033[%d;%dH" ANSI_BR_CYAN "│" ANSI_RESET " Close terminal or Ctrl+C to exit TUI only. Run ./dnstun-client", row++, col);
+    printf("\033[%d;%dH" ANSI_BR_CYAN "│" ANSI_RESET " again to reconnect TUI.", row++, col);
     row++;
     printf("\033[%d;%dH" ANSI_BR_CYAN "└%.*s┘" ANSI_RESET, row, col, note_box_width, "──────────────────────────────────────────────────────────────────────────────");
     
