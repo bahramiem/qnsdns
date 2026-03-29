@@ -173,23 +173,14 @@ static void resolvers_load(void) {
 /*    <b32_payload>.<configured_domain>           */
 /*  (No delimiter needed - server strips known domain suffix) */
 /* ────────────────────────────────────────────── */
-/* Inline dotify function from slipstream - inserts dots to split long base32 payloads
- * into DNS-friendly labels.
- * 
- * NOTE: Some DNS resolvers (like Cloudflare) truncate labels > 37-40 chars.
- * Changed from 57 to 35 to ensure compatibility with DNS infrastructure.
- * This prevents QNAME truncation that causes incorrect sequence numbers. */
+/* Inline dotify function from slipstream - inserts dots every 57 chars */
 static size_t inline_dotify(char *buf, size_t buflen, size_t len) {
     if (len == 0) {
         if (buflen > 0) buf[0] = '\0';
         return 0;
     }
 
-    /* [FIX] Changed from 57 to 35 to avoid DNS resolver label truncation
-     * Cloudflare DNS truncates labels > 37-40 chars */
-    #define DOTIFY_INTERVAL 35
-
-    size_t dots = len / DOTIFY_INTERVAL;
+    size_t dots = len / 57;
     size_t new_len = len + dots;
 
     if (new_len + 1 > buflen) {
@@ -201,15 +192,15 @@ static size_t inline_dotify(char *buf, size_t buflen, size_t len) {
     char *src = buf + len - 1;
     char *dst = buf + new_len - 1;
 
-    size_t next_dot = len - (len % DOTIFY_INTERVAL);
-    if (next_dot == len) next_dot = len - DOTIFY_INTERVAL;
+    size_t next_dot = len - (len % 57);
+    if (next_dot == len) next_dot = len - 57;
 
     size_t current_pos = len;
 
     while (current_pos > 0) {
         if (current_pos == next_dot && dots > 0) {
             *dst-- = '.';
-            next_dot -= DOTIFY_INTERVAL;
+            next_dot -= 57;
             current_pos--;
             dots--;
             continue;
