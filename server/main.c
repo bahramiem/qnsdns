@@ -120,6 +120,13 @@ typedef struct srv_session {
                               * decoded+forwarded; gate against re-decode from
                               * redundant FEC symbols of the same burst */
 
+  /* Set true once the client has sent a capability/MTU handshake for this
+   * session. After this point downstream_seq is used for ALL replies
+   * (including FEC chunk ACKs and polls) so the client reorder buffer
+   * receives a gapless monotonic stream. Pre-handshake probe polls get
+   * seq=0 with no increment to keep them outside the reorder window. */
+  bool handshake_done;
+
   /* Downstream sequencing (Server → Client) */
   uint16_t downstream_seq; /* Next seq to assign for downstream packets */
 
@@ -380,9 +387,14 @@ static void session_send_status(int sidx, uint8_t status) {
      * seq=0, which the client's reorder buffer (expected_seq=0) can flush
      * immediately regardless of how many poll replies were sent before the
      * upstream connection completed. */
-    sess->downstream_seq = 0;
+    /* Do NOT reset downstream_seq here. The status byte is delivered at
+     * whatever downstream_seq is currently at. The client reorder buffer
+     * (expected_seq) has been advancing with each empty poll reply, so the
+     * status byte arrives at the correct next seq and is delivered without
+     * gaps. Resetting to 0 caused the status byte to collide with the
+     * handshake reply (also seq=0) and be dropped as a duplicate. */
     sess->status_sent = true;
-    LOG_DEBUG("Session %d: prioritized SOCKS5 status %02x (downstream_seq reset to 0)\n", sidx, status);
+    LOG_DEBUG("Session %d: queued SOCKS5 status %02x at downstream_seq=%u\n", sidx, status, sess->downstream_seq);
   }
 }
 
@@ -948,7 +960,8 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
      * and all following data start at seq=0 — exactly what the client's
      * reorder buffer expects after it sends the capability/handshake. */
     sess->downstream_seq = 0;
-    LOG_INFO("Session %d: downstream_seq reset to 0 on handshake\n", sidx);
+    sess->handshake_done = true;
+    LOG_INFO("Session %d: downstream_seq reset to 0 on handshake, handshake_done=true\n", sidx);
   }
 
   /* ── Handle FEC Burst Reassembly ──────────────────────────────────── */
@@ -1279,7 +1292,7 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     uint8_t reply[4096];
     size_t rlen = sizeof(reply);
     /* SWARM reply: only advance seq if handshake already done */
-    uint16_t swarm_seq = has_capability_header ? sess->downstream_seq++ : 0;
+    uint16_t swarm_seq = sess->handshake_done ? sess->downstream_seq++ : 0;
     if (build_txt_reply_with_seq(
             reply, &rlen, query_id, qname, (const uint8_t *)swarm_text, slen,
             sess->cl_downstream_mtu, swarm_seq,
@@ -1317,7 +1330,7 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     /* Only advance downstream_seq if the client has completed the MTU
      * handshake (has_capability_header). Pre-handshake probe polls get seq=0
      * without consuming a slot so the MTU-handshake reply is always seq=0. */
-    uint16_t out_seq = has_capability_header ? sess->downstream_seq++ : 0;
+    uint16_t out_seq = sess->handshake_done ? sess->downstream_seq++ : 0;
     if (build_txt_reply_with_seq(
             reply, &rlen, query_id, qname, sess->upstream_buf, sz, mtu,
             out_seq, sess->session_id) == 0) {
@@ -1329,7 +1342,7 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     }
   } else {
     /* Empty reply — acknowledge the query with NO payload */
-    uint16_t out_seq = has_capability_header ? sess->downstream_seq++ : 0;
+    uint16_t out_seq = sess->handshake_done ? sess->downstream_seq++ : 0;
     if (build_txt_reply_with_seq(reply, &rlen, query_id, qname, NULL, 0, mtu,
                                  out_seq, sess->session_id) == 0)
       send_udp_reply(src, reply, rlen);
