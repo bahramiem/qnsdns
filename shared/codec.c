@@ -396,17 +396,33 @@ fec_encoded_t codec_fec_encode(const uint8_t *in, size_t inlen, int k, int r) {
 codec_result_t codec_fec_decode_oti(fec_encoded_t *encoded) {
     codec_result_t res = {0};
     struct RFC6330_v1 *api = get_rq_api();
-    if (!api) { res.error = true; return res; }
+    if (!api) { 
+        fprintf(stderr, "DEBUG FEC OTI: get_rq_api() returned NULL\n");
+        res.error = true; 
+        return res; 
+    }
 
     if (!encoded->has_oti) {
-        /* Fallback: can't decode without OTI */
+        fprintf(stderr, "DEBUG FEC OTI: no OTI available\n");
         res.error = true;
         return res;
     }
 
+    fprintf(stderr, "DEBUG FEC OTI: oti_common=0x%016llx oti_scheme=0x%08x total_count=%d symbol_len=%zu\n",
+            (unsigned long long)encoded->oti_common, 
+            (unsigned int)encoded->oti_scheme,
+            encoded->total_count,
+            (size_t)encoded->symbol_len);
+
     /* Decoder(type, OTI_Common, OTI_Scheme_Specific) - size is embedded in OTI */
     struct RFC6330_ptr *dec = api->Decoder(RQ_DEC_8, encoded->oti_common, encoded->oti_scheme);
-    if (!dec) { res.error = true; return res; }
+    if (!dec) { 
+        fprintf(stderr, "DEBUG FEC OTI: Decoder() returned NULL\n");
+        res.error = true; 
+        return res; 
+    }
+    
+    fprintf(stderr, "DEBUG FEC OTI: Decoder created successfully\n");
 
     uint16_t T = (uint16_t)encoded->symbol_len;
 
