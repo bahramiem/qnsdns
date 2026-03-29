@@ -1018,10 +1018,15 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
       }
     }
 
-    /* K = source symbols needed = total - r */
-    int k_est = sess->burst_count_needed - (int)sess->cl_fec_k;
+    /* K = source symbols needed to decode. fec_k from the chunk header IS K
+     * (not the repair count r). chunk_total = K + r. So r = chunk_total - K.
+     * The server must accumulate K symbols before decoding. */
+    int k_est = (int)sess->cl_fec_k; /* K source symbols */
     if (k_est < 1)
       k_est = 1;
+    /* Clamp to total (can't need more than total symbols) */
+    if (k_est > sess->burst_count_needed)
+      k_est = sess->burst_count_needed;
 
     LOG_INFO("FEC burst status: received=%d need=%d (total=%d r=%d base_seq=%u esi=%u)\n",
              sess->burst_received, k_est, sess->burst_count_needed,
@@ -1040,6 +1045,10 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
       }
       LOG_INFO("DEBUG FEC: Starting decode with %d symbols (need %d)\n",
                sess->burst_received, k_est);
+      /* Mark this burst as decoded NOW to prevent re-entry on subsequent
+       * symbol arrivals. Without this, each new symbol would re-trigger
+       * a decode (since burst_decoded was only set on SOCKS5 success path). */
+      sess->burst_decoded = true;
       fec_encoded_t fec = {0};
       fec.symbols = sess->burst_symbols;
       fec.symbol_len = sess->burst_symbol_len;
