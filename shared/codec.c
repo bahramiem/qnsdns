@@ -477,28 +477,34 @@ codec_result_t codec_fec_decode_oti(fec_encoded_t *encoded) {
                 (unsigned long long)raw_transfer_len);
     }
 
-    /* Fast path: K=1 source symbol — the symbol IS the source data. Skip
-     * the RaptorQ decoder entirely (it would hang in future_wait when
-     * transfer_length is wrong or the block can't be fully reconstructed). */
-    if (raw_transfer_len == 0 || raw_transfer_len > 131072 ||
-        (raw_transfer_len <= T)) {
-        /* Source data is just the first available symbol, up to T bytes */
-        int first = -1;
+    /* Fast path: when OTI transfer_length is implausible, reconstruct the
+     * source data by concatenating the available source symbols in ESI order.
+     * With correct burst accumulation (ESI-based, fixed in main.c), symbols[0..K-1]
+     * contain the K source symbols in order before any repair symbols.
+     * source_data = concat(symbols[0], ..., symbols[K-1]) where K = k_avail. */
+    if (raw_transfer_len == 0 || raw_transfer_len > 131072) {
+        int k_avail = 0;
         for (int i = 0; i < encoded->total_count; i++) {
-            if (encoded->symbols[i]) { first = i; break; }
+            if (encoded->symbols[i]) k_avail++;
         }
-        if (first < 0) {
-            fprintf(stderr, "DEBUG FEC OTI: K=1 fast path but no symbol available\n");
+        if (k_avail == 0) {
+            fprintf(stderr, "DEBUG FEC OTI: concat fast path: no symbols available\n");
             res.error = true;
             return res;
         }
-        size_t src_len = (raw_transfer_len > 0 && raw_transfer_len <= T)
-                         ? (size_t)raw_transfer_len : (size_t)T;
+        size_t src_len = (size_t)T * (size_t)k_avail;
         res.data = buffer_pool_acquire(src_len);
         if (!res.data) { res.error = true; return res; }
-        memcpy(res.data, encoded->symbols[first], src_len);
+        uint8_t *dst = (uint8_t *)res.data;
+        for (int i = 0; i < encoded->total_count; i++) {
+            if (encoded->symbols[i]) {
+                memcpy(dst, encoded->symbols[i], T);
+                dst += T;
+            }
+        }
         res.len = src_len;
-        fprintf(stderr, "DEBUG FEC OTI: K=1 fast path OK, len=%zu\n", src_len);
+        fprintf(stderr, "DEBUG FEC OTI: concat fast path OK, k_avail=%d T=%u len=%zu\n",
+                k_avail, T, src_len);
         return res;
     }
 

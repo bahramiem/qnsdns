@@ -969,14 +969,18 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     /* chunk_total > 1 means we have FEC data (k+r where r > 0)
      * chunk_total = 1 means no FEC, just a single packet */
 
-    /* Detect new burst using modular uint16_t arithmetic to handle seq
-     * wrap-around. A new burst starts when:
-     *   - no current burst is open (burst_count_needed == 0), OR
-     *   - the symbol's position relative to burst_seq_start is outside [0,
-     * chunk_total) which means it belongs to a different burst. */
-    uint16_t offset_u16 = (uint16_t)(seq - sess->burst_seq_start);
+    /* ESI (Encoding Symbol ID) = seq % chunk_total.
+     * All symbols in a single FEC block share the same burst_base_seq =
+     * seq - ESI, independent of arrival order. This correctly groups all
+     * chunk_total symbols into one burst accumulator regardless of which
+     * symbol arrives first. Previously, burst_seq_start was set to the
+     * first-received seq, causing each later symbol to appear as a new burst
+     * when its offset relative to the first-received seq exceeded chunk_total. */
+    uint16_t esi = (uint16_t)(seq % (uint16_t)chunk_total);
+    uint16_t burst_base_seq = (uint16_t)(seq - esi);
     bool is_new_burst = (sess->burst_count_needed == 0) ||
-                        ((int)offset_u16 >= sess->burst_count_needed);
+                        (burst_base_seq != sess->burst_seq_start) ||
+                        (chunk_total != (uint16_t)sess->burst_count_needed);
 
     if (is_new_burst) {
       /* Cleanup old burst */
@@ -986,49 +990,42 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         free(sess->burst_symbols);
         sess->burst_symbols = NULL;
       }
-      sess->burst_seq_start = seq;
+      sess->burst_seq_start = burst_base_seq;
       sess->burst_count_needed = chunk_total;
-      /* Store the fec_k (redundancy r) from this burst's first packet header.
-       * k = total - r. Save it in cl_fec_k for k_est calculation below. */
-      sess->cl_fec_k = fec_k; /* r from chunk header */
+      /* fec_k = r (number of repair symbols). K source symbols = total - r. */
+      sess->cl_fec_k = fec_k;
       sess->burst_received = 0;
       sess->burst_symbols = calloc(chunk_total, sizeof(uint8_t *));
       sess->burst_symbol_len = payload_len;
-      /* Store OTI from chunk header for FEC decoding.
-       * has_oti requires BOTH common and scheme to be non-zero because
-       * codec_fec_decode_oti() rejects oti_scheme == 0. */
       sess->burst_oti_common = hdr.oti_common;
       sess->burst_oti_scheme = hdr.oti_scheme;
       sess->burst_has_oti = (hdr.oti_common != 0 && hdr.oti_scheme != 0);
-      sess->burst_decoded = false; /* Reset decode gate for new burst */
-      LOG_INFO("FEC burst start: seq=%u total=%u fec_k(r)=%u OTI common=0x%llx "
+      sess->burst_decoded = false;
+      LOG_INFO("FEC burst start: base_seq=%u esi=%u total=%u fec_k(r)=%u OTI common=0x%llx "
                "scheme=0x%x has_oti=%d\n",
-               seq, chunk_total, fec_k,
+               burst_base_seq, esi, chunk_total, fec_k,
                (unsigned long long)sess->burst_oti_common,
                sess->burst_oti_scheme, sess->burst_has_oti);
     }
 
-    /* Modular offset — safe across uint16_t wrap-around */
-    int offset = (int)offset_u16;
-    if (offset >= 0 && offset < sess->burst_count_needed &&
-        sess->burst_symbols && !sess->burst_symbols[offset]) {
-      sess->burst_symbols[offset] = malloc(payload_len);
-      if (sess->burst_symbols[offset]) {
-        memcpy(sess->burst_symbols[offset], payload, payload_len);
+    /* Store symbol at its ESI slot within the burst buffer */
+    if (esi < (uint16_t)sess->burst_count_needed &&
+        sess->burst_symbols && !sess->burst_symbols[esi]) {
+      sess->burst_symbols[esi] = malloc(payload_len);
+      if (sess->burst_symbols[esi]) {
+        memcpy(sess->burst_symbols[esi], payload, payload_len);
         sess->burst_received++;
       }
     }
 
-    /* k_est = total_symbols - r (redundancy count stored per burst in
-     * cl_fec_k). RaptorQ needs k source symbols to decode; any k distinct
-     * symbols suffice. */
+    /* K = source symbols needed = total - r */
     int k_est = sess->burst_count_needed - (int)sess->cl_fec_k;
     if (k_est < 1)
       k_est = 1;
 
-    LOG_INFO("FEC burst status: received=%d need=%d (total=%d r=%d)\n",
+    LOG_INFO("FEC burst status: received=%d need=%d (total=%d r=%d base_seq=%u esi=%u)\n",
              sess->burst_received, k_est, sess->burst_count_needed,
-             sess->cl_fec_k);
+             sess->cl_fec_k, burst_base_seq, esi);
 
     if (sess->burst_received >= k_est) {
       /* Guard: skip re-decoding if this burst was already decoded and
