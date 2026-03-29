@@ -649,13 +649,29 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
   uint16_t query_id = qry->id;
   uint16_t qtype = qry->questions[0].type;
 
-  /* Only process TXT queries (qtype=16). Cloudflare's resolver infrastructure
-   * sends A (qtype=1) queries for individual labels of multi-label QNAMEs,
-   * producing tiny payloads that corrupt FEC burst reassembly.
-   * Drop non-TXT queries silently — no reply needed. */
+  /* For non-TXT queries (e.g. Cloudflare QNAME minimization A probes):
+   * Respond with NOERROR + empty answer (no records). This tells the resolver
+   * "this name exists, but has no A record" - so it proceeds to send the actual
+   * TXT query. Silently dropping these caused Cloudflare to never forward TXT. */
   if (qtype != RR_TXT) {
-      LOG_DEBUG("Ignoring non-TXT query (qtype=%u) from %s for %s\n",
+      LOG_DEBUG("Non-TXT query (qtype=%u) from %s for %s - sending NOERROR empty\n",
                 qtype, src_ip, qname);
+      /* Build a minimal DNS NOERROR response with 0 answers.
+       * This tells Cloudflare's QNAME minimization: "name exists, no A record"
+       * so it continues and sends the actual TXT query to us. */
+      uint8_t noerr[512];
+      /* DNS header (12 bytes): ID + flags + counts */
+      noerr[0] = query_id >> 8; noerr[1] = query_id & 0xFF;
+      noerr[2] = 0x84; noerr[3] = 0x00; /* QR=1 AA=1 RA=0 RCODE=NOERROR */
+      noerr[4] = 0x00; noerr[5] = 0x01; /* QDCOUNT=1 */
+      noerr[6] = 0x00; noerr[7] = 0x00; /* ANCOUNT=0 */
+      noerr[8] = 0x00; noerr[9] = 0x00; /* NSCOUNT=0 */
+      noerr[10] = 0x00; noerr[11] = 0x00; /* ARCOUNT=0 */
+      /* Copy question section verbatim from the raw request */
+      size_t q_len = (size_t)nread > 12 ? (size_t)nread - 12 : 0;
+      if (q_len > sizeof(noerr) - 12) q_len = sizeof(noerr) - 12;
+      memcpy(noerr + 12, buf->base + 12, q_len);
+      send_udp_reply(src, noerr, 12 + q_len);
       return;
   }
 
@@ -1276,9 +1292,15 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
             "reply_buf=%zu\n",
             sess->upstream_len, sz, mtu, sizeof(reply));
 
+    /* Only advance downstream_seq after the capability handshake has been
+     * completed (cl_downstream_mtu > 0). Pre-handshake probe polls reply
+     * with seq=0 without consuming a sequence number so the MTU handshake
+     * reply and first data packet are always at the position the client
+     * expects (reorder buffer expected_seq=0 after session reset). */
+    uint16_t out_seq = sess->cl_downstream_mtu > 0 ? sess->downstream_seq++ : 0;
     if (build_txt_reply_with_seq(
             reply, &rlen, query_id, qname, sess->upstream_buf, sz, mtu,
-            sess->downstream_seq++, sess->session_id) == 0) {
+            out_seq, sess->session_id) == 0) {
       /* Shift consumed bytes out of upstream buffer */
       memmove(sess->upstream_buf, sess->upstream_buf + sz,
               sess->upstream_len - sz);
@@ -1287,8 +1309,9 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     }
   } else {
     /* Empty reply — acknowledge the query with NO payload */
+    uint16_t out_seq = sess->cl_downstream_mtu > 0 ? sess->downstream_seq++ : 0;
     if (build_txt_reply_with_seq(reply, &rlen, query_id, qname, NULL, 0, mtu,
-                                 sess->downstream_seq++, sess->session_id) == 0)
+                                 out_seq, sess->session_id) == 0)
       send_udp_reply(src, reply, rlen);
   }
 }
