@@ -1054,7 +1054,7 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
             l -= 4;
             LOG_INFO("DEBUG NONCE: stripped 4-byte nonce, remaining=%zu\n", l);
           } else {
-            LOG_WARN("DEBUG NONCE: payload too short (%zu) to strip nonce\n", l);
+            LOG_ERR("DEBUG NONCE: payload too short (%zu) to strip nonce\n", l);
             codec_free_result(&zdec);
             goto skip_fec_processing;
           }
