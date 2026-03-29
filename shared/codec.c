@@ -425,12 +425,21 @@ codec_result_t codec_fec_decode_oti(fec_encoded_t *encoded) {
         return res;
     }
     
-    /* Extract symbol size from OTI_Common (lowest 16 bits) */
-    uint16_t oti_symbol_size = (uint16_t)(encoded->oti_common & 0xFFFF);
+    /* Extract symbol size from OTI_Common 
+     * RaptorQ OTI format: bits 32-47 contain symbol size (T)
+     * Lower 16 bits (0-15) contain transfer length low bits
+     */
+    uint16_t oti_symbol_size = (uint16_t)((encoded->oti_common >> 32) & 0xFFFF);
     if (oti_symbol_size < 4 || oti_symbol_size > 65535) {
-        fprintf(stderr, "DEBUG FEC OTI: INVALID oti_symbol_size=%u, rejecting\n", oti_symbol_size);
-        res.error = true;
-        return res;
+        fprintf(stderr, "DEBUG FEC OTI: INVALID oti_symbol_size=%u (from bits 32-47), rejecting\n", oti_symbol_size);
+        /* Fallback: use symbol_len from encoded structure if OTI is invalid */
+        if (encoded->symbol_len > 0 && encoded->symbol_len < 65536) {
+            oti_symbol_size = (uint16_t)encoded->symbol_len;
+            fprintf(stderr, "DEBUG FEC OTI: Using fallback symbol_len=%zu\n", encoded->symbol_len);
+        } else {
+            res.error = true;
+            return res;
+        }
     }
 
     /* Decoder(type, OTI_Common, OTI_Scheme_Specific) - size is embedded in OTI */
