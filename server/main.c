@@ -869,44 +869,11 @@ static void on_server_recv(uv_udp_t *h,
                      (unsigned long long)sess->burst_oti_common, sess->burst_oti_scheme, sess->burst_has_oti);
         }
 
-        /* [BUG FIX] Handle out-of-order packet arrival:
-         * The burst buffer is indexed 0 to (burst_count_needed-1), not from burst_seq_start.
-         * Each packet has a sequence number, and we store it at index (seq - burst_seq_start).
-         * For packets arriving out of order, we still need to store them at the correct index.
-         * 
-         * Example: burst_seq_start=10, chunk_total=11
-         * - Packet with seq=10: offset = 10-10 = 0 (valid, index 0)
-         * - Packet with seq=6:  offset = 6-10 = -4 (invalid if seq < burst_seq_start!)
-         * 
-         * But we want to store ALL packets in the burst. So we need to handle this differently.
-         * Instead of using (seq - burst_seq_start), we should use the symbol ID from the packet.
-         * 
-         * Actually, looking at the FEC encoding, each symbol has an ID (esi) which is 0 to (k+r-1).
-         * The seq field in the header IS the symbol ID. So we should use seq directly as the index.
-         * 
-         * But wait, seq could be any value (like tx_next which increments). We need to track
-         * which symbols we've received, not use seq as an absolute index.
-         * 
-         * The correct approach: 
-         * 1. Track the MIN and MAX seq values seen in the burst
-         * 2. Allocate buffer for (max_seq - min_seq + 1) symbols
-         * 3. Store at index (seq - min_seq)
-         * 
-         * For simplicity, let's just track received seqs in a bitmap or dynamic structure.
-         * For now, we assume seq values are 0-based within the burst (seq 0, 1, 2, ...).
-         * If seq >= burst_count_needed, it's out of range.
-         */
-        if (seq < (uint32_t)sess->burst_count_needed && !sess->burst_symbols[seq]) {
-            sess->burst_symbols[seq] = malloc(payload_len);
-            memcpy(sess->burst_symbols[seq], payload, payload_len);
+        int offset = seq - sess->burst_seq_start;
+        if (offset >= 0 && offset < sess->burst_count_needed && !sess->burst_symbols[offset]) {
+            sess->burst_symbols[offset] = malloc(payload_len);
+            memcpy(sess->burst_symbols[offset], payload, payload_len);
             sess->burst_received++;
-            LOG_INFO("DEBUG FEC: stored symbol seq=%u, burst_received=%d/%d\n",
-                     seq, sess->burst_received, sess->burst_count_needed);
-        } else if (seq >= (uint32_t)sess->burst_count_needed) {
-            LOG_INFO("DEBUG FEC: seq=%u out of range (max=%d), ignoring\n",
-                     seq, sess->burst_count_needed);
-        } else {
-            LOG_INFO("DEBUG FEC: seq=%u already received, ignoring\n", seq);
         }
 
         /* Enough symbols to decode? (Simplified: wait for K symbols or more) */
