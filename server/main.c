@@ -642,6 +642,17 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
 
   const char *qname = qry->questions[0].name;
   uint16_t query_id = qry->id;
+  uint16_t qtype = qry->questions[0].type;
+
+  /* Only process TXT queries (qtype=16). Cloudflare's resolver infrastructure
+   * sends A (qtype=1) queries for individual labels of multi-label QNAMEs,
+   * producing tiny payloads that corrupt FEC burst reassembly.
+   * Drop non-TXT queries silently — no reply needed. */
+  if (qtype != RR_TXT) {
+      LOG_DEBUG("Ignoring non-TXT query (qtype=%u) from %s for %s\n",
+                qtype, src_ip, qname);
+      return;
+  }
 
   /* Parse QNAME: <payload>.<configured_domain>
    * No delimiter needed - server strips known domain suffix to extract payload.
