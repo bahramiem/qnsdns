@@ -2899,6 +2899,8 @@ static void on_poll_timer(uv_timer_t *t) {
             }
             
             fec_encoded_t fec = codec_fec_encode(enc_in, enc_len, k, r);
+            LOG_INFO("DEBUG FEC: encoded %d symbols (k=%d, r=%d, enc_len=%zu, symbol_len=%zu)\n",
+                     fec.total_count, k, r, enc_len, fec.symbol_len);
             if (fec.total_count > 0) {
                 /* 4. SEND SYMBOLS - include OTI for server-side FEC decoding */
                 for (int s = 0; s < fec.total_count; s++) {
