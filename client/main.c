@@ -1847,7 +1847,7 @@ static void resolver_init_phase(void) {
 static void send_mtu_handshake(int session_idx);
 static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
                                  const uint8_t *payload, size_t paylen,
-                                 int total_chunks);
+                                 int total_chunks, uint64_t oti_common, uint32_t oti_scheme);
 
 typedef struct socks5_client {
     uv_tcp_t  tcp;
