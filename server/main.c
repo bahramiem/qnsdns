@@ -373,8 +373,13 @@ static void session_send_status(int sidx, uint8_t status) {
     }
     sess->upstream_buf[0] = status;
     sess->upstream_len++;
+    /* Reset downstream_seq to 0 so the status byte is ALWAYS delivered at
+     * seq=0, which the client's reorder buffer (expected_seq=0) can flush
+     * immediately regardless of how many poll replies were sent before the
+     * upstream connection completed. */
+    sess->downstream_seq = 0;
     sess->status_sent = true;
-    LOG_DEBUG("Session %d: prioritized SOCKS5 status %02x\n", sidx, status);
+    LOG_DEBUG("Session %d: prioritized SOCKS5 status %02x (downstream_seq reset to 0)\n", sidx, status);
   }
 }
 
@@ -1104,9 +1109,6 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                          sidx, target_host, target_port, hdr_sz,
                          cr->payload_len);
 
-                /* Reset downstream sequence for the new connection in this
-                 * session index */
-                sess->downstream_seq = 0;
                 uv_tcp_init(g_loop, &sess->upstream_tcp);
                 /* Enable TCP_NODELAY to minimize latency for interactive
                  * traffic */
