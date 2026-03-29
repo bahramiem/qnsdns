@@ -116,6 +116,9 @@ typedef struct srv_session {
   uint64_t burst_oti_common; /* OTI Common from first symbol of burst */
   uint32_t burst_oti_scheme; /* OTI Scheme from first symbol of burst */
   bool burst_has_oti;        /* true if OTI has been set for this burst */
+  bool burst_decoded;        /* true once this burst_seq_start has been fully
+                              * decoded+forwarded; gate against re-decode from
+                              * redundant FEC symbols of the same burst */
 
   /* Downstream sequencing (Server → Client) */
   uint16_t downstream_seq; /* Next seq to assign for downstream packets */
@@ -984,6 +987,7 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
       sess->burst_oti_common = hdr.oti_common;
       sess->burst_oti_scheme = hdr.oti_scheme;
       sess->burst_has_oti = (hdr.oti_common != 0 && hdr.oti_scheme != 0);
+      sess->burst_decoded = false; /* Reset decode gate for new burst */
       LOG_INFO("FEC burst start: seq=%u total=%u fec_k(r)=%u OTI common=0x%llx "
                "scheme=0x%x has_oti=%d\n",
                seq, chunk_total, fec_k,
@@ -1014,6 +1018,16 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
              sess->cl_fec_k);
 
     if (sess->burst_received >= k_est) {
+      /* Guard: skip re-decoding if this burst was already decoded and
+       * forwarded upstream. With k=1 (single-symbol RaptorQ), every one of
+       * the r redundant chunks independently satisfies burst_received>=k_est,
+       * which without this gate causes 10+ duplicate decodes that burn
+       * downstream_seq slots before any client poll can receive them. */
+      if (sess->burst_decoded) {
+        LOG_DEBUG("FEC burst seq=%u already decoded, discarding duplicate symbol\n",
+                  sess->burst_seq_start);
+        goto skip_fec_processing;
+      }
       LOG_INFO("DEBUG FEC: Starting decode with %d symbols (need %d)\n",
                sess->burst_received, k_est);
       fec_encoded_t fec = {0};
@@ -1143,6 +1157,7 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                          sidx, target_host, target_port, hdr_sz,
                          cr->payload_len);
 
+                sess->burst_decoded = true;
                 uv_tcp_init(g_loop, &sess->upstream_tcp);
                 /* Enable TCP_NODELAY to minimize latency for interactive
                  * traffic */
