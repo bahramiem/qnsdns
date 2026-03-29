@@ -1,116 +1,106 @@
 # DNS Tunnel VPN: Client Architecture
 
-The `dnstun-client` is like a secret postal service. It takes your internet mail (TCP packets), breaks them into tiny pieces, hides them in a bunch of different envelopes (DNS queries), and sends them all at once through different post offices (DNS resolvers).
+The `dnstun-client` is a high-performance SOCKS5 proxy that encapsulates network traffic into DNS queries. It is optimized for speed, reliability, and evading deep packet inspection (DPI).
 
-## 🚀 1. The Life of a Packet (Step-by-Step)
+## 🏗️ 1. High-Level Pipeline
 
-Imagine you open a website. Here is exactly how one packet travels:
+The client operates as a local SOCKS5 server, intercepting TCP connections and multiplexing them over a pool of DNS resolvers using a multipath "Scatter-Gather" engine.
 
-1.  **Intercept**: Your browser sends a packet to the SOCKS5 proxy on your computer.
-2.  **Chop**: The client chops the packet into tiny pieces (Symbols) of about 110 bytes.
-3.  **Label**: A 20-byte **Header** is stuck to each piece. This header tells the server which "mailbox" (Session ID) the piece belongs to and which number it is in the "pile" (Sequence Number).
-4.  **Hide**: The binary piece is turned into text using **Base32** (like converting a photo into code).
-5.  **Address**: The text is put into a domain name, like `A.B.C.D.tun.com`.
-6.  **Blast**: The client sends 10 different pieces to 10 different DNS servers simultaneously (Multipath).
-7.  **Reply**: The DNS server replies with a **TXT** message. The client opens it, decodes it, and puts the result back together to show you the website.
-
----
-
-## 🎨 2. Visualizing the Headers (Bit-by-Bit)
-
-Every piece of data starts with a "Label" (Header). Here is what it looks like inside:
-
-### Upstream Data Header (`chunk_header_t` - 20 Bytes)
-This header is attached to every piece you **UPLOADS**.
-
-```text
-[ Session ID (8 bits) ] -> Tells the server who you are (0-255).
-[ Flags (8 bits) ]      -> [E][C][F][P] [0][0][0][0]
-                           |  |  |  |
-                           |  |  |  +-- Poll: "Checking for mail"
-                           |  |  +----- FEC: "Repairable puzzle"
-                           |  +-------- Compressed: "Zstd-zipped"
-                           +----------- Encrypted: "Secret"
-[ Seq (16 bits) ]       -> The # of this piece (0-65535).
-[ Info (32 bits) ]      -> Total pieces and error correction settings.
-[ OTI (96 bits) ]       -> Deep technical stuff for rebuilding broken puzzles.
-```
-
-### Handshake Header (`handshake_packet_t` - 5 Bytes)
-Sent only once when you first connect.
-
-```text
-[ Ver (8 bits) ]        -> Version 1.
-[ Up MTU (16 bits) ]    -> How big the envelopes can be for upload.
-[ Down MTU (16 bits) ]  -> How big the envelopes can be for download.
+```mermaid
+graph TD
+    App[Application] -->|TCP| SOCKS[SOCKS5 Server]
+    SOCKS -->|Session Data| Mux[Multiplexer]
+    Mux -->|Chunks| FEC[FEC & Compression]
+    FEC -->|Header + Payload| Enc[Base32 Encapsulation]
+    Enc -->|DNS Query| Pool[Resolver Pool]
+    Pool -->|UDP Port 53| DNS_Net[DNS Infrastructure]
+    DNS_Net -->|DNS TXT| RX[Receiver]
+    RX -->|Base64 Decode| DeMux[De-Multiplexer]
+    DeMux -->|Ordered Data| SOCKS
 ```
 
 ---
 
-## 🧩 3. The 10-Envelope Trick (Scatter-Gather)
+## 🔌 2. Protocol Headers (Upstream)
 
-Normally, you send mail one by one. If one post office is slow, your mail is delayed.
-We use **Multipath**:
-- We send piece #1 to Google's DNS (`8.8.8.8`).
-- **Concurrent BLAST**: We don't wait for #1 to finish before sending #2.
-- **Winner Takes All**: The client dynamically shifts more traffic to the "Winning" (fastest) resolvers.
+Every DNS query sent by the client contains one or more headers before the payload. These are packed and transformed into a DNS-safe QNAME.
 
----
+### A. Compact Chunk Header (`chunk_header_t` - 20 Bytes)
+Used for every data transmission. It is binary-packed (PRAGMA PACK 1) to ensure zero padding.
 
-## 🛠️ 4. Forward Error Correction (The Puzzle Logic)
+| Offset | Size | Field | Description |
+| :--- | :--- | :--- | :--- |
+| 0 | 1 | `session_id` | 8-bit ID mapping to a specific upstream TCP connection. |
+| 1 | 1 | `flags` | Bitmask: `0x01` Encrypted, `0x02` Compressed, `0x04` FEC, `0x08` POLL. |
+| 2 | 2 | `seq` | **Upstream Sequence**: 16-bit counter for this session. |
+| 4 | 4 | `chunk_info` | Bit 8-15: `fec_k`, Bit 16-31: `total_chunks - 1`. |
+| 8 | 8 | `oti_common` | RaptorQ FEC: Common Object Transmission Information (size, symbol size). |
+| 16 | 4 | `oti_scheme` | RaptorQ FEC: Scheme-specific parameters (source blocks, sub-blocks). |
 
-Imagine you send a 10-piece puzzle. If 1 piece gets lost in the mail, you can't see the picture.
-With **FEC (Forward Error Correction)**:
-1.  We send the 10 pieces of the puzzle.
-2.  We send 5 "Repair Pieces" (Extra symbols).
-3.  Even if 5 random pieces are lost, the server can use the remaining 10 to perfectly rebuild the original picture.
-**It's like having a puzzle that heals itself!**
+### B. Client Capability Header (`capability_header_t` - 7 Bytes)
+Prepended to queries when a resolver's state changes or during handshake.
 
----
-
-## 🏎️ 5. Driving a Car (AIMD Congestion Control)
-
-How do we decide how fast to send pieces? We use a method called **AIMD**:
-- **Speed Up (Additive Increase)**: Every time we get a reply back successfully, we drive slightly faster (+1).
-- **Hard Brake (Multiplicative Decrease)**: The moment we lose one piece, we slam the brakes and cut our speed in **HALF** (-50%).
-This ensures we go as fast as possible without crashing the network.
-
----
-
-## 🤝 6. The First Meeting (Handshake Flow)
-
-Before data flows, the client and server must "shake hands":
-1.  **Client**: "Hi, I'm Version 1. My envelopes can hold 110 bytes. Can you reply with 220 bytes?"
-2.  **Server**: "Got it. I'll remember your settings for this session."
-3.  **Client**: Starts sending the actual website request.
+| Offset | Size | Field | Description |
+| :--- | :--- | :--- | :--- |
+| 0 | 1 | `version` | Protocol version (currently `1`). |
+| 1 | 2 | `up_mtu` | Client's determined upstream MTU for this resolver. |
+| 3 | 2 | `down_mtu` | Requested downstream MTU for DNS TXT responses. |
+| 5 | 1 | `encoding` | Preferred downstream encoding (`0`: Base64, `1`: Hex). |
+| 6 | 1 | `loss_pct` | 0-100% observed packet loss per resolver. |
 
 ---
 
-## 💬 7. SOCKS5 Status Codes (Simple Guide)
+## 🔄 3. Sequencing & Reliability
 
-Sometimes things go wrong. The client will tell you why:
-- `0x00`: **Success!** You are connected.
-- `0x01`: **General Fail.** The server is confused.
-- `0x04`: **Host Unreachable.** The website you want is down.
-- `0x05`: **Connection Refused.** The website blocked our tunnel.
+### Upstream Sequencing
+The client maintains `tx_next` and `tx_acked` counters per session. 
+- **Transmission**: Data is pulled from the socket buffer and wrapped in a `chunk_header_t` with the current `tx_next++`.
+- **Sliding Window**: The client will only send up to $N$ unacknowledged packets to avoid overwhelming the server.
 
----
-
-## 📥 8. How We Get Data Back (The POLL)
-
-DNS servers aren't allowed to call YOU. You must call THEM.
-To get data back (Downstream):
-1.  Your client sends a "Checking for mail" query (POLL).
-2.  The server checks if it has anything for your `Session ID`.
-3.  If it does, it hides the website data in the **TXT** record reply.
-4.  If not, it sends an empty reply.
-**It's like constantly checking your mailbox instead of waiting for a delivery truck.**
+### Downstream Reordering
+DNS responses often arrive out of order. The client uses a **32-slot Reorder Buffer** (`reorder_buffer_t`):
+1.  **Receive**: Extract `seq` from `server_response_header_t`.
+2.  **Buffering**: If `seq > expected_seq`, store data in a ring-buffer slot indexed by `seq % 32`.
+3.  **Delivery**: If `seq == expected_seq`, write data to the SOCKS5 socket and check if next slots in the buffer are now ready for delivery.
 
 ---
 
-## ⌨️ 9. The Remote Control (TUI Keys)
+## 📡 4. Multipath & Congestion Control
 
-- `1`: **Stats Panel**: See your speed (KB/s).
-- `2`: **Resolver Pool**: See which DNS servers are slow (High RTT).
-- `3`: **Settings**: Toggle encryption or jitter on the fly.
-- `m`: **Change Domain**: Quickly switch tunnel domains.
+The client uses a **Scatter-Gather** mechanism across a pool of up to 4096 resolvers.
+
+### AIMD Logic (Additive Increase, Multiplicative Decrease)
+Each resolver's bandwidth is independently capped by its `cwnd` (congestion window):
+- **Success**: If a query returns successfully, `cwnd += 1.0 / cwnd`.
+- **Loss**: If a query times out, `cwnd *= 0.5`. This causes the client to rapidly back off from congested or throttled resolvers.
+
+---
+
+## 🕵️ 5. The POLL Mechanism
+
+DNS is a "Pull" protocol—data can only be sent from the server in response to a client query. To receive downstream data when the client has nothing to upload:
+- **Timer**: Every 100ms (default), the client fires a **POLL** query across active resolvers.
+- **Header**: `chunk_header_t` with `flags |= CHUNK_FLAG_POLL` and empty payload.
+- **Result**: The server looks in its downstream buffer for the session ID and returns any waiting data in the TXT response.
+
+---
+
+## 🗜️ 6. Varint Header Compression
+
+To save bytes in the DNS QNAME, small sequence numbers (0-127) are encoded as **Varints**:
+- If `seq < 128`, it takes **1 byte**.
+- If `seq >= 128`, it takes **2 bytes** (MSB set on first byte).
+This ensures that the overhead of the tunnel protocol remains minimal for short-lived sessions.
+
+---
+
+## 🛠️ 7. Advanced Probing & Safety
+
+### MTU Binary Search
+The client doesn't guess MTU. It performs a **Binary Search** probe (`128 -> 1500 bytes`) to find the exact point where a resolver starts dropping large DNS queries.
+1.  Sends `mtu-req-[size].domain.com`.
+2.  Server echoes back a packet of exactly `size` bytes.
+3.  Result is stored per-resolver as `upstream_mtu`.
+
+### Zombie/Poison Check
+Client performs an NXDOMAIN test against a known non-existent subdomain. If the resolver returns a valid IP (Refined NXDOMAIN interception), the resolver is marked `RSV_ZOMBIE` and blacklisted.
