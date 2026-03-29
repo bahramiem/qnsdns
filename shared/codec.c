@@ -403,12 +403,12 @@ codec_result_t codec_fec_decode_oti(fec_encoded_t *encoded) {
     }
 
     if (!encoded->has_oti) {
-        fprintf(stderr, "DEBUG FEC OTI: no OTI available\n");
+        fprintf(stderr, "[FEC-DECODE-v2] DEBUG FEC OTI: no OTI available\n");
         res.error = true;
         return res;
     }
 
-    fprintf(stderr, "DEBUG FEC OTI: oti_common=0x%016llx oti_scheme=0x%08x total_count=%d symbol_len=%zu\n",
+    fprintf(stderr, "[FEC-DECODE-v2] DEBUG FEC OTI: oti_common=0x%016llx oti_scheme=0x%08x total_count=%d symbol_len=%zu\n",
             (unsigned long long)encoded->oti_common, 
             (unsigned int)encoded->oti_scheme,
             encoded->total_count,
@@ -420,7 +420,7 @@ codec_result_t codec_fec_decode_oti(fec_encoded_t *encoded) {
      * - oti_common should encode a reasonable symbol size (4-65535 bytes)
      */
     if (encoded->oti_scheme == 0) {
-        fprintf(stderr, "DEBUG FEC OTI: INVALID oti_scheme=0, rejecting\n");
+        fprintf(stderr, "[FEC-DECODE-v2] DEBUG FEC OTI: INVALID oti_scheme=0, rejecting\n");
         res.error = true;
         return res;
     }
@@ -430,12 +430,13 @@ codec_result_t codec_fec_decode_oti(fec_encoded_t *encoded) {
      * Lower 16 bits (0-15) contain transfer length low bits
      */
     uint16_t oti_symbol_size = (uint16_t)((encoded->oti_common >> 32) & 0xFFFF);
+    fprintf(stderr, "[FEC-DECODE-v2] Symbol size from bits 32-47: oti_symbol_size=%u\n", oti_symbol_size);
     if (oti_symbol_size < 4 || oti_symbol_size > 65535) {
-        fprintf(stderr, "DEBUG FEC OTI: INVALID oti_symbol_size=%u (from bits 32-47), rejecting\n", oti_symbol_size);
+        fprintf(stderr, "[FEC-DECODE-v2] INVALID oti_symbol_size=%u (from bits 32-47), rejecting\n", oti_symbol_size);
         /* Fallback: use symbol_len from encoded structure if OTI is invalid */
         if (encoded->symbol_len > 0 && encoded->symbol_len < 65536) {
             oti_symbol_size = (uint16_t)encoded->symbol_len;
-            fprintf(stderr, "DEBUG FEC OTI: Using fallback symbol_len=%zu\n", encoded->symbol_len);
+            fprintf(stderr, "[FEC-DECODE-v2] Using fallback symbol_len=%zu\n", encoded->symbol_len);
         } else {
             res.error = true;
             return res;
@@ -445,12 +446,12 @@ codec_result_t codec_fec_decode_oti(fec_encoded_t *encoded) {
     /* Decoder(type, OTI_Common, OTI_Scheme_Specific) - size is embedded in OTI */
     struct RFC6330_ptr *dec = api->Decoder(RQ_DEC_8, encoded->oti_common, encoded->oti_scheme);
     if (!dec) { 
-        fprintf(stderr, "DEBUG FEC OTI: Decoder() returned NULL\n");
+        fprintf(stderr, "[FEC-DECODE-v2] DEBUG FEC OTI: Decoder() returned NULL\n");
         res.error = true; 
         return res; 
     }
     
-    fprintf(stderr, "DEBUG FEC OTI: Decoder created successfully\n");
+    fprintf(stderr, "[FEC-DECODE-v2] DEBUG FEC OTI: Decoder created successfully, using T=%u\n", oti_symbol_size);
 
     uint16_t T = oti_symbol_size;
 
