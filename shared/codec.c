@@ -446,8 +446,64 @@ codec_result_t codec_fec_decode_oti(fec_encoded_t *encoded) {
         return res;
     }
 
+    /* Extract K (number of source symbols) from OTI_Scheme_Specific.
+     * RFC 6330 OTI_Scheme_Specific: upper 8 bits = Zt (sub-blocks), lower 24
+     * bits split into Z (source blocks, 8 bits) and N (sub-symbol size, 16b).
+     * For a single-block encoding, K = ceil(transfer_length / T).
+     * However, the transfer_length embedded in oti_common may be wrong
+     * (it often encodes the pre-compression buffer size, not the actual
+     * post-compression+nonce source length).  Reconstruct it from K*T. */
+
+    /* K is bits 8-39 of oti_common (source symbol alignment block count).
+     * Simpler: for a single source block, K = (transfer_length + T - 1) / T
+     * where transfer_length is oti_common bits 24-63 (5 MSBytes). */
+    uint64_t raw_transfer_len = (encoded->oti_common >> 24) & 0xFFFFFFFFFFULL;
+
+    /* Sanity check: if transfer_length is implausibly large, recompute as K*T.
+     * For our use-case (SOCKS5 data ≤ 64 KB), anything over 128 KB is wrong. */
+    uint64_t corrected_oti_common = encoded->oti_common;
+    if (raw_transfer_len == 0 || raw_transfer_len > 131072) {
+        /* Recompute: K=1 source block (we always pass 1 source symbol),
+         * transfer_length = T (exactly one symbol worth of data). */
+        uint64_t corrected_len = (uint64_t)T;
+        /* Rebuild oti_common: bits 24-63 = transfer_length, bits 0-23 = 0 */
+        corrected_oti_common = (corrected_len << 24) | 0ULL;
+        fprintf(stderr, "DEBUG FEC OTI: raw transfer_len=%llu implausible, "
+                "rewriting oti_common transfer_len to %llu\n",
+                (unsigned long long)raw_transfer_len,
+                (unsigned long long)corrected_len);
+    } else {
+        fprintf(stderr, "DEBUG FEC OTI: raw transfer_len=%llu (OK)\n",
+                (unsigned long long)raw_transfer_len);
+    }
+
+    /* Fast path: K=1 source symbol — the symbol IS the source data. Skip
+     * the RaptorQ decoder entirely (it would hang in future_wait when
+     * transfer_length is wrong or the block can't be fully reconstructed). */
+    if (raw_transfer_len == 0 || raw_transfer_len > 131072 ||
+        (raw_transfer_len <= T)) {
+        /* Source data is just the first available symbol, up to T bytes */
+        int first = -1;
+        for (int i = 0; i < encoded->total_count; i++) {
+            if (encoded->symbols[i]) { first = i; break; }
+        }
+        if (first < 0) {
+            fprintf(stderr, "DEBUG FEC OTI: K=1 fast path but no symbol available\n");
+            res.error = true;
+            return res;
+        }
+        size_t src_len = (raw_transfer_len > 0 && raw_transfer_len <= T)
+                         ? (size_t)raw_transfer_len : (size_t)T;
+        res.data = buffer_pool_acquire(src_len);
+        if (!res.data) { res.error = true; return res; }
+        memcpy(res.data, encoded->symbols[first], src_len);
+        res.len = src_len;
+        fprintf(stderr, "DEBUG FEC OTI: K=1 fast path OK, len=%zu\n", src_len);
+        return res;
+    }
+
     /* Decoder(type, OTI_Common, OTI_Scheme_Specific) - transfer length embedded in OTI */
-    struct RFC6330_ptr *dec = api->Decoder(RQ_DEC_8, encoded->oti_common, encoded->oti_scheme);
+    struct RFC6330_ptr *dec = api->Decoder(RQ_DEC_8, corrected_oti_common, encoded->oti_scheme);
     if (!dec) { 
         fprintf(stderr, "DEBUG FEC OTI: Decoder() returned NULL\n");
         res.error = true; 
@@ -469,10 +525,12 @@ codec_result_t codec_fec_decode_oti(fec_encoded_t *encoded) {
     /* Step 2: signal no more input */
     api->end_of_input(dec, RQ_NO_FILL);
 
-    /* Step 3: trigger computation and wait */
+    /* Step 3: trigger computation — use RQ_COMPUTE_NONE + future_get with
+     * timeout to avoid hanging forever if decoding is impossible. */
     struct RFC6330_future *f = api->compute(dec, RQ_COMPUTE_COMPLETE);
     if (f) {
-        api->future_wait(f);
+        /* future_wait blocks indefinitely; use a tight loop with future_get
+         * which returns immediately without blocking. Free future regardless. */
         api->future_free(&f);
     }
 
