@@ -425,25 +425,26 @@ codec_result_t codec_fec_decode_oti(fec_encoded_t *encoded) {
         return res;
     }
     
-    /* Extract symbol size from OTI_Common.
-     * NOTE: The RFC 6330 OTI_Common stores T (symbol size) at the MSB end.
-     * The exact bit layout depends on the library's internal representation.
-     * In practice, the correct T is always encoded->symbol_len (the actual
-     * byte count of each symbol as received/stored by the caller).
-     * We ONLY use the OTI extraction as a sanity cross-check — the authoritative
-     * T for add_symbol_id is ALWAYS encoded->symbol_len. */
-    uint16_t oti_symbol_size_check = (uint16_t)((encoded->oti_common >> 32) & 0xFFFF);
-    fprintf(stderr, "DEBUG FEC OTI: oti_T_bits32-47=%u symbol_len(actual)=%zu\n",
-            oti_symbol_size_check, encoded->symbol_len);
-
-    /* Authoritative symbol size: use the actual received symbol buffer length.
-     * This avoids any byte-order confusion in OTI T extraction. */
-    if (encoded->symbol_len == 0 || encoded->symbol_len > 65535) {
-        fprintf(stderr, "DEBUG FEC OTI: invalid symbol_len=%zu, cannot decode\n", encoded->symbol_len);
+    /* Extract symbol size T from OTI_Common.
+     * The RaptorQ library stores T (symbol size) in bits 56-63 (MSByte) of
+     * the 64-bit oti_common field. The QNAME slot is always 110 bytes (zero-
+     * padded), so symbol_len from payload_len is always 110 even when the
+     * actual FEC symbol is smaller (e.g. after nonce+compress produces <110B).
+     * Prefer the OTI T (set by the encoder); fall back to symbol_len only if
+     * OTI T is 0 or implausibly large. */
+    uint16_t T = (uint16_t)((encoded->oti_common >> 56) & 0xFF);
+    fprintf(stderr, "DEBUG FEC OTI: oti_T_bits56-63=%u symbol_len(slot)=%zu\n",
+            T, encoded->symbol_len);
+    if (T == 0 || T > 1500) {
+        /* Fallback: symbol_len from received payload (may be padded) */
+        T = (uint16_t)encoded->symbol_len;
+        fprintf(stderr, "DEBUG FEC OTI: OTI T invalid, using symbol_len T=%u\n", T);
+    }
+    if (T == 0) {
+        fprintf(stderr, "DEBUG FEC OTI: T=0, cannot decode\n");
         res.error = true;
         return res;
     }
-    uint16_t T = (uint16_t)encoded->symbol_len;
 
     /* Decoder(type, OTI_Common, OTI_Scheme_Specific) - transfer length embedded in OTI */
     struct RFC6330_ptr *dec = api->Decoder(RQ_DEC_8, encoded->oti_common, encoded->oti_scheme);

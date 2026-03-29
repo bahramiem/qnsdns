@@ -941,6 +941,11 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
       LOG_INFO("Session %d: MTU handshake - Up=%u, Down=%u\n", sidx,
                hs.upstream_mtu, hs.downstream_mtu);
     }
+    /* Reset the downstream sequence counter so the MTU-handshake reply
+     * and all following data start at seq=0 — exactly what the client's
+     * reorder buffer expects after it sends the capability/handshake. */
+    sess->downstream_seq = 0;
+    LOG_INFO("Session %d: downstream_seq reset to 0 on handshake\n", sidx);
   }
 
   /* ── Handle FEC Burst Reassembly ──────────────────────────────────── */
@@ -1258,9 +1263,11 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
 
     uint8_t reply[4096];
     size_t rlen = sizeof(reply);
+    /* SWARM reply: only advance seq if handshake already done */
+    uint16_t swarm_seq = has_capability_header ? sess->downstream_seq++ : 0;
     if (build_txt_reply_with_seq(
             reply, &rlen, query_id, qname, (const uint8_t *)swarm_text, slen,
-            sess->cl_downstream_mtu, sess->downstream_seq++,
+            sess->cl_downstream_mtu, swarm_seq,
             sess->session_id) == 0) {
       send_udp_reply(src, reply, rlen);
     }
@@ -1292,12 +1299,10 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
             "reply_buf=%zu\n",
             sess->upstream_len, sz, mtu, sizeof(reply));
 
-    /* Only advance downstream_seq after the capability handshake has been
-     * completed (cl_downstream_mtu > 0). Pre-handshake probe polls reply
-     * with seq=0 without consuming a sequence number so the MTU handshake
-     * reply and first data packet are always at the position the client
-     * expects (reorder buffer expected_seq=0 after session reset). */
-    uint16_t out_seq = sess->cl_downstream_mtu > 0 ? sess->downstream_seq++ : 0;
+    /* Only advance downstream_seq if the client has completed the MTU
+     * handshake (has_capability_header). Pre-handshake probe polls get seq=0
+     * without consuming a slot so the MTU-handshake reply is always seq=0. */
+    uint16_t out_seq = has_capability_header ? sess->downstream_seq++ : 0;
     if (build_txt_reply_with_seq(
             reply, &rlen, query_id, qname, sess->upstream_buf, sz, mtu,
             out_seq, sess->session_id) == 0) {
@@ -1309,7 +1314,7 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     }
   } else {
     /* Empty reply — acknowledge the query with NO payload */
-    uint16_t out_seq = sess->cl_downstream_mtu > 0 ? sess->downstream_seq++ : 0;
+    uint16_t out_seq = has_capability_header ? sess->downstream_seq++ : 0;
     if (build_txt_reply_with_seq(reply, &rlen, query_id, qname, NULL, 0, mtu,
                                  out_seq, sess->session_id) == 0)
       send_udp_reply(src, reply, rlen);
