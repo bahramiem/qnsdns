@@ -830,13 +830,13 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
       chunk_total, fec_k, hdr.flags, payload_len);
 
   /* Extract capability header from payload (if present).
-   * This tells the server the client's MTU/encoding for optimal response
-   * sizing. Format: version(1) + upstream_mtu(2) + downstream_mtu(2) +
-   * encoding(1) + loss_pct(1) = 7 bytes */
+   * ONLY for non-FEC packets (chunk_total == 1). FEC data symbols do not carry
+   * a capability header — the client sends them raw to avoid corrupting the
+   * fixed-size (110-byte) FEC symbols with truncation. */
   uint16_t client_upstream_mtu = 0;
   uint16_t client_downstream_mtu = g_cfg.downstream_mtu; /* Default fallback */
   bool has_capability_header = false;
-  if (payload_len >= sizeof(capability_header_t)) {
+  if (chunk_total == 1 && payload_len >= sizeof(capability_header_t)) {
     capability_header_t cap;
     memcpy(&cap, payload, sizeof(cap));
     if (cap.version == DNSTUN_VERSION) {

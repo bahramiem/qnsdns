@@ -2773,30 +2773,39 @@ static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
     int didx = rpool_flux_domain(&g_cfg);
     const char *domain = (g_cfg.domain_count > 0)
                          ? g_cfg.domains[didx] : "tun.example.com";
+    /* The capability header tells the server the client's MTU/encoding capabilities.
+     * CRITICAL: Do NOT prepend it to FEC data symbols. FEC symbols are exactly
+     * DNSTUN_CHUNK_PAYLOAD (110 bytes). Adding 7 cap bytes into a 110-byte buffer
+     * silently truncates the symbol to 103 bytes, breaking FEC decoding on the server.
+     * The cap header is only sent on polls and non-FEC packets (MTU handshake). */
+    uint8_t payload_with_cap[DNSTUN_CHUNK_PAYLOAD + sizeof(capability_header_t)];
+    size_t final_paylen;
 
-    /* Build capability header with resolver-specific MTU and capabilities.
-     * This tells the server the exact limits for this resolver path. */
-    capability_header_t cap = {0};
-    cap.version = DNSTUN_VERSION;
-    cap.upstream_mtu = r->upstream_mtu;
-    cap.downstream_mtu = r->downstream_mtu;
-    cap.encoding = (r->enc == ENC_BASE64) ? DNSTUN_ENC_BASE64 : DNSTUN_ENC_HEX;
-    cap.loss_pct = (uint8_t)(r->loss_rate * 100.0);  /* Convert to percentage */
-
-    /* Prepend capability header to payload */
-    uint8_t payload_with_cap[DNSTUN_CHUNK_PAYLOAD];
-    size_t cap_len = sizeof(capability_header_t);
-    memcpy(payload_with_cap, &cap, cap_len);
-    if (payload && paylen > 0) {
-        if (paylen + cap_len > sizeof(payload_with_cap)) {
-            paylen = sizeof(payload_with_cap) - cap_len;
+    if (total_symbols > 0) {
+        /* FEC data symbol: send raw, no cap header */
+        if (paylen > DNSTUN_CHUNK_PAYLOAD) paylen = DNSTUN_CHUNK_PAYLOAD;
+        if (payload && paylen > 0) memcpy(payload_with_cap, payload, paylen);
+        final_paylen = paylen;
+    } else {
+        /* Poll or non-FEC data: prepend capability header */
+        capability_header_t cap = {0};
+        cap.version       = DNSTUN_VERSION;
+        cap.upstream_mtu  = r->upstream_mtu;
+        cap.downstream_mtu = r->downstream_mtu;
+        cap.encoding      = (r->enc == ENC_BASE64) ? DNSTUN_ENC_BASE64 : DNSTUN_ENC_HEX;
+        cap.loss_pct      = (uint8_t)(r->loss_rate * 100.0);
+        size_t cap_len    = sizeof(capability_header_t);
+        memcpy(payload_with_cap, &cap, cap_len);
+        if (payload && paylen > 0) {
+            if (paylen + cap_len > DNSTUN_CHUNK_PAYLOAD)
+                paylen = DNSTUN_CHUNK_PAYLOAD - cap_len;
+            memcpy(payload_with_cap + cap_len, payload, paylen);
         }
-        memcpy(payload_with_cap + cap_len, payload, paylen);
+        final_paylen = paylen + cap_len;
     }
-    paylen += cap_len;
 
     q->sendlen = sizeof(q->sendbuf);
-    if (build_dns_query(q->sendbuf, &q->sendlen, &hdr, payload_with_cap, paylen, domain) != 0) {
+    if (build_dns_query(q->sendbuf, &q->sendlen, &hdr, payload_with_cap, final_paylen, domain) != 0) {
         free(q);
         return;
     }
