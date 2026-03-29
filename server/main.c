@@ -593,6 +593,10 @@ static void on_server_recv(uv_udp_t *h,
      */
     char tmp[DNSTUN_MAX_QNAME_LEN + 1];
     strncpy(tmp, qname, sizeof(tmp)-1);
+    tmp[sizeof(tmp)-1] = '\0';  /* Ensure null termination */
+
+    /* [DEBUG] Log the full raw QNAME received */
+    LOG_INFO("DEBUG raw QNAME: len=%zu, qname='%s'\n", strlen(qname), qname);
 
     char *parts[16] = {0};
     int part_count = 0;
