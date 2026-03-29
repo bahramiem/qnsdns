@@ -146,19 +146,21 @@ typedef struct resolver {
 } resolver_t;
 
 /* ──────────────────────────────────────────────
-   New Compact DNS Tunnel chunk header (5 bytes)
+   New Compact DNS Tunnel chunk header (20 bytes)
     Used for upstream: Client → Server (Base32 in QNAME)
-────────────────────────────────────────────── */
+    Extended for FEC support with larger chunk_info field (32 bits)
+    Layout: session_id(1) + flags(1) + seq(2) + chunk_info(4) + oti_common(8) + oti_scheme(4)
+ ────────────────────────────────────────────── */
 #pragma pack(push, 1)
 typedef struct {
     uint8_t  session_id;     /* 8-bit session ID (0-255) */
     uint8_t  flags;          /* protocol flags (FEC, Poll, etc.) */
     uint16_t seq;            /* sequence number (2 bytes) */
-    uint8_t  chunk_info;     /* high nibble: chunk_total-1, low nibble: fec_k */
+    uint32_t chunk_info;     /* bits 0-7: flags, bits 8-15: fec_k, bits 16-31: chunk_total-1 */
     /* OTI (Object Transmission Information) for FEC decoder - 12 bytes */
     uint64_t oti_common;     /* OTI Common (includes data size) */
     uint32_t oti_scheme;     /* OTI Scheme Specific */
-} chunk_header_t;            /* Total: 17 bytes */
+} chunk_header_t;            /* Total: 20 bytes */
 #pragma pack(pop)
 
 /* ──────────────────────────────────────────────
@@ -316,19 +318,24 @@ static inline void chunk_set_session_id(chunk_header_t *hdr, uint8_t sid) {
     hdr->session_id = sid;
 }
 
-static inline uint8_t chunk_get_chunk_total(uint8_t chunk_info) {
-    return ((chunk_info >> 4) & 0x0F) + 1;
+/* Extended 32-bit chunk_info format (header now 20 bytes total):
+ * bits 0-7: reserved
+ * bits 8-15: fec_k
+ * bits 16-31: chunk_total - 1
+ */
+static inline uint8_t chunk_get_chunk_total(uint32_t chunk_info) {
+    return (uint8_t)(((chunk_info >> 16) & 0xFFFF) + 1);
 }
 
 /* Alias for chunk_get_chunk_total */
 #define chunk_get_total(chunk_info) chunk_get_chunk_total(chunk_info)
 
-static inline uint8_t chunk_get_fec_k(uint8_t chunk_info) {
-    return chunk_info & 0x0F;
+static inline uint8_t chunk_get_fec_k(uint32_t chunk_info) {
+    return (uint8_t)((chunk_info >> 8) & 0xFF);
 }
 
-static inline void chunk_set_info(uint8_t *ci, uint8_t total, uint8_t k) {
-    *ci = (((total - 1) & 0x0F) << 4) | (k & 0x0F);
+static inline void chunk_set_info(uint32_t *ci, uint8_t total, uint8_t k) {
+    *ci = (((uint32_t)(total - 1) & 0xFFFF) << 16) | (((uint32_t)k & 0xFF) << 8);
 }
 
 static inline uint8_t resp_get_encoding(uint8_t flags) {

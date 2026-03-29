@@ -218,8 +218,8 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
                             const char *domain)
 {
     /* Encode header + payload into a single base32 blob */
-    /* Extended header is 17 bytes (with OTI), payload can be up to DNSTUN_CHUNK_PAYLOAD */
-    #define HDR_AND_PAYLOAD_MAX (17 + DNSTUN_CHUNK_PAYLOAD)
+    /* Extended header is 20 bytes (with OTI + extended chunk_info), payload can be up to DNSTUN_CHUNK_PAYLOAD */
+    #define HDR_AND_PAYLOAD_MAX (20 + DNSTUN_CHUNK_PAYLOAD)
     uint8_t raw[HDR_AND_PAYLOAD_MAX];
     size_t  rawlen = 0;
     memcpy(raw, hdr, sizeof(chunk_header_t));   rawlen += sizeof(chunk_header_t);
@@ -244,6 +244,20 @@ static int build_dns_query(uint8_t *outbuf, size_t *outlen,
     char b32_raw[BASE32_MAX_OUTPUT(HDR_AND_PAYLOAD_MAX)];
     LOG_INFO("DEBUG: build_dns_query - rawlen=%zu (sizeof(chunk_header_t)=%zu, paylen=%zu)\n", 
              rawlen, sizeof(chunk_header_t), paylen);
+    /* Recalculate max payload to fit within DNS QNAME limit (253 bytes)
+     * Header is now 20 bytes, so max payload = 253 - domain - dots - 20 header
+     * This ensures DNSTUN_CHUNK_PAYLOAD is capped correctly */
+    if (sizeof(chunk_header_t) + DNSTUN_CHUNK_PAYLOAD > 127) {
+        /* Base32 encoding increases size: input * 8 / 5
+         * For 253 byte QNAME limit with ~15 byte domain: ~220 chars for base32 data
+         * 220 chars base32 = 220 * 5 / 8 = 137 bytes input max
+         * 137 - 20 header = 117 bytes max payload */
+        #define MAX_PAYLOAD_FOR_DNS (137 - (int)sizeof(chunk_header_t))
+        if (DNSTUN_CHUNK_PAYLOAD > MAX_PAYLOAD_FOR_DNS) {
+            LOG_ERR("DNSTUN_CHUNK_PAYLOAD (%d) too large for DNS limit with 20-byte header. Max: %d\n",
+                    DNSTUN_CHUNK_PAYLOAD, MAX_PAYLOAD_FOR_DNS);
+        }
+    }
     size_t b32_len = base32_encode((uint8_t*)b32_raw, raw, rawlen);
 
     /* Use slipstream's inline_dotify to split into labels every 57 chars */
