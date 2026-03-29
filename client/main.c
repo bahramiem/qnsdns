@@ -2875,8 +2875,21 @@ static void on_poll_timer(uv_timer_t *t) {
         }
 
         if (sess->send_len > 0) {
-            /* 1. COMPRESS */
-            codec_result_t cret = codec_compress(sess->send_buf, sess->send_len, 3);
+            /* ANTI-CACHE NONCE: Prepend 4 random bytes before compression so
+             * each FEC burst produces a unique QNAME that bypasses DNS resolver
+             * caching (Cloudflare caches identical QNAMEs regardless of TTL=0). */
+            size_t nonce_len = sess->send_len + 4;
+            uint8_t *nonce_buf = malloc(nonce_len);
+            if (!nonce_buf) { LOG_ERR("OOM for nonce_buf\n"); continue; }
+            nonce_buf[0] = (uint8_t)(rand() & 0xFF);
+            nonce_buf[1] = (uint8_t)(rand() & 0xFF);
+            nonce_buf[2] = (uint8_t)(rand() & 0xFF);
+            nonce_buf[3] = (uint8_t)(rand() & 0xFF);
+            memcpy(nonce_buf + 4, sess->send_buf, sess->send_len);
+
+            /* 1. COMPRESS (with nonce prepended) */
+            codec_result_t cret = codec_compress(nonce_buf, nonce_len, 3);
+            free(nonce_buf);
             if (cret.error) { LOG_ERR("Compression failed\n"); continue; }
 
             const uint8_t *enc_in = cret.data;
@@ -2892,16 +2905,9 @@ static void on_poll_timer(uv_timer_t *t) {
             }
 
             /* 3. FEC ENCODE */
-            /* We split the block into source symbols (K) and repair symbols (R).
-               K is derived based on the observed loss rate. */
             int k = (int)ceil((double)enc_len / (double)DNSTUN_CHUNK_PAYLOAD);
             if (k == 0) k = 1;
 
-            /* [Fix] Extreme Handshake Redundancy: 
-             * If the session is new (tx_next < 50) or the SOCKS5 handshake is not 
-             * yet fully established (socks5_connected == false), force extreme 
-             * redundancy (r=10). This ensures critical early packets (CONNECT/GET) 
-             * survive lossy DNS resolvers. */
             int r = rpool_fec_k(&g_pool, 0, k);
             if (!sess->socks5_connected || sess->tx_next < 50) {
                 if (r < 10) r = 10;

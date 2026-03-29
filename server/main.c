@@ -1044,13 +1044,26 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         LOG_INFO("DEBUG DECOMPRESS: result: error=%d, len=%zu\n", zdec.error,
                  zdec.len);
         if (!zdec.error) {
+          /* Strip 4-byte anti-cache nonce prepended by the client before
+           * compression. The nonce makes each FEC burst's QNAME unique,
+           * preventing DNS resolver caching of repeated SOCKS5 connections. */
+          const uint8_t *p = zdec.data;
+          size_t l = zdec.len;
+          if (l >= 4) {
+            p += 4;
+            l -= 4;
+            LOG_INFO("DEBUG NONCE: stripped 4-byte nonce, remaining=%zu\n", l);
+          } else {
+            LOG_WARN("DEBUG NONCE: payload too short (%zu) to strip nonce\n", l);
+            codec_free_result(&zdec);
+            goto skip_fec_processing;
+          }
+
           /* SUCCESS: Forward reassembled, decrypted, decompressed packet */
           if (!sess->tcp_connected) {
             /* Fix #11: SOCKS5 CONNECT is parsed ONLY from the fully
                decompressed + decrypted data.  The duplicate raw-payload
                parse path below is removed to avoid inconsistency. */
-            const uint8_t *p = zdec.data;
-            size_t l = zdec.len;
             if (l >= 10 && p[0] == 0x05 && p[1] == 0x01) {
               char target_host[256] = {0};
               uint16_t target_port = 0;
@@ -1177,7 +1190,9 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
               }
             }
           } else {
-            upstream_write_and_read(sidx, zdec.data, zdec.len);
+            /* Session already connected — forward decompressed payload (minus
+             * the 4-byte anti-cache nonce already stripped into p/l above). */
+            upstream_write_and_read(sidx, p, l);
           }
           codec_free_result(&zdec);
         } else {
