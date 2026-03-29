@@ -1053,6 +1053,7 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
       fec.symbols = sess->burst_symbols;
       fec.symbol_len = sess->burst_symbol_len;
       fec.total_count = sess->burst_count_needed;
+      fec.k_source = k_est;
       fec.oti_common = sess->burst_oti_common;
       fec.oti_scheme = sess->burst_oti_scheme;
       fec.has_oti = sess->burst_has_oti;

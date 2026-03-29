@@ -41,6 +41,7 @@ typedef struct {
     uint8_t **symbols;
     size_t    symbol_len;
     int       total_count;
+    int       k_source;              /* K: number of source symbols (total - r) */
     uint64_t  oti_common;           /* OTI Common (includes data size) */
     uint32_t  oti_scheme;           /* OTI Scheme Specific */
     bool      has_oti;              /* true if OTI is valid */

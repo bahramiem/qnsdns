@@ -459,53 +459,29 @@ codec_result_t codec_fec_decode_oti(fec_encoded_t *encoded) {
      * where transfer_length is oti_common bits 24-63 (5 MSBytes). */
     uint64_t raw_transfer_len = (encoded->oti_common >> 24) & 0xFFFFFFFFFFULL;
 
-    /* Sanity check: if transfer_length is implausibly large, recompute as K*T.
-     * For our use-case (SOCKS5 data ≤ 64 KB), anything over 128 KB is wrong. */
+    /* Sanity check: if transfer_length is implausibly large, recompute it.
+     * The true transfer length is exactly K * T (since we use K = source
+     * symbols and T = symbol size, padding is applied automatically).
+     * k_source is now explicitly set by the caller from the FEC header. */
     uint64_t corrected_oti_common = encoded->oti_common;
     if (raw_transfer_len == 0 || raw_transfer_len > 131072) {
-        /* Recompute: K=1 source block (we always pass 1 source symbol),
-         * transfer_length = T (exactly one symbol worth of data). */
-        uint64_t corrected_len = (uint64_t)T;
-        /* Rebuild oti_common: bits 24-63 = transfer_length, bits 0-23 = 0 */
-        corrected_oti_common = (corrected_len << 24) | 0ULL;
+        if (encoded->k_source <= 0) {
+            fprintf(stderr, "DEBUG FEC OTI: implausible transfer_len and k_source missing, cannot decode\n");
+            res.error = true;
+            return res;
+        }
+        uint64_t corrected_len = (uint64_t)T * (uint64_t)encoded->k_source;
+        /* Rebuild oti_common: bits 24-63 = transfer_length, bits 0-23 = 0.
+         * Keep the upper 8 bits (which contain T). */
+        uint64_t oti_T = encoded->oti_common & 0xFF00000000000000ULL;
+        corrected_oti_common = oti_T | (corrected_len << 24) | 0ULL;
         fprintf(stderr, "DEBUG FEC OTI: raw transfer_len=%llu implausible, "
-                "rewriting oti_common transfer_len to %llu\n",
-                (unsigned long long)raw_transfer_len,
+                "rewriting oti_common transfer_len to K*T = %d*%u = %llu\n",
+                (unsigned long long)raw_transfer_len, encoded->k_source, T,
                 (unsigned long long)corrected_len);
     } else {
         fprintf(stderr, "DEBUG FEC OTI: raw transfer_len=%llu (OK)\n",
                 (unsigned long long)raw_transfer_len);
-    }
-
-    /* Fast path: when OTI transfer_length is implausible, reconstruct the
-     * source data by concatenating the available source symbols in ESI order.
-     * With correct burst accumulation (ESI-based, fixed in main.c), symbols[0..K-1]
-     * contain the K source symbols in order before any repair symbols.
-     * source_data = concat(symbols[0], ..., symbols[K-1]) where K = k_avail. */
-    if (raw_transfer_len == 0 || raw_transfer_len > 131072) {
-        int k_avail = 0;
-        for (int i = 0; i < encoded->total_count; i++) {
-            if (encoded->symbols[i]) k_avail++;
-        }
-        if (k_avail == 0) {
-            fprintf(stderr, "DEBUG FEC OTI: concat fast path: no symbols available\n");
-            res.error = true;
-            return res;
-        }
-        size_t src_len = (size_t)T * (size_t)k_avail;
-        res.data = buffer_pool_acquire(src_len);
-        if (!res.data) { res.error = true; return res; }
-        uint8_t *dst = (uint8_t *)res.data;
-        for (int i = 0; i < encoded->total_count; i++) {
-            if (encoded->symbols[i]) {
-                memcpy(dst, encoded->symbols[i], T);
-                dst += T;
-            }
-        }
-        res.len = src_len;
-        fprintf(stderr, "DEBUG FEC OTI: concat fast path OK, k_avail=%d T=%u len=%zu\n",
-                k_avail, T, src_len);
-        return res;
     }
 
     /* Decoder(type, OTI_Common, OTI_Scheme_Specific) - transfer length embedded in OTI */
