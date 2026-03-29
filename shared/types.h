@@ -46,7 +46,7 @@
 #define DNSTUN_ENC_BASE64       0      /* Default */
 #define DNSTUN_ENC_HEX          1
 
-#define DNSTUN_DEBUG_PREFIX "TEST_"      /* Unified prefix for 'x' key tests */
+#define DNSTUN_DEBUG_PREFIX "PROTO_TEST_"      /* Prefix for protocol loop test (matches 't'/'T' key) */
 
 /* ──────────────────────────────────────────────
    Client Capability Header (prepended to every query)

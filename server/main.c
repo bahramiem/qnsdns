@@ -29,6 +29,10 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #include <process.h>
+/* Undefine any Windows macro that might conflict with our identifiers */
+#ifdef sync
+#undef sync
+#endif
 #else
 #include <unistd.h>
 #include <arpa/inet.h>

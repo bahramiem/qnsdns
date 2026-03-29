@@ -898,8 +898,7 @@ void tui_handle_key(tui_ctx_t *t, int key) {
                 t->send_debug_cb(t->proto_test.test_payload, t->proto_test.test_sequence);
             }
             break;
-        case 'x':
-        case 'X':
+X':
             if (t->panel == 5) {
                 if (t->send_debug_cb) {
                     char payload[16];
