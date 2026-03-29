@@ -414,6 +414,25 @@ codec_result_t codec_fec_decode_oti(fec_encoded_t *encoded) {
             encoded->total_count,
             (size_t)encoded->symbol_len);
 
+    /* Validate OTI values to prevent crashes
+     * Valid OTI should have:
+     * - oti_scheme != 0 (contains alignment, sub_blocks, blocks)
+     * - oti_common should encode a reasonable symbol size (4-65535 bytes)
+     */
+    if (encoded->oti_scheme == 0) {
+        fprintf(stderr, "DEBUG FEC OTI: INVALID oti_scheme=0, rejecting\n");
+        res.error = true;
+        return res;
+    }
+    
+    /* Extract symbol size from OTI_Common (lowest 16 bits) */
+    uint16_t oti_symbol_size = (uint16_t)(encoded->oti_common & 0xFFFF);
+    if (oti_symbol_size < 4 || oti_symbol_size > 65535) {
+        fprintf(stderr, "DEBUG FEC OTI: INVALID oti_symbol_size=%u, rejecting\n", oti_symbol_size);
+        res.error = true;
+        return res;
+    }
+
     /* Decoder(type, OTI_Common, OTI_Scheme_Specific) - size is embedded in OTI */
     struct RFC6330_ptr *dec = api->Decoder(RQ_DEC_8, encoded->oti_common, encoded->oti_scheme);
     if (!dec) { 
@@ -424,7 +443,7 @@ codec_result_t codec_fec_decode_oti(fec_encoded_t *encoded) {
     
     fprintf(stderr, "DEBUG FEC OTI: Decoder created successfully\n");
 
-    uint16_t T = (uint16_t)encoded->symbol_len;
+    uint16_t T = oti_symbol_size;
 
     /* Step 1: add all available symbols */
     for (int i = 0; i < encoded->total_count; i++) {

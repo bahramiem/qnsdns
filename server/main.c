@@ -727,14 +727,19 @@ static void on_server_recv(uv_udp_t *h,
         return;
     }
     
-    LOG_INFO("DEBUG decode: rawlen=%zd, first_bytes=%02x%02x%02x%02x%02x\n",
-             rawlen, raw[0], raw[1], raw[2], raw[3], raw[4]);
+    LOG_INFO("DEBUG decode: rawlen=%zd, sizeof(chunk_header_t)=%zu, first_bytes=%02x%02x%02x%02x%02x%02x%02x%02x\n",
+             rawlen, sizeof(chunk_header_t), raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7]);
 
-    /* Parse extended 17-byte header with OTI for FEC decoding */
+    /* Parse extended 20-byte header with OTI for FEC decoding */
     chunk_header_t hdr;
     memcpy(&hdr, raw, sizeof(hdr));
     const uint8_t  *payload = raw + sizeof(hdr);
     size_t          payload_len = (size_t)(rawlen - (ssize_t)sizeof(hdr));
+    
+    LOG_INFO("DEBUG header: session_id=%u, flags=0x%02x, seq=%u, chunk_info=0x%08x\n",
+             hdr.session_id, hdr.flags, hdr.seq, hdr.chunk_info);
+    LOG_INFO("DEBUG OTI: oti_common=0x%016llx, oti_scheme=0x%08x\n",
+             (unsigned long long)hdr.oti_common, (unsigned int)hdr.oti_scheme);
 
     /* Extract fields from new 8-bit header */
     bool is_poll = (hdr.flags & CHUNK_FLAG_POLL) != 0;
