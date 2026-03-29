@@ -602,14 +602,6 @@ static void on_server_recv(uv_udp_t *h,
         tok = strtok(NULL, ".");
     }
     
-    /* [DEBUG] Trace QNAME parsing */
-    LOG_INFO("DEBUG parts: count=%d, parts[0]='%s', parts[1]='%s', parts[2]='%s', parts[3]='%s'\n",
-             part_count,
-             part_count > 0 ? parts[0] : "(null)",
-             part_count > 1 ? parts[1] : "(null)",
-             part_count > 2 ? parts[2] : "(null)",
-             part_count > 3 ? parts[3] : "(null)");
-    
     /* Find domain suffix in QNAME to determine payload start.
      * Strategy: Try stripping domain labels from the end and check if remaining
      * parts look like valid base32 data (non-empty, starts with alphanumeric).
@@ -728,26 +720,10 @@ static void on_server_recv(uv_udp_t *h,
      * Increased to 512 to safely handle max-length Base32 QNAMEs (253 chars). */
     uint8_t raw[512];
     size_t b32_len = strlen(b32_payload);
-    
-    /* [DEBUG] Trace base32 decode process */
-    LOG_INFO("DEBUG base32: input_len=%zu, first_chars=%c%c%c%c, last_chars=%c%c%c%c\n",
-             b32_len,
-             b32_len > 0 ? b32_payload[0] : '?',
-             b32_len > 1 ? b32_payload[1] : '?',
-             b32_len > 2 ? b32_payload[2] : '?',
-             b32_len > 3 ? b32_payload[3] : '?',
-             b32_len > 3 ? b32_payload[b32_len-4] : '?',
-             b32_len > 2 ? b32_payload[b32_len-3] : '?',
-             b32_len > 1 ? b32_payload[b32_len-2] : '?',
-             b32_len > 0 ? b32_payload[b32_len-1] : '?');
-    
     ssize_t rawlen = base32_decode(raw, b32_payload, b32_len);
-    
-    LOG_INFO("DEBUG base32: decoded_len=%zd\n", rawlen);
-    
     if (rawlen < (ssize_t)sizeof(chunk_header_t)) {
-        LOG_ERR("Base32 decode failed from %s: ret=%zd, expected >=%zu, b32_len=%zu\n", 
-                src_ip, rawlen, sizeof(chunk_header_t), b32_len);
+        LOG_ERR("Base32 decode failed from %s: ret=%zd, expected >=%zu\n", 
+                src_ip, rawlen, sizeof(chunk_header_t));
         return;
     }
     
