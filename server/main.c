@@ -1005,7 +1005,12 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
      * reorder buffer expects after it sends the capability/handshake. */
     sess->downstream_seq = 0;
     sess->handshake_done = true;
-    LOG_INFO("Session %d: downstream_seq reset to 0 on handshake, handshake_done=true\n", sidx);
+    /* CRITICAL FIX: Reset status_sent flag so a new SOCKS5 status can be sent
+     * for this new connection. Without this, if the same session is reused
+     * (e.g., multiple curl requests), the second request's status will never
+     * be sent because status_sent was set to true by the first request. */
+    sess->status_sent = false;
+    LOG_INFO("Session %d: downstream_seq reset to 0 on handshake, handshake_done=true, status_sent=false\n", sidx);
   }
 
   /* ── Handle FEC Burst Reassembly ──────────────────────────────────── */
