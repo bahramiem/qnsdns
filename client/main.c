@@ -2067,11 +2067,14 @@ static void reorder_buffer_free(reorder_buffer_t *rb) {
     }
 }
 
-/* Find the slot index for a given sequence number */
+/* Find the slot index for a given sequence number.
+ * Returns the signed distance from expected_seq.
+ * A positive value means the packet is ahead of our current pointer.
+ * A negative value means the packet is behind (already processed or wrapped around). */
 static int reorder_buffer_find_slot(reorder_buffer_t *rb, uint16_t seq) {
-    int offset = (int)(seq - rb->expected_seq);
-    if (offset < 0) offset += 65536;  /* Handle wrap-around */
-    return offset;
+    /* Use signed 16-bit arithmetic to handle wrap-around correctly (distance <= 32767) */
+    int16_t diff = (int16_t)(seq - rb->expected_seq);
+    return (int)diff;
 }
 
 /* Insert a packet into the reorder buffer */
@@ -2079,21 +2082,31 @@ static bool reorder_buffer_insert(reorder_buffer_t *rb, uint16_t seq,
                                   const uint8_t *data, size_t len) {
     int offset = reorder_buffer_find_slot(rb, seq);
     
-    if (offset < 0 || offset >= RX_REORDER_WINDOW) {
-        /* Outside window - either too old or too far ahead */
-        if (offset < 0) {
-            /* Too old - drop */
-            LOG_DEBUG("Reorder: dropping old packet seq=%u (expected=%u)\n", 
-                     seq, rb->expected_seq);
+    if (offset < 0) {
+        /* Packet is from the past (already processed or obsolete) */
+        LOG_DEBUG("Reorder: dropping old/duplicate packet seq=%u (expected=%u, diff=%d)\n", 
+                 seq, rb->expected_seq, offset);
+        return false;
+    }
+
+    if (offset >= RX_REORDER_WINDOW) {
+        /* Packet is outside our window. Since offset is positive, it's in the future.
+         * Only jump FORWARD if the gap is reasonably small (e.g. within 32768 range). */
+        if (offset < 32768) {
+            LOG_INFO("Reorder: jumping expected_seq forward from %u to %u (gap of %d)\n", 
+                     rb->expected_seq, seq, offset);
+            reorder_buffer_free(rb);
+            rb->expected_seq = seq;
+            offset = 0;
+        } else {
+            /* This case should actually be covered by offset < 0 above, 
+             * but for extra safety, we drop extremely large "future" offsets. */
+            LOG_DEBUG("Reorder: dropping out-of-range packet seq=%u (expected=%u, diff=%d)\n", 
+                     seq, rb->expected_seq, offset);
             return false;
         }
-        /* Too far ahead - skip ahead expected_seq */
-        LOG_DEBUG("Reorder: jumping expected_seq from %u to %u\n", 
-                 rb->expected_seq, seq);
-        reorder_buffer_free(rb);
-        rb->expected_seq = seq;
-        offset = 0;
     }
+
     
     /* Check if slot is already occupied (duplicate) */
     if (rb->slots[offset].valid) {
@@ -2798,6 +2811,15 @@ static void on_jitter_timer(uv_timer_t *t) {
  */
 static void send_mtu_handshake(int session_idx) {
     session_t *sess = &g_sessions[session_idx];
+    
+    /* Reset reorder buffer state for this session.
+     * This is critical when a session is reused after the previous connection
+     * ended. The server resets its downstream_seq to 0 on handshake, so the
+     * client must also reset expected_seq to 0 to stay in sync.
+     * Without this, we get "jumping expected_seq" errors and data corruption. */
+    reorder_buffer_free(&sess->reorder_buf);
+    reorder_buffer_init(&sess->reorder_buf);
+    LOG_DEBUG("Session %d: reorder buffer reset for new handshake\n", session_idx);
     
     /* Find best resolver's MTU to report */
     uint16_t upstream_mtu = 512;
