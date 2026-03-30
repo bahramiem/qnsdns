@@ -426,6 +426,14 @@ typedef struct debug_pkt_ctx {
     char            expected_payload[64];
 } debug_pkt_ctx_t;
 
+/* ──────────────────────────────────────────────
+   Forward Declarations
+────────────────────────────────────────────── */
+static void mark_mtu_tested(mtu_binary_search_t *bs, int mtu, bool success);
+static int get_next_mtu_to_test(mtu_binary_search_t *bs);
+static void fire_mtu_test_probe(int idx, probe_test_type_t test_type,
+                                resolver_test_result_t *result, int mtu_size);
+
 static void on_debug_close(uv_handle_t *h) {
     debug_pkt_ctx_t *d = h->data;
     if (++d->closes == 2) free(d);
