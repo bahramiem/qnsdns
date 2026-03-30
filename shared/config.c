@@ -43,6 +43,7 @@ void config_defaults(dnstun_config_t *cfg, bool is_server) {
     /* tuning */
     cfg->poll_interval_ms     = 500;
     cfg->fec_window           = 32;
+    cfg->fec_redundancy       = 20;
     cfg->cwnd_init            = 16.0;
     cfg->cwnd_max             = 512.0;
     cfg->idle_timeout_sec     = 120;
@@ -142,6 +143,7 @@ int config_set_key(dnstun_config_t *cfg,
     else if (strcmp(section,"tuning")==0) {
         if      (strcmp(key,"poll_interval_ms")==0) cfg->poll_interval_ms = atoi(value);
         else if (strcmp(key,"fec_window")==0)       cfg->fec_window       = atoi(value);
+        else if (strcmp(key,"fec_redundancy")==0)   cfg->fec_redundancy   = atoi(value);
         else if (strcmp(key,"cwnd_init")==0)        cfg->cwnd_init        = atof(value);
         else if (strcmp(key,"cwnd_max")==0)         cfg->cwnd_max         = atof(value);
         else if (strcmp(key,"idle_timeout_sec")==0)  cfg->idle_timeout_sec  = atoi(value);

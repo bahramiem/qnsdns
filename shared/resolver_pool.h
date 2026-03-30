@@ -4,7 +4,7 @@
 
 #include "types.h"
 #include "config.h"
-#include "uv.h"
+#include "../uv.h"
 
 /* ──────────────────────────────────────────────
    Resolver pool — manages active / penalty / dead sets
@@ -73,5 +73,10 @@ int  rpool_flux_domain(const dnstun_config_t *cfg);
 
 /* Swarm — add a list of IPs received from the server */
 int  rpool_swarm_merge(resolver_pool_t *pool, const char **ips, int count);
+
+/* Helpers for modular components */
+int  rpool_get_active_count(resolver_pool_t *pool);
+int  rpool_select_active(resolver_pool_t *pool); /* Alias for rpool_next */
+void rpool_tick_bg(resolver_pool_t *pool);      /* Background maintenance tick */
 
 #endif /* DNSTUN_RESOLVER_POOL_H */
