@@ -1,12 +1,6 @@
 /**
  * @file server/main.c
  * @brief Clean entry point for the DNS Tunnel VPN Server.
- *
- * This file handles high-level initialization, configuration loading,
- * and event loop setup. The core logic is delegated to modular components:
- * - swarm: Resolver tracking
- * - session: Upstream TCP bridging
- * - dns_handler: Protocol processing
  */
 
 #include <stdio.h>
@@ -22,12 +16,12 @@
 #include "../shared/config.h"
 #include "../shared/tui/tui.h"
 #include "../shared/codec.h"
+#include "../shared/log.h"
 
 /* ── Global State (Shared via server_common.h) ───────────────────────────── */
 dnstun_config_t *g_server_cfg       = NULL;
 tui_ctx_t       *g_server_tui       = NULL;
 tui_stats_t     *g_server_stats     = NULL;
-FILE            *g_server_debug_log = NULL;
 
 /* ── Local State ─────────────────────────────────────────────────────────── */
 static dnstun_config_t  local_cfg;
@@ -43,7 +37,7 @@ static uv_tty_t         tty_input;
 static void on_alloc_buf(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf) {
     (void)handle;
     buf->base = malloc(suggested_size);
-    buf->len = suggested_size;
+    buf->len = (unsigned int)suggested_size;
 }
 
 static void on_tty_read_key(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf) {
@@ -58,21 +52,23 @@ static void on_tty_read_key(uv_stream_t *stream, ssize_t nread, const uv_buf_t *
 
 static void on_tick_maintenance(uv_timer_t *handle) {
     (void)handle;
-    /* Cleanup inactive sessions */
     int timeout = g_server_cfg ? g_server_cfg->idle_timeout_sec : 300;
     session_manager_tick_idle(timeout);
     
-    /* Reset periodic rate counters */
     if (g_server_stats) {
         g_server_stats->tx_bytes_sec = 0;
         g_server_stats->rx_bytes_sec = 0;
     }
     
-    /* Update TUI */
     if (g_server_tui) {
-        /* Update swarm count for UI */
         if (g_server_stats) g_server_stats->active_resolvers = swarm_get_count();
         tui_render(g_server_tui);
+    }
+}
+
+static void server_tui_log_callback(int level, const char *msg) {
+    if (g_server_tui) {
+        tui_debug_log(g_server_tui, level, "%s", msg);
     }
 }
 
@@ -85,30 +81,28 @@ static int proxy_get_clients_cb(tui_client_snap_t *out, int max) {
 int main(int argc, char *argv[]) {
     const char *config_path = (argc > 2 && strcmp(argv[1], "-c") == 0) ? argv[2] : "server.ini";
 
-    /* 1. Global Context Setup */
     g_server_cfg   = &local_cfg;
     g_server_tui   = &local_tui;
     g_server_stats = &local_stats;
     memset(&local_stats, 0, sizeof(local_stats));
 
-    /* 2. Load Configuration */
     config_defaults(g_server_cfg, true);
     if (config_load(g_server_cfg, config_path) != 0) {
         fprintf(stderr, "[WARN] Could not load %s, using defaults.\n", config_path);
     }
 
-    /* 3. Initialize libuv and Modules */
+    qns_log_init("qnsdns_server.log", (log_level_t)g_server_cfg->log_level);
+    LOG_INFO("=== Starting DNS Tunnel Server ===\n");
+
     local_loop = uv_default_loop();
     
     swarm_init(config_path, g_server_cfg);
     session_manager_init(local_loop);
     dns_handler_init();
     
-    /* 4. Setup Networking (UDP Port 53) */
     struct sockaddr_in addr;
     int port = 53;
     char bind_ip[64] = "0.0.0.0";
-    /* (Bind address parsing from cfg would go here) */
     
     uv_ip4_addr(bind_ip, port, &addr);
     uv_udp_init(local_loop, &udp_server);
@@ -118,26 +112,25 @@ int main(int argc, char *argv[]) {
     }
     uv_udp_recv_start(&udp_server, on_alloc_buf, dns_handler_on_recv);
 
-    /* 5. Initialize TUI */
-    static resolver_pool_t dummy_pool; /* Server doesn't use a pool, just logs swarm */
+    static resolver_pool_t dummy_pool; 
     tui_init(g_server_tui, g_server_stats, &dummy_pool, g_server_cfg, "SERVER", config_path);
+    qns_log_set_tui_cb(server_tui_log_callback);
+
     g_server_tui->get_clients_cb = proxy_get_clients_cb;
 
-     /* 6. Setup Timers and Input */
-     uv_timer_init(local_loop, &idle_timer);
-     uv_timer_start(&idle_timer, on_tick_maintenance, g_server_cfg->idle_timer_ms, g_server_cfg->idle_timer_ms);
+    uv_timer_init(local_loop, &idle_timer);
+    uv_timer_start(&idle_timer, on_tick_maintenance, g_server_cfg->idle_timer_ms, g_server_cfg->idle_timer_ms);
 
     uv_tty_init(local_loop, &tty_input, 0, 1);
     uv_tty_set_mode(&tty_input, UV_TTY_MODE_RAW);
     uv_read_start((uv_stream_t *)&tty_input, on_alloc_buf, on_tty_read_key);
 
-    /* 7. Run Loop */
-    printf("dnstun-server listening on port %d\n", port);
+    LOG_INFO("dnstun-server started listening on port %d\n", port);
     uv_run(local_loop, UV_RUN_DEFAULT);
 
-    /* 8. Cleanup */
     uv_tty_reset_mode();
     tui_shutdown(g_server_tui);
+    qns_log_shutdown();
     swarm_shutdown();
     codec_pool_shutdown();
     
