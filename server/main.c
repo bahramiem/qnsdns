@@ -61,7 +61,7 @@ static int build_txt_reply_with_seq(uint8_t *outbuf, size_t *outlen,
                                     uint16_t query_id, const char *qname,
                                     const uint8_t *data, size_t data_len,
                                     uint16_t mtu, uint16_t seq,
-                                    uint8_t session_id);
+                                    uint8_t session_id, bool has_seq);
 static void send_udp_reply(const struct sockaddr_in *dest, const uint8_t *data,
                            size_t len);
 
@@ -549,7 +549,7 @@ static int build_txt_reply_with_seq(uint8_t *outbuf, size_t *outlen,
                                     uint16_t query_id, const char *qname,
                                     const uint8_t *data, size_t data_len,
                                     uint16_t mtu, uint16_t seq,
-                                    uint8_t session_id) {
+                                    uint8_t session_id, bool has_seq) {
   /* [Fix] MTU Adjustment: Ensure the final Base64-encoded record
    * stays within the requested MTU limit (e.g. 220 characters).
    * Binary size = MTU * 3 / 4. */
@@ -564,7 +564,7 @@ static int build_txt_reply_with_seq(uint8_t *outbuf, size_t *outlen,
   server_response_header_t hdr = {0};
   hdr.session_id = session_id;
   hdr.flags = 0;                  /* base64 encoding (default) */
-  hdr.flags |= RESP_FLAG_HAS_SEQ; /* Mark as sequenced */
+  if (has_seq) hdr.flags |= RESP_FLAG_HAS_SEQ; /* Mark as sequenced only if handshake done */
   hdr.seq = seq;
 
   /* Build packet: header + payload */
@@ -827,7 +827,7 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
       uint8_t reply[5120];
       size_t rlen = sizeof(reply);
       if (build_txt_reply_with_seq(reply, &rlen, query_id, qname, mtu_payload,
-                                   requested_mtu, 512, 0, 0) == 0) {
+                                   requested_mtu, 512, 0, 0, false) == 0) {
         send_udp_reply(src, reply, rlen);
       }
       return; /* MTU probe handled */
@@ -952,7 +952,7 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     uint8_t reply[512];
     size_t rlen = sizeof(reply);
     if (build_txt_reply_with_seq(reply, &rlen, query_id, qname, payload,
-                                 payload_len, 512, 0, session_id) == 0) {
+                                 payload_len, 512, 0, session_id, false) == 0) {
       send_udp_reply(src, reply, rlen);
     }
     return; /* Don't process further - no session setup or upstream forwarding
@@ -1352,7 +1352,7 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     if (build_txt_reply_with_seq(
             reply, &rlen, query_id, qname, (const uint8_t *)swarm_text, slen,
             sess->cl_downstream_mtu, swarm_seq,
-            sess->session_id) == 0) {
+            sess->session_id, sess->handshake_done) == 0) {
       send_udp_reply(src, reply, rlen);
     }
     return;
@@ -1394,7 +1394,7 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     uint16_t out_seq = sess->handshake_done ? sess->downstream_seq++ : 0;
     if (build_txt_reply_with_seq(
             reply, &rlen, query_id, qname, sess->upstream_buf, sz, mtu,
-            out_seq, sess->session_id) == 0) {
+            out_seq, sess->session_id, sess->handshake_done) == 0) {
       /* Save to retransmit slot BEFORE consuming from upstream_buf */
       if (sz <= sizeof(sess->retx_buf)) {
         memcpy(sess->retx_buf, sess->upstream_buf, sz);
@@ -1418,14 +1418,16 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
             sess->retx_seq, sess->retx_len);
     if (build_txt_reply_with_seq(
             reply, &rlen, query_id, qname, sess->retx_buf, sess->retx_len,
-            mtu, sess->retx_seq, sess->session_id) == 0) {
+            mtu, sess->retx_seq, sess->session_id, true) == 0) {
       send_udp_reply(src, reply, rlen);
     }
   } else {
     /* Empty reply — acknowledge the query with NO payload */
     uint16_t out_seq = sess->handshake_done ? sess->downstream_seq++ : 0;
+    fprintf(stderr, "[DEBUG] Server empty reply: session=%u handshake_done=%d out_seq=%u downstream_seq=%u\n",
+            sess->session_id, sess->handshake_done, out_seq, sess->downstream_seq);
     if (build_txt_reply_with_seq(reply, &rlen, query_id, qname, NULL, 0, mtu,
-                                 out_seq, sess->session_id) == 0)
+                                 out_seq, sess->session_id, sess->handshake_done) == 0)
       send_udp_reply(src, reply, rlen);
   }
 }

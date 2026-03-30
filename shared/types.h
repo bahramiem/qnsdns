@@ -415,6 +415,7 @@ typedef struct session {
     /* Client-specific: SOCKS5 handshake state */
     bool      socks5_connected;  /* true once SOCKS5 success sent */
     bool      status_consumed;   /* true once server status byte is stripped */
+    bool      first_seq_received; /* true once first seq=0 response received (used to clear stale buffer) */
     
     /* Client-specific: back-pointer to SOCKS5 client (client only) */
     void      *client_ptr;

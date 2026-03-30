@@ -2626,6 +2626,17 @@ static void on_dns_recv(uv_udp_t *h,
                                 }
 
                                 if (has_seq) {
+                                    /* When we receive the first sequenced response (seq=0) from the server,
+                                     * clear the reorder buffer to discard any stale responses from previous
+                                     * sessions that may have arrived before the handshake was processed.
+                                     * This prevents stale seq=16 (or other) packets from corrupting the
+                                     * new session's data. */
+                                    if (seq == 0 && s->reorder_buf.expected_seq == 0 && !s->first_seq_received) {
+                                        LOG_DEBUG("First sequenced response (seq=0) received, clearing stale buffer entries (session=%d)\n", sidx);
+                                        reorder_buffer_free(&s->reorder_buf);
+                                        s->reorder_buf.expected_seq = 0;
+                                        s->first_seq_received = true;
+                                    }
                                     /* Always buffer sequenced packets in reorder window to prevent gaps */
                                     reorder_buffer_insert(&s->reorder_buf, seq, payload, payload_len);
 
