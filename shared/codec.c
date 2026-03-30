@@ -408,37 +408,50 @@ codec_result_t codec_fec_decode_oti(fec_encoded_t *encoded) {
         return res;
     }
 
-    fprintf(stderr, "DEBUG FEC OTI: oti_common=0x%016llx oti_scheme=0x%08x total_count=%d symbol_len=%zu\n",
-            (unsigned long long)encoded->oti_common, 
+    /*
+     * CRITICAL: OTI_Common() returns the value in BIG-ENDIAN byte order
+     * (the encoder calls h_to_b() before returning). The Decoder() constructor
+     * internally calls b_to_h() to convert back to host order before extracting
+     * fields.  We MUST pass the OTI as-is to Decoder() — do NOT attempt to
+     * extract F or T from the raw big-endian uint64 without byte-swapping first;
+     * doing so produces garbage field values on a little-endian host.
+     *
+     * Example: oti_common=0x6e00006800000000 (big-endian)
+     *   -> host order: 0x000000006800006e
+     *   -> T (lower 16 bits) = 0x006e = 110  (correct)
+     *   -> F (bits 63-24)    = 0x68   = 104  (correct transfer length)
+     * But reading bits 24-63 of the BIG-ENDIAN value gives 0x6e00006800 = ~472B!
+     */
+
+    /* Byte-swap OTI to host order for local diagnostics/validation only */
+    uint64_t host_oti_common;
+    {
+        uint64_t v = encoded->oti_common;
+        host_oti_common = ((v & 0x00000000000000FFULL) << 56) |
+                          ((v & 0x000000000000FF00ULL) << 40) |
+                          ((v & 0x0000000000FF0000ULL) << 24) |
+                          ((v & 0x00000000FF000000ULL) <<  8) |
+                          ((v & 0x000000FF00000000ULL) >>  8) |
+                          ((v & 0x0000FF0000000000ULL) >> 24) |
+                          ((v & 0x00FF000000000000ULL) >> 40) |
+                          ((v & 0xFF00000000000000ULL) >> 56);
+    }
+    uint16_t T = (uint16_t)(host_oti_common & 0xFFFFULL);   /* lower 16 bits = T */
+    uint64_t F = host_oti_common >> 24;                      /* upper 40 bits = F */
+
+    fprintf(stderr, "DEBUG FEC OTI: oti_common=0x%016llx oti_scheme=0x%08x total_count=%d symbol_len=%zu k_source=%d\n",
+            (unsigned long long)encoded->oti_common,
             (unsigned int)encoded->oti_scheme,
             encoded->total_count,
-            (size_t)encoded->symbol_len);
+            (size_t)encoded->symbol_len,
+            encoded->k_source);
+    fprintf(stderr, "DEBUG FEC OTI: host_oti=0x%016llx => T=%u F=%llu\n",
+            (unsigned long long)host_oti_common, T, (unsigned long long)F);
 
-    /* Validate OTI values to prevent crashes
-     * Valid OTI should have:
-     * - oti_scheme != 0 (contains alignment, sub_blocks, blocks)
-     * - oti_common should encode a reasonable symbol size (4-65535 bytes)
-     */
-    if (encoded->oti_scheme == 0) {
-        fprintf(stderr, "DEBUG FEC OTI: INVALID oti_scheme=0, rejecting\n");
-        res.error = true;
-        return res;
-    }
-    
-    /* Extract symbol size T from OTI_Common.
-     * The RaptorQ library stores T (symbol size) in bits 56-63 (MSByte) of
-     * the 64-bit oti_common field. The QNAME slot is always 110 bytes (zero-
-     * padded), so symbol_len from payload_len is always 110 even when the
-     * actual FEC symbol is smaller (e.g. after nonce+compress produces <110B).
-     * Prefer the OTI T (set by the encoder); fall back to symbol_len only if
-     * OTI T is 0 or implausibly large. */
-    uint16_t T = (uint16_t)((encoded->oti_common >> 56) & 0xFF);
-    fprintf(stderr, "DEBUG FEC OTI: oti_T_bits56-63=%u symbol_len(slot)=%zu\n",
-            T, encoded->symbol_len);
+    /* Fallback: use received payload size if T from OTI is implausible */
     if (T == 0 || T > 1500) {
-        /* Fallback: symbol_len from received payload (may be padded) */
         T = (uint16_t)encoded->symbol_len;
-        fprintf(stderr, "DEBUG FEC OTI: OTI T invalid, using symbol_len T=%u\n", T);
+        fprintf(stderr, "DEBUG FEC OTI: OTI T implausible, using symbol_len T=%u\n", T);
     }
     if (T == 0) {
         fprintf(stderr, "DEBUG FEC OTI: T=0, cannot decode\n");
@@ -446,60 +459,35 @@ codec_result_t codec_fec_decode_oti(fec_encoded_t *encoded) {
         return res;
     }
 
-    /* Extract K (number of source symbols) from OTI_Scheme_Specific.
-     * RFC 6330 OTI_Scheme_Specific: upper 8 bits = Zt (sub-blocks), lower 24
-     * bits split into Z (source blocks, 8 bits) and N (sub-symbol size, 16b).
-     * For a single-block encoding, K = ceil(transfer_length / T).
-     * However, the transfer_length embedded in oti_common may be wrong
-     * (it often encodes the pre-compression buffer size, not the actual
-     * post-compression+nonce source length).  Reconstruct it from K*T. */
-
-    /* K is bits 8-39 of oti_common (source symbol alignment block count).
-     * Simpler: for a single source block, K = (transfer_length + T - 1) / T
-     * where transfer_length is oti_common bits 24-63 (5 MSBytes). */
-    uint64_t raw_transfer_len = (encoded->oti_common >> 24) & 0xFFFFFFFFFFULL;
-
-    /* Sanity check: if transfer_length is implausibly large, recompute it.
-     * The true transfer length is exactly K * T (since we use K = source
-     * symbols and T = symbol size, padding is applied automatically).
-     * k_source is now explicitly set by the caller from the FEC header. */
-    uint64_t corrected_oti_common = encoded->oti_common;
-    if (raw_transfer_len == 0 || raw_transfer_len > 131072) {
+    /* Pass the original big-endian OTI directly — Decoder() calls b_to_h() internally */
+    struct RFC6330_ptr *dec = api->Decoder(RQ_DEC_8, encoded->oti_common, encoded->oti_scheme);
+    if (!dec) {
+        fprintf(stderr, "DEBUG FEC OTI: Decoder() returned NULL, trying Decoder_raw\n");
+        /* Fallback: explicit parameters when OTI-based decoder fails */
         if (encoded->k_source <= 0) {
-            fprintf(stderr, "DEBUG FEC OTI: implausible transfer_len and k_source missing, cannot decode\n");
+            fprintf(stderr, "DEBUG FEC OTI: k_source not set, cannot use Decoder_raw\n");
             res.error = true;
             return res;
         }
-        uint64_t corrected_len = (uint64_t)T * (uint64_t)encoded->k_source;
-        /* Rebuild oti_common: bits 24-63 = transfer_length, bits 0-23 = 0.
-         * Keep the upper 8 bits (which contain T). */
-        uint64_t oti_T = encoded->oti_common & 0xFF00000000000000ULL;
-        corrected_oti_common = oti_T | (corrected_len << 24) | 0ULL;
-        fprintf(stderr, "DEBUG FEC OTI: raw transfer_len=%llu implausible, "
-                "rewriting oti_common transfer_len to K*T = %d*%u = %llu\n",
-                (unsigned long long)raw_transfer_len, encoded->k_source, T,
-                (unsigned long long)corrected_len);
+        uint64_t raw_size = (uint64_t)T * (uint64_t)encoded->k_source;
+        dec = api->Decoder_raw(RQ_DEC_8, raw_size, T, 1, 1, 1);
+        if (!dec) {
+            fprintf(stderr, "DEBUG FEC OTI: Decoder_raw() also returned NULL\n");
+            res.error = true;
+            return res;
+        }
+        fprintf(stderr, "DEBUG FEC OTI: Decoder_raw created size=%llu T=%u\n",
+                (unsigned long long)raw_size, T);
     } else {
-        fprintf(stderr, "DEBUG FEC OTI: raw transfer_len=%llu (OK)\n",
-                (unsigned long long)raw_transfer_len);
+        fprintf(stderr, "DEBUG FEC OTI: Decoder created (F=%llu T=%u)\n",
+                (unsigned long long)F, T);
     }
 
-    /* Decoder(type, OTI_Common, OTI_Scheme_Specific) - transfer length embedded in OTI */
-    struct RFC6330_ptr *dec = api->Decoder(RQ_DEC_8, corrected_oti_common, encoded->oti_scheme);
-    if (!dec) { 
-        fprintf(stderr, "DEBUG FEC OTI: Decoder() returned NULL\n");
-        res.error = true; 
-        return res; 
-    }
-    
-    fprintf(stderr, "DEBUG FEC OTI: Decoder created, adding %d symbols with T=%u\n",
-            encoded->total_count, T);
-
-    /* Step 1: add all available symbols using the ACTUAL symbol size T */
+    /* Step 1: add all available symbols */
     for (int i = 0; i < encoded->total_count; i++) {
         if (encoded->symbols[i]) {
             void *p = encoded->symbols[i];
-            /* add_symbol_id(dec, data, size, id) where id = esi (sbn=0) */
+            /* id encodes sbn (upper 8 bits) + esi (lower 24 bits); sbn=0 here */
             api->add_symbol_id(dec, &p, T, (uint32_t)i);
         }
     }
@@ -507,11 +495,7 @@ codec_result_t codec_fec_decode_oti(fec_encoded_t *encoded) {
     /* Step 2: signal no more input */
     api->end_of_input(dec, RQ_NO_FILL);
 
-    /* Step 3: trigger computation and wait for it to complete.
-     * CRITICAL: future_wait() MUST be called before future_free() and before
-     * decode_aligned(). Without future_wait(), the asynchronous computation
-     * has not finished when decode_aligned() is called, which returns 0 bytes
-     * written → error=1. */
+    /* Step 3: trigger computation and wait for completion */
     struct RFC6330_future *f = api->compute(dec, RQ_COMPUTE_COMPLETE);
     if (f) {
         api->future_wait(f);
@@ -527,6 +511,8 @@ codec_result_t codec_fec_decode_oti(fec_encoded_t *encoded) {
 
     void *out = res.data;
     struct RFC6330_Dec_Result dres = api->decode_aligned(dec, &out, (uint64_t)max_size, 0);
+    fprintf(stderr, "DEBUG FEC OTI: decode_aligned written=%llu\n",
+            (unsigned long long)dres.written);
     if (dres.written == 0 || dres.written > max_size) {
         buffer_pool_release(res.data, max_size);
         res.data = NULL;
