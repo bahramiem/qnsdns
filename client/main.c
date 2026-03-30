@@ -2819,7 +2819,13 @@ static void send_mtu_handshake(int session_idx) {
      * Without this, we get "jumping expected_seq" errors and data corruption. */
     reorder_buffer_free(&sess->reorder_buf);
     reorder_buffer_init(&sess->reorder_buf);
-    LOG_DEBUG("Session %d: reorder buffer reset for new handshake\n", session_idx);
+    
+    /* Also reset upstream sequence counter so we start sending from seq=0.
+     * Otherwise poll packets would continue from old seq (e.g., 11, 12, 13...)
+     * which confuses the server's reset downstream_seq. */
+    sess->upstream_seq = 0;
+    
+    LOG_DEBUG("Session %d: reorder buffer and upstream_seq reset for new handshake\n", session_idx);
     
     /* Find best resolver's MTU to report */
     uint16_t upstream_mtu = 512;
