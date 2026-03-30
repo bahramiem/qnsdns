@@ -108,10 +108,12 @@ static uint16_t rand_u16(void) {
     return (uint16_t)(rand() & 0xFFFF);
 }
 
-/* Generate a unique 8-bit session ID (0-255) */
+/* Generate a unique 8-bit session ID (0-255) using a rotating counter 
+ * to minimize immediate ID reuse which can confuse the server. */
 static uint8_t get_unused_session_id(void) {
-    for (int i = 0; i < 256; i++) {
-        uint8_t sid = (uint8_t)i;
+    static uint8_t last_sid = 0;
+    for (int i = 1; i <= 256; i++) {
+        uint8_t sid = (uint8_t)((last_sid + i) % 256);
         bool in_use = false;
         for (int j = 0; j < DNSTUN_MAX_SESSIONS; j++) {
             if (g_sessions[j].established && !g_sessions[j].closed && g_sessions[j].session_id == sid) {
@@ -119,9 +121,12 @@ static uint8_t get_unused_session_id(void) {
                 break;
             }
         }
-        if (!in_use) return sid;
+        if (!in_use) {
+            last_sid = sid;
+            return sid;
+        }
     }
-    return 0; /* Should not happen with DNSTUN_MAX_SESSIONS <= 256 */
+    return 0; /* Fallback (should not happen) */
 }
 
 /* ────────────────────────────────────────────── */

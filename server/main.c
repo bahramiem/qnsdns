@@ -1043,11 +1043,28 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
       LOG_INFO("Session %d: MTU handshake - Up=%u, Down=%u\n", sidx,
                hs.upstream_mtu, hs.downstream_mtu);
     }
+    
+    /* [Fix] Session Reuse Protection:
+     * If this session ID was already connected to an upstream target, we MUST
+     * close that connection before starting a new one. Otherwise, the second
+     * request would try to forward data to the old stale socket. */
+    if (sess->tcp_connected) {
+      LOG_INFO("Session %d: closing existing connection (sid=%u) for new handshake\n", 
+               sidx, session_id);
+      if (!uv_is_closing((uv_handle_t *)&sess->upstream_tcp)) {
+        uv_close((uv_handle_t *)&sess->upstream_tcp, NULL);
+      }
+      sess->tcp_connected = false;
+    }
+
     /* Reset the downstream sequence counter so the MTU-handshake reply
      * and all following data start at seq=0 — exactly what the client's
      * reorder buffer expects after it sends the capability/handshake. */
     sess->downstream_seq = 0;
     sess->handshake_done = true;
+    sess->status_sent = false;
+    sess->closing = false;
+    sess->zombie = false;
     
     /* Clear any stale upstream data from previous requests on this session.
      * Without this, old data with old sequence numbers could conflict with
