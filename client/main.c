@@ -1982,7 +1982,8 @@ static void resolver_init_phase(void) {
 /* ────────────────────────────────────────────── */
 /* Forward declarations for functions defined later */
 static void send_mtu_handshake(int session_idx);
-static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
+/* Returns 0 on success, -1 on failure (no resolver available) */
+static int fire_dns_chunk_symbol(int session_idx, uint16_t seq,
                                  const uint8_t *payload, size_t paylen,
                                  int total_chunks, uint64_t oti_common, uint32_t oti_scheme);
 
@@ -2889,8 +2890,9 @@ static void send_mtu_handshake(int session_idx) {
 
 /* Fire one DNS query chunk for a session.
    'seq' is the actual sequence number of this FEC symbol.
+   Returns 0 on success, -1 on failure (no resolver available).
    Fix: Fall back to dead resolvers if no active resolvers available. */
-static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
+static int fire_dns_chunk_symbol(int session_idx, uint16_t seq,
                                   const uint8_t *payload, size_t paylen,
                                   int total_symbols,
                                   uint64_t oti_common, uint32_t oti_scheme)
@@ -2909,10 +2911,10 @@ static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
     }
     
     if (ridx < 0) {
-        LOG_ERR("fire_dns_chunk_symbol: no resolvers available at all (session_idx=%d, seq=%u)\n",
+        LOG_DEBUG("fire_dns_chunk_symbol: no resolvers available (session_idx=%d, seq=%u)\n",
                 session_idx, seq);
         g_stats.queries_dropped++;
-        return;
+        return -1;
     }
 
     resolver_t *r = &g_pool.resolvers[ridx];
@@ -3017,7 +3019,7 @@ static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
             uv_timer_init(g_loop, &jc->timer);
             jc->timer.data = jc;
             uv_timer_start(&jc->timer, on_jitter_timer, delay_ms, 0);
-            return; /* send will happen in the timer callback */
+            return 0; /* send will happen in the timer callback */
         }
     }
 
@@ -3032,6 +3034,7 @@ static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
     } else {
         g_stats.queries_sent++;
     }
+    return 0;
 }
 
 /* ────────────────────────────────────────────── */
@@ -3097,19 +3100,38 @@ static void on_poll_timer(uv_timer_t *t) {
                 if (r < 10) r = 10;
             }
             
+            int symbols_sent = 0;
+            int symbols_failed = 0;
             fec_encoded_t fec = codec_fec_encode(enc_in, enc_len, k, r);
             if (fec.total_count > 0) {
                 /* 4. SEND SYMBOLS - include OTI for server-side FEC decoding */
                 for (int s = 0; s < fec.total_count; s++) {
-                    fire_dns_chunk_symbol(i, sess->tx_next++, fec.symbols[s], fec.symbol_len, fec.total_count,
+                    int rc = fire_dns_chunk_symbol(i, sess->tx_next++, fec.symbols[s], fec.symbol_len, fec.total_count,
                                          fec.has_oti ? fec.oti_common : 0, fec.has_oti ? fec.oti_scheme : 0);
+                    if (rc == 0) {
+                        symbols_sent++;
+                    } else {
+                        /* Symbol wasn't sent - don't increment tx_next and retry on next poll */
+                        sess->tx_next--;
+                        symbols_failed++;
+                    }
                 }
             }
 
             codec_fec_free(&fec);
             if (g_cfg.encryption) codec_free_result(&eret);
             codec_free_result(&cret);
-            sess->send_len = 0;
+            
+            /* Only clear send_len if ALL symbols were sent successfully.
+             * If any failed (no resolver), keep send_len > 0 so poll timer
+             * will retry on next cycle. This prevents burst truncation when
+             * resolvers are temporarily unavailable. */
+            if (symbols_failed == 0) {
+                sess->send_len = 0;
+            } else {
+                LOG_WARN("Session %d: %d/%d symbols failed to send, will retry\n",
+                        i, symbols_failed, symbols_sent + symbols_failed);
+            }
         } else {
             /* No upload — send empty POLL to pull downstream data */
             fire_dns_chunk_symbol(i, sess->tx_next++, NULL, 0, 0, 0, 0);
