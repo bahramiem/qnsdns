@@ -136,6 +136,7 @@ int main(int argc, char *argv[]) {
     uv_run(local_loop, UV_RUN_DEFAULT);
 
     /* 8. Cleanup */
+    uv_tty_reset_mode();
     tui_shutdown(g_server_tui);
     swarm_shutdown();
     codec_pool_shutdown();
