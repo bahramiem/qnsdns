@@ -44,8 +44,28 @@ static resolver_pool_t  local_pool;
 static uv_timer_t       poll_timer;
 static uv_timer_t       bg_timer;
 static uv_timer_t       agg_timer;
+static uv_tty_t         g_tty;
 
 /* ── libuv Callbacks ─────────────────────────────────────────────────────── */
+
+static void on_tty_alloc(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf) {
+    (void)handle;
+    buf->base = malloc(suggested_size);
+    buf->len = (unsigned int)suggested_size;
+}
+
+static void on_tty_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf) {
+    (void)stream;
+    if (nread > 0) {
+        for (ssize_t i = 0; i < nread; i++) {
+            tui_handle_key(g_client_tui, buf->base[i]);
+            if (g_client_tui && !g_client_tui->running) {
+                uv_stop(g_client_loop);
+            }
+        }
+    }
+    if (buf->base) free(buf->base);
+}
 
 static void on_tick_poll(uv_timer_t *handle) {
     (void)handle;
@@ -172,11 +192,17 @@ int main(int argc, char *argv[]) {
     /* Starting discovery after timers ensures the TUI remains responsive during the 5s window */
     resolver_run_init_phase();
 
-    /* 8. Run Main Event Loop */
+    /* 8. Bind STDIN for TUI */
+    uv_tty_init(g_client_loop, &g_tty, 0, 1);
+    uv_tty_set_mode(&g_tty, UV_TTY_MODE_RAW);
+    uv_read_start((uv_stream_t*)&g_tty, on_tty_alloc, on_tty_read);
+
+    /* 9. Run Main Event Loop */
     LOG_INFO("dnstun-client started. SOCKS5 at 127.0.0.1:%d\n", socks_port);
     uv_run(g_client_loop, UV_RUN_DEFAULT);
 
-    /* 9. Cleanup */
+    /* 10. Cleanup */
+    uv_tty_reset_mode();
     tui_shutdown(g_client_tui);
     agg_shutdown();
     resolver_mod_shutdown();
