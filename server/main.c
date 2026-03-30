@@ -132,6 +132,13 @@ typedef struct srv_session {
 
   bool status_sent;
   time_t last_active;
+
+  /* Retransmit slot: last sent downstream data, resent on every poll until
+   * new upstream data arrives (acts as implicit ACK that the old data was
+   * received). Cleared when upstream_buf has new data to send. */
+  uint8_t retx_buf[4096];  /* copy of last sent payload */
+  size_t  retx_len;        /* bytes in retx_buf (0 = nothing to retransmit) */
+  uint16_t retx_seq;       /* downstream_seq that was used for retx_buf */
 } srv_session_t;
 
 #define SRV_MAX_SESSIONS 1024
@@ -1341,10 +1348,30 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     if (build_txt_reply_with_seq(
             reply, &rlen, query_id, qname, sess->upstream_buf, sz, mtu,
             out_seq, sess->session_id) == 0) {
+      /* Save to retransmit slot BEFORE consuming from upstream_buf */
+      if (sz <= sizeof(sess->retx_buf)) {
+        memcpy(sess->retx_buf, sess->upstream_buf, sz);
+        sess->retx_len = sz;
+        sess->retx_seq = out_seq;
+      }
       /* Shift consumed bytes out of upstream buffer */
       memmove(sess->upstream_buf, sess->upstream_buf + sz,
               sess->upstream_len - sz);
       sess->upstream_len -= sz;
+      send_udp_reply(src, reply, rlen);
+    }
+  } else if (sess->retx_len > 0) {
+    /* upstream_buf is empty but we have a retransmit slot — the previous
+     * reply at retx_seq may have been dropped by DNS. Re-send it at the
+     * SAME seq (do NOT advance downstream_seq) so the client's reorder
+     * buffer can fill the gap. Once new upstream data appears, the retx
+     * slot is overwritten and downstream_seq advances normally. */
+    fprintf(stderr,
+            "[DEBUG] Server retransmitting seq=%u len=%zu\n",
+            sess->retx_seq, sess->retx_len);
+    if (build_txt_reply_with_seq(
+            reply, &rlen, query_id, qname, sess->retx_buf, sess->retx_len,
+            mtu, sess->retx_seq, sess->session_id) == 0) {
       send_udp_reply(src, reply, rlen);
     }
   } else {
