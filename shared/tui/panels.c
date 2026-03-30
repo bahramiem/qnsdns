@@ -242,15 +242,20 @@ void tui_render_resolvers_view(tui_ctx_t *t, int x, int y, int width, int height
             if (r->state == RSV_PENALTY) state_color = ANSI_YELLOW;
             if (r->state == RSV_DEAD || r->state == RSV_ZOMBIE) state_color = ANSI_RED;
             
-            printf("\033[%d;%dH" ANSI_DIM "%-16s" ANSI_RESET " %s%-9s" ANSI_RESET " %5.0f %6.1f %5.0f %4d %5.1f %4u",
+            char rtt_str[16], qps_str[16], mtu_str[16], loss_str[16];
+            if (r->rtt_ms <= 0) strcpy(rtt_str, "  -  "); else snprintf(rtt_str, sizeof(rtt_str), "%6.1f", r->rtt_ms);
+            if (r->max_qps <= 0) strcpy(qps_str, "  -  "); else snprintf(qps_str, sizeof(qps_str), "%5.0f", r->max_qps);
+            if (r->downstream_mtu <= 0) strcpy(mtu_str, " - "); else snprintf(mtu_str, sizeof(mtu_str), "%4d", r->downstream_mtu);
+            if (r->loss_rate < 0.001) strcpy(loss_str, " 0.0"); else snprintf(loss_str, sizeof(loss_str), "%5.1f", r->loss_rate * 100.0);
+
+            printf("\033[%d;%dH" ANSI_DIM "%-16s" ANSI_RESET " %s%-9s" ANSI_RESET " %5.0f %s %s %s %s %4u",
                    row, x + 2, r->ip, state_color,
                    r->state == RSV_ACTIVE ? "ACTIVE" :
                    r->state == RSV_PENALTY ? "PENALTY" :
                    r->state == RSV_DEAD ? "DEAD" :
                    r->state == RSV_ZOMBIE ? "ZOMBIE" :
                    r->state == RSV_TESTING ? "TESTING" : "UNKNOWN",
-                   r->cwnd, r->rtt_ms, r->max_qps, r->downstream_mtu,
-                   r->loss_rate * 100.0, r->fec_k);
+                   r->cwnd, rtt_str, qps_str, mtu_str, loss_str, r->fec_k);
             shown++;
         }
         uv_mutex_unlock(&pool->lock);

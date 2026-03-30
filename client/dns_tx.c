@@ -253,7 +253,6 @@ void dns_tx_send_handshake(int idx) {
 typedef struct {
     uv_udp_t udp;
     uv_timer_t timer;
-    uv_udp_send_t send_req;
     uint64_t sent_ms;
     uint16_t expected_seq;
     char expected_payload[32];
@@ -333,6 +332,14 @@ void dns_tx_send_debug_packet(const char *payload, uint32_t seq) {
         free(ctx); return;
     }
 
+    /* Heap allocate request and packet buffer for async safely */
+    uv_udp_send_t *req = malloc(sizeof(uv_udp_send_t));
+    if (!req) { free(ctx); return; }
+    uint8_t *copy = malloc(pktlen);
+    if (!copy) { free(req); free(ctx); return; }
+    memcpy(copy, pkt, pktlen);
+    req->data = copy;
+
     uv_udp_init(g_client_loop, &ctx->udp);
     ctx->udp.data = ctx;
     uv_timer_init(g_client_loop, &ctx->timer);
@@ -342,6 +349,12 @@ void dns_tx_send_debug_packet(const char *payload, uint32_t seq) {
     struct sockaddr_in dest;
     uv_ip4_addr(r->ip, 53, &dest);
     uv_udp_recv_start(&ctx->udp, on_dns_alloc, on_proto_recv);
-    uv_buf_t b = uv_buf_init((char *)pkt, (unsigned int)pktlen);
-    uv_udp_send(&ctx->send_req, &ctx->udp, &b, 1, (const struct sockaddr *)&dest, on_udp_send_done);
+    uv_buf_t b = uv_buf_init((char *)copy, (unsigned int)pktlen);
+    
+    if (uv_udp_send(req, &ctx->udp, &b, 1, (const struct sockaddr *)&dest, on_udp_send_done) != 0) {
+        free(copy);
+        free(req);
+        uv_close((uv_handle_t*)&ctx->udp, on_proto_close);
+        uv_close((uv_handle_t*)&ctx->timer, on_proto_close);
+    }
 }

@@ -175,17 +175,29 @@ static void on_probe_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
 {
     (void)addr; (void)flags;
     probe_req_t *p = h->data;
-    if (nread > 0 && p->result) {
+    if (nread > 0 && p->result && g_pool) {
         uint8_t *resp = (uint8_t*)buf->base;
+        resolver_t *r = &g_pool->resolvers[p->resolver_idx];
+        
         if (nread >= 12) {
             uint8_t rcode = resp[3] & 0x0F;
+
+            /* 1. Calculate and record RTT */
+            double rtt = (double)((uv_hrtime() / 1000000.0) - p->sent_ms);
+            if (r->rtt_ms == 0.0) r->rtt_ms = rtt;
+            else r->rtt_ms = (r->rtt_ms * 0.7) + (rtt * 0.3); /* Simple EWMA */
+
+            /* 2. Process Phase-Specific Success */
             if (p->test_type == PROBE_TEST_LONGNAME) {
                 p->result->longname_supported = true;
+                r->upstream_mtu = 110; /* Min safe for long QNAME */
             } else if (p->test_type == PROBE_TEST_NXDOMAIN) {
                 if (rcode == 3 || rcode == 0) p->result->nxdomain_correct = true;
             } else if (p->test_type == PROBE_TEST_EDNS_TXT) {
                 p->result->edns_supported = true;
                 p->result->txt_supported = true;
+                r->downstream_mtu = 512; /* Min safe for EDNS TXT */
+                r->edns0_supported = true;
             }
         }
         
@@ -284,6 +296,12 @@ void resolver_run_init_phase(void) {
     for (int i = 0; i < count; i++) {
         bool ok = results[i].longname_supported && results[i].nxdomain_correct && results[i].txt_supported;
         if (ok) {
+            resolver_t *r = &g_pool->resolvers[i];
+            /* Initialize congestion and performance baselines */
+            r->cwnd = 10.0;
+            r->max_qps = 50.0;
+            r->fec_k = rpool_fec_k(g_pool, i, 10);
+            
             rpool_set_state(g_pool, i, RSV_ACTIVE);
             promoted++;
         } else {
