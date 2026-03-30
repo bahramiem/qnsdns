@@ -35,4 +35,9 @@ void tui_debug_set_level(tui_ctx_t *t, int level);
 void tui_debug_scroll_up(tui_ctx_t *t, int lines);
 void tui_debug_scroll_down(tui_ctx_t *t, int lines);
 
+/**
+ * @brief Render a single log line with highlighting.
+ */
+void tui_render_log_line(const char *line, int y, int x, int width);
+
 #endif /* QNS_TUI_LOG_H */

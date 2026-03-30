@@ -36,7 +36,6 @@ static tui_stats_t      local_stats;
 static uv_loop_t       *local_loop;
 static uv_udp_t         udp_server;
 static uv_timer_t       idle_timer;
-static uv_timer_t       tui_timer;
 static uv_tty_t         tty_input;
 
 /* ── libuv Callbacks (Wiring to Modules) ─────────────────────────────────── */
@@ -57,7 +56,7 @@ static void on_tty_read_key(uv_stream_t *stream, ssize_t nread, const uv_buf_t *
     if (buf->base) free(buf->base);
 }
 
-static void on_tick_idle(uv_timer_t *handle) {
+static void on_tick_maintenance(uv_timer_t *handle) {
     (void)handle;
     /* Cleanup inactive sessions */
     int timeout = g_server_cfg ? g_server_cfg->idle_timeout_sec : 300;
@@ -68,10 +67,8 @@ static void on_tick_idle(uv_timer_t *handle) {
         g_server_stats->tx_bytes_sec = 0;
         g_server_stats->rx_bytes_sec = 0;
     }
-}
-
-static void on_tick_tui(uv_timer_t *handle) {
-    (void)handle;
+    
+    /* Update TUI */
     if (g_server_tui) {
         /* Update swarm count for UI */
         if (g_server_stats) g_server_stats->active_resolvers = swarm_get_count();
@@ -126,12 +123,9 @@ int main(int argc, char *argv[]) {
     tui_init(g_server_tui, g_server_stats, &dummy_pool, g_server_cfg, "SERVER", config_path);
     g_server_tui->get_clients_cb = proxy_get_clients_cb;
 
-    /* 6. Setup Timers and Input */
-    uv_timer_init(local_loop, &idle_timer);
-    uv_timer_start(&idle_timer, on_tick_idle, 1000, 1000);
-    
-    uv_timer_init(local_loop, &tui_timer);
-    uv_timer_start(&tui_timer, on_tick_tui, 1000, 1000);
+     /* 6. Setup Timers and Input */
+     uv_timer_init(local_loop, &idle_timer);
+     uv_timer_start(&idle_timer, on_tick_maintenance, g_server_cfg->idle_timer_ms, g_server_cfg->idle_timer_ms);
 
     uv_tty_init(local_loop, &tty_input, 0, 1);
     uv_tty_set_mode(&tty_input, UV_TTY_MODE_RAW);

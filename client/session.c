@@ -14,8 +14,14 @@
 /* Global session table for the client */
 static session_t g_client_sessions[DNSTUN_MAX_SESSIONS];
 
+/* Active session tracking for optimized polling */
+static uint16_t g_active_sessions[DNSTUN_MAX_SESSIONS];
+static uint16_t g_active_session_count = 0;
+
 void session_table_init(void) {
     memset(g_client_sessions, 0, sizeof(g_client_sessions));
+    memset(g_active_sessions, 0, sizeof(g_active_sessions));
+    g_active_session_count = 0;
     for (int i = 0; i < DNSTUN_MAX_SESSIONS; i++) {
         g_client_sessions[i].closed = true;
     }
@@ -32,6 +38,11 @@ int session_alloc(void) {
             
             /* Initialize the modular reorder buffer */
             qns_reorder_init(&g_client_sessions[i].reorder_buf);
+            
+            /* Track active session */
+            if (g_active_session_count < DNSTUN_MAX_SESSIONS) {
+                g_active_sessions[g_active_session_count++] = i;
+            }
             
             if (g_client_stats) g_client_stats->active_sessions++;
             return i;
@@ -58,6 +69,18 @@ void session_close(int idx) {
     
     s->closed = true;
     s->established = false;
+    
+    /* Remove from active session tracking */
+    for (uint16_t i = 0; i < g_active_session_count; i++) {
+        if (g_active_sessions[i] == idx) {
+            // Shift remaining elements left
+            for (uint16_t j = i; j < g_active_session_count - 1; j++) {
+                g_active_sessions[j] = g_active_sessions[j + 1];
+            }
+            g_active_session_count--;
+            break;
+        }
+    }
     
     if (g_client_stats && g_client_stats->active_sessions > 0) {
         g_client_stats->active_sessions--;
@@ -99,4 +122,24 @@ void session_tick_idle(int timeout_sec) {
             session_close(i);
         }
     }
+}
+
+/**
+ * @brief Get the number of active sessions.
+ * @return Number of currently active sessions.
+ */
+int session_get_active_count(void) {
+    return g_active_session_count;
+}
+
+/**
+ * @brief Get the first active session index.
+ * @param start_idx Index to start searching from.
+ * @return Next active session index or -1 if none found.
+ */
+int session_get_next_active(int start_idx) {
+    if (start_idx < 0 || start_idx >= g_active_session_count) {
+        return -1;
+    }
+    return g_active_sessions[start_idx];
 }

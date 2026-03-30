@@ -18,5 +18,6 @@ void tui_render_config_view(tui_ctx_t *t, int x, int y, int width, int height);
 void tui_render_debug_view(tui_ctx_t *t, int x, int y, int width, int height);
 void tui_render_help_view(tui_ctx_t *t, int x, int y, int width, int height);
 void tui_render_proto_test_view(tui_ctx_t *t, int x, int y, int width, int height);
+void tui_render_log_panel(tui_ctx_t *t, int x, int y, int width, int height);
 
 #endif /* QNS_TUI_PANELS_H */

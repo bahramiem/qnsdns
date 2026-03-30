@@ -87,9 +87,15 @@ typedef struct dnstun_config {
     bool     chaffing;
     bool     chrome_cover;      /* Chrome DNS fingerprint traffic */
 
-    /* [ota] */
-    bool     ota_enabled;
-    int      ota_check_interval_sec;
+     /* [ota] */
+     bool     ota_enabled;
+     int      ota_check_interval_sec;
+
+     /* [timing] */
+     int      idle_timer_ms;        /* Server: session cleanup interval */
+     int      tui_update_ms;        /* TUI refresh interval */
+     int      agg_timer_ms;         /* Client: aggregation burst driver */
+     int      bg_timer_ms;          /* Client: background maintenance */
 
 } dnstun_config_t;
 

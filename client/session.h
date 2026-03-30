@@ -48,4 +48,17 @@ int session_find_by_wire_id(uint8_t wire_id);
  */
 void session_tick_idle(int timeout_sec);
 
+/**
+ * @brief Get the number of active sessions.
+ * @return Number of currently active sessions.
+ */
+int session_get_active_count(void);
+
+/**
+ * @brief Get the first active session index.
+ * @param start_idx Index to start searching from.
+ * @return Next active session index or -1 if none found.
+ */
+int session_get_next_active(int start_idx);
+
 #endif /* QNS_CLIENT_SESSION_H */

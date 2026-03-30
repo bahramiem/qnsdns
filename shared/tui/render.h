@@ -33,4 +33,11 @@ void tui_draw_hline(int x, int y, int width, const char *color);
 void tui_draw_vline(int x, int y, int height, const char *color);
 void tui_repeat_char(const char *c, int count);
 
+void tui_draw_progress_bar(int x, int y, int width, double percent, 
+                           const char *label, const char *value_str,
+                           const char *color_low, const char *color_mid, const char *color_high);
+
+void tui_draw_throughput_bar(int x, int y, int width, double kbps,
+                             const char *label, int is_upload);
+
 #endif /* QNS_TUI_RENDER_H */

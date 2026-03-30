@@ -86,13 +86,27 @@ void tui_handle_key(tui_ctx_t *t, int key) {
         case '@': if (t->panel == 3) tui_debug_set_level(t, 2); break;
         case '#': if (t->panel == 3) tui_debug_set_level(t, 3); break;
 
+        /* Scroll controls in debug view (Panel 4) */
+        case 'A': /* Up arrow */
+            if (t->panel == 3 && t->debug_scroll > 0) t->debug_scroll--;
+            break;
+        case 'B': /* Down arrow */
+            if (t->panel == 3) t->debug_scroll++;
+            break;
+
         /* Config Toggles (Panel 3) */
-        case 'd': if (t->panel == 2) config_set_key(c,"encryption","enabled", c->encryption ? "false":"true"); break;
-        case 'f': if (t->panel == 2) config_set_key(c,"obfuscation","jitter", c->jitter ? "false":"true"); break;
-        case 'g': if (t->panel == 2) config_set_key(c,"obfuscation","padding", c->padding ? "false":"true"); break;
-        case 'h': if (t->panel == 2) config_set_key(c,"obfuscation","chaffing", c->chaffing ? "false":"true"); break;
-        case 'i': if (t->panel == 2) config_set_key(c,"obfuscation","chrome_cover", c->chrome_cover ? "false":"true"); break;
-        case 'j': if (t->panel == 2) config_set_key(c,"domains","dns_flux", c->dns_flux ? "false":"true"); break;
+        case 'd': 
+        case 'D': if (t->panel == 2) config_set_key(c,"encryption","enabled", c->encryption ? "false":"true"); break;
+        case 'f': 
+        case 'F': if (t->panel == 2) config_set_key(c,"obfuscation","jitter", c->jitter ? "false":"true"); break;
+        case 'g': 
+        case 'G': if (t->panel == 2) config_set_key(c,"obfuscation","padding", c->padding ? "false":"true"); break;
+        case 'h': 
+        case 'H': if (t->panel == 2) config_set_key(c,"obfuscation","chaffing", c->chaffing ? "false":"true"); break;
+        case 'i': 
+        case 'I': if (t->panel == 2) config_set_key(c,"obfuscation","chrome_cover", c->chrome_cover ? "false":"true"); break;
+        case 'j': 
+        case 'J': if (t->panel == 2) config_set_key(c,"domains","dns_flux", c->dns_flux ? "false":"true"); break;
     }
     
     tui_render(t);
