@@ -132,7 +132,7 @@ void tui_init(tui_ctx_t *t, tui_stats_t *stats,
 
 void tui_shutdown(tui_ctx_t *t) {
     (void)t;
-    printf(ANSI_SHOW_CUR "\n");
+    printf(ANSI_SHOW_CUR ANSI_CLEAR);
     fflush(stdout);
 }
 
