@@ -519,7 +519,10 @@ static int build_txt_reply_with_seq(uint8_t *outbuf, size_t *outlen,
   /* [Fix] MTU Adjustment: Ensure the final Base64-encoded record
    * stays within the requested MTU limit (e.g. 220 characters).
    * Binary size = MTU * 3 / 4. */
-  size_t binary_mtu = (mtu * 3) / 4;
+  size_t overhead = 12 + strlen(qname) + 6 + 16 + 20;
+  size_t safe_txt_len = (mtu > overhead + 64) ? (mtu - overhead) : 64;
+  size_t max_packet_len = (safe_txt_len * 3) / 4;
+  size_t binary_mtu = max_packet_len > 4 ? max_packet_len - 4 : 0;
   if (data_len > binary_mtu)
     data_len = binary_mtu;
 
@@ -1331,9 +1334,14 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     mtu = 512;
 
   if (sess->upstream_len > 0) {
+    /* Calculate exact safe capacity to prevent data drop */
+    size_t overhead = 12 + strlen(qname) + 6 + 16 + 20;
+    size_t safe_txt_len = (mtu > overhead + 64) ? (mtu - overhead) : 64;
+    size_t max_packet_len = (safe_txt_len * 3) / 4;
+    size_t binary_mtu = max_packet_len > 4 ? max_packet_len - 4 : 0;
     size_t sz = sess->upstream_len;
-    if (sz > mtu)
-      sz = mtu;
+    if (sz > binary_mtu)
+      sz = binary_mtu;
 
     /* DEBUG: Log upstream data being sent */
     fprintf(stderr,
