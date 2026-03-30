@@ -24,8 +24,13 @@
 void socks5_server_init(uv_loop_t *loop, const char *bind_addr, int port);
 
 /**
- * @brief Shutdown SOCKS5 server.
+ * @brief Write received tunnel data to the TCP socket associated with a session.
+ * @param sidx Session index.
+ * @param data Data buffer.
+ * @param len Data length.
  */
+void socks5_write_to_session_client(int sidx, const uint8_t *data, size_t len);
+
 void socks5_server_shutdown(void);
 
 #endif /* QNS_CLIENT_SOCKS5_H */
