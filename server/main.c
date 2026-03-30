@@ -845,7 +845,7 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
       uint8_t reply[5120];
       size_t rlen = sizeof(reply);
       if (build_txt_reply_with_seq(reply, &rlen, query_id, qname, mtu_payload,
-                                   requested_mtu, 512, 0, 0) == 0) {
+                                   requested_mtu, 512, 0, 0, false) == 0) {
         send_udp_reply(src, reply, rlen);
       }
       return; /* MTU probe handled */
@@ -970,7 +970,7 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     uint8_t reply[512];
     size_t rlen = sizeof(reply);
     if (build_txt_reply_with_seq(reply, &rlen, query_id, qname, payload,
-                                 payload_len, 512, 0, session_id) == 0) {
+                                 payload_len, 512, 0, session_id, false) == 0) {
       send_udp_reply(src, reply, rlen);
     }
     return; /* Don't process further - no session setup or upstream forwarding
@@ -980,6 +980,31 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
   /* Session lookup / allocate by 4-bit session ID */
   int sidx = session_find_by_id(session_id);
   if (sidx < 0) {
+    /* [Fix] Zombie Session Protection:
+     * Check if this session ID was recently closed. If it was, and the current
+     * request is just a POLL, respond with CLOSED instead of creating a new
+     * session. This prevents delayed polls from resetting sequence numbers. */
+    if (is_poll && !is_handshake) {
+      for (int i = 0; i < SRV_MAX_SESSIONS; i++) {
+        if (g_sessions[i].zombie && g_sessions[i].session_id == session_id) {
+          time_t now = time(NULL);
+          if (now - g_sessions[i].closed_at < 10) { /* 10s window */
+            LOG_INFO("Session %d: Absorbing delayed poll for zombie session (sid=%u)\n", 
+                     i, session_id);
+            uint8_t reply[512];
+            size_t rlen = sizeof(reply);
+            if (build_txt_reply_with_seq(reply, &rlen, query_id, qname, NULL, 0, 
+                                         512, 0, session_id, true) == 0) {
+              send_udp_reply(src, reply, rlen);
+            }
+            return;
+          } else {
+            g_sessions[i].zombie = false; /* Expired */
+          }
+        }
+      }
+    }
+
     sidx = session_alloc_by_id(session_id);
     if (sidx < 0) {
       LOG_ERR("Session table full\n");
@@ -1385,7 +1410,7 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     if (build_txt_reply_with_seq(
             reply, &rlen, query_id, qname, (const uint8_t *)swarm_text, slen,
             sess->cl_downstream_mtu, swarm_seq,
-            sess->session_id) == 0) {
+            sess->session_id, sess->closing) == 0) {
       send_udp_reply(src, reply, rlen);
     }
     return;
@@ -1425,9 +1450,10 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
      * handshake (has_capability_header). Pre-handshake probe polls get seq=0
      * without consuming a slot so the MTU-handshake reply is always seq=0. */
     uint16_t out_seq = sess->handshake_done ? sess->downstream_seq++ : 0;
+    bool is_closed_packet = sess->closing && (sess->upstream_len == 0);
     if (build_txt_reply_with_seq(
             reply, &rlen, query_id, qname, sess->upstream_buf, sz, mtu,
-            out_seq, sess->session_id) == 0) {
+            out_seq, sess->session_id, is_closed_packet) == 0) {
       /* Save to retransmit slot BEFORE consuming from upstream_buf */
       if (sz <= sizeof(sess->retx_buf)) {
         memcpy(sess->retx_buf, sess->upstream_buf, sz);
@@ -1439,6 +1465,12 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
               sess->upstream_len - sz);
       sess->upstream_len -= sz;
       send_udp_reply(src, reply, rlen);
+      
+      /* [Fix] Fully close session if it was in closing state and we just sent the last bytes */
+      if (is_closed_packet) {
+        LOG_INFO("Session %d: final closing packet sent, destroying session\n", sidx);
+        session_close(sidx);
+      }
     }
   } else if (sess->retx_len > 0) {
     /* upstream_buf is empty but we have a retransmit slot — the previous
@@ -1451,15 +1483,22 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
             sess->retx_seq, sess->retx_len);
     if (build_txt_reply_with_seq(
             reply, &rlen, query_id, qname, sess->retx_buf, sess->retx_len,
-            mtu, sess->retx_seq, sess->session_id) == 0) {
+            mtu, sess->retx_seq, sess->session_id, sess->closing) == 0) {
       send_udp_reply(src, reply, rlen);
     }
   } else {
     /* Empty reply — acknowledge the query with NO payload */
     uint16_t out_seq = sess->handshake_done ? sess->downstream_seq++ : 0;
     if (build_txt_reply_with_seq(reply, &rlen, query_id, qname, NULL, 0, mtu,
-                                 out_seq, sess->session_id) == 0)
+                                 out_seq, sess->session_id, sess->closing) == 0) {
       send_udp_reply(src, reply, rlen);
+      
+      /* [Fix] Fully close session if it was in closing state and we just sent the final empty poll response */
+      if (sess->closing) {
+        LOG_INFO("Session %d: final empty closing packet sent, destroying session\n", sidx);
+        session_close(sidx);
+      }
+    }
   }
 }
 
@@ -1471,6 +1510,9 @@ static void on_idle_timer(uv_timer_t *t) {
   time_t now = time(NULL);
   for (int i = 0; i < SRV_MAX_SESSIONS; i++) {
     srv_session_t *s = &g_sessions[i];
+    if (s->zombie && (now - s->closed_at > 10)) {
+      s->zombie = false;
+    }
     if (!s->used)
       continue;
     if (now - s->last_active > g_cfg.idle_timeout_sec) {

@@ -2616,6 +2616,17 @@ static void on_dns_recv(uv_udp_t *h,
                                         payload = decoded + sizeof(hdr);
                                         payload_len = (size_t)(decoded_len - sizeof(hdr));
                                     }
+
+                                    if (hdr.flags & RESP_FLAG_CLOSED) {
+                                        LOG_INFO("Session %d: server indicated session closed (FIN received)\n", sidx);
+                                        s->closed = true;
+                                        if (s->client_ptr) {
+                                            socks5_client_t *c = (socks5_client_t*)s->client_ptr;
+                                            if (!uv_is_closing((uv_handle_t*)&c->tcp)) {
+                                                uv_close((uv_handle_t*)&c->tcp, on_socks5_close);
+                                            }
+                                        }
+                                    }
                                 }
 
                                 /* Check for ACK byte in payload */
