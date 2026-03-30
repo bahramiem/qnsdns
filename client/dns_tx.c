@@ -22,25 +22,25 @@ void dns_tx_send_raw(const uint8_t *buf, size_t len);
 /*  Utility Functions                             */
 /* ────────────────────────────────────────────── */
 
-/* Dotify function from slipstream - inserts dots every 57 chars */
+/* Dotify function from slipstream - inserts dots every 63 chars (DNS label limit) */
 static size_t inline_dotify(char *buf, size_t buflen, size_t len) {
     if (len == 0) {
         if (buflen > 0) buf[0] = '\0';
         return 0;
     }
-    size_t dots = len / 57;
+    size_t dots = len / 63;
     size_t new_len = len + dots;
     if (new_len + 1 > buflen) return (size_t)-1;
     buf[new_len] = '\0';
     char *src = buf + len - 1;
     char *dst = buf + new_len - 1;
-    size_t next_dot = len - (len % 57);
-    if (next_dot == len) next_dot = len - 57;
+    size_t next_dot = len - (len % 63);
+    if (next_dot == len) next_dot = len - 63;
     size_t current_pos = len;
     while (current_pos > 0) {
         if (current_pos == next_dot && dots > 0) {
             *dst-- = '.';
-            next_dot -= 57;
+            next_dot -= 63;
             current_pos--;
             dots--;
             continue;
@@ -139,9 +139,9 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                 const char *txt = dns->answers[i].txt.text;
                 if (!txt) continue;
 
-                /* 2. Base32 Decode Tunnel Payload */
+                /* 2. Base64 Decode Tunnel Payload (Standard for tunnel efficiency) */
                 uint8_t raw[1024];
-                ssize_t rawlen = base32_decode(raw, txt, strlen(txt));
+                ssize_t rawlen = base64_decode(raw, txt, strlen(txt));
                 if (rawlen >= (ssize_t)sizeof(server_response_header_t)) {
                     server_response_header_t *hdr = (server_response_header_t *)raw;
                     uint8_t sid = hdr->session_id;
@@ -286,7 +286,7 @@ static void on_proto_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
             for (int i = 0; i < dns->ancount; i++) {
                 if (dns->answers[i].generic.type == RR_TXT) {
                     uint8_t raw[512];
-                    ssize_t rawlen = base32_decode(raw, dns->answers[i].txt.text, strlen(dns->answers[i].txt.text));
+                    ssize_t rawlen = base64_decode(raw, dns->answers[i].txt.text, strlen(dns->answers[i].txt.text));
                     if (rawlen >= (ssize_t)sizeof(server_response_header_t)) {
                         server_response_header_t *hdr = (server_response_header_t *)raw;
                         if (hdr->session_id == 255) {

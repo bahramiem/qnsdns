@@ -52,10 +52,10 @@ static void send_udp_reply_direct(uv_udp_t *h, const struct sockaddr_in *dest,
 }
 
 /**
- * @brief Encode downstream data using Base32 (DNS compatible).
+ * @brief Encode downstream data using Base64 (Standard for tunnel efficiency).
  */
 static size_t encode_payload(char *out, const uint8_t *in, size_t inlen) {
-    return base32_encode(out, in, inlen);
+    return base64_encode(out, in, inlen);
 }
 
 static int build_txt_reply(uint8_t *out, size_t *outlen, uint16_t qid, const char *qname,
@@ -72,7 +72,7 @@ static int build_txt_reply(uint8_t *out, size_t *outlen, uint16_t qid, const cha
     /* Build Tunnel Header */
     server_response_header_t hdr = {0};
     hdr.session_id = sid;
-    hdr.flags = 0x01; /* Base32 encoding */
+    hdr.flags = 0x00; /* Base64 encoding (Density 3:4) */
     if (has_seq) hdr.flags |= RESP_FLAG_HAS_SEQ;
     hdr.seq = seq;
 
@@ -153,17 +153,33 @@ void dns_handler_on_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     char *tok = strtok(tmp_qname, ".");
     while (tok && pcount < 16) { parts[pcount++] = tok; tok = strtok(NULL, "."); }
 
-    /* Identify Domain Suffix (Restored from stable version) */
-    int dparts = 2; /* Default */
+    /* Identify Domain Suffix (Dynamic matching to correctly extract payload) */
+    int dparts = 0;
     if (g_server_cfg && g_server_cfg->domain_count > 0) {
-        const char *domain = g_server_cfg->domains[0];
-        char dtmp[256]; strncpy(dtmp, domain, sizeof(dtmp)-1);
-        char *dtok = strtok(dtmp, ".");
-        int cur_d = 0;
-        while (dtok) { cur_d++; dtok = strtok(NULL, "."); }
-        if (cur_d > 0) dparts = cur_d;
+        for (int d = 0; d < g_server_cfg->domain_count; d++) {
+            const char *domain = g_server_cfg->domains[d];
+            char dtmp[256]; strncpy(dtmp, domain, sizeof(dtmp)-1);
+            char *dparts_list[8]; int dcount = 0;
+            char *dtok = strtok(dtmp, ".");
+            while (dtok && dcount < 8) { dparts_list[dcount++] = dtok; dtok = strtok(NULL, "."); }
+            
+            if (pcount >= dcount) {
+                bool match = true;
+                for (int j = 0; j < dcount; j++) {
+#ifdef _WIN32
+                    if (_stricmp(parts[pcount - dcount + j], dparts_list[j]) != 0) {
+#else
+                    if (strcasecmp(parts[pcount - dcount + j], dparts_list[j]) != 0) {
+#endif
+                        match = false; break;
+                    }
+                }
+                if (match) { dparts = dcount; break; }
+            }
+        }
     }
     
+    if (dparts == 0) dparts = 2; /* Fallback to standard 2-part domain suffix */
     int payload_labels = pcount - dparts;
     if (payload_labels < 1) return;
 
