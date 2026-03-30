@@ -3339,7 +3339,7 @@ static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
       uv_timer_init(g_loop, &jc->timer);
       jc->timer.data = jc;
       uv_timer_start(&jc->timer, on_jitter_timer, delay_ms, 0);
-      return 0; /* send will happen in the timer callback */
+      return; /* send will happen in the timer callback */
     }
   }
 
@@ -3355,7 +3355,7 @@ static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
   } else {
     g_stats.queries_sent++;
   }
-  return 0;
+  return;
 }
 
 /* ────────────────────────────────────────────── */

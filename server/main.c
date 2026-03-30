@@ -443,7 +443,7 @@ static void session_send_status(int sidx, uint8_t status) {
    * sequence gaps in the client's reorder buffer. */
   capability_header_t cap = {0};
   cap.version = DNSTUN_VERSION;
-  cap.upstream_mtu = g_cfg.upstream_mtu;
+  cap.upstream_mtu = g_cfg.max_download_mtu;  /* Server's upstream is client's downstream */
   cap.downstream_mtu = g_cfg.downstream_mtu;
   cap.encoding = 0; /* base64 */
   cap.loss_pct = (uint8_t)(sess->cl_loss_pct * 100.0);
