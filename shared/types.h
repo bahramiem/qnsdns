@@ -334,8 +334,14 @@ static inline uint8_t chunk_get_fec_k(uint32_t chunk_info) {
     return (uint8_t)((chunk_info >> 8) & 0xFF);
 }
 
-static inline void chunk_set_info(uint32_t *ci, uint8_t total, uint8_t k) {
-    *ci = (((uint32_t)(total - 1) & 0xFFFF) << 16) | (((uint32_t)k & 0xFF) << 8);
+/**
+ * @brief Set chunk info bits (total symbols and redundancy count)
+ * @param ci Pointer to 32-bit chunk_info
+ * @param total Total symbols in burst (K+R)
+ * @param r Redundancy symbols in burst (R)
+ */
+static inline void chunk_set_info(uint32_t *ci, uint8_t total, uint8_t r) {
+    *ci = (((uint32_t)(total - 1) & 0xFFFF) << 16) | (((uint32_t)r & 0xFF) << 8);
 }
 
 static inline uint8_t resp_get_encoding(uint8_t flags) {
@@ -361,8 +367,8 @@ typedef struct {
    Packet Aggregation - pack multiple symbols into one packet
    This maximizes payload utilization per transmission
 ────────────────────────────────────────────── */
-#define DNSTUN_SYMBOL_SIZE       64   /* Optimal rateless symbol size (bytes) */
-#define DNSTUN_MAX_SYMBOLS_PER_PACKET 16  /* Maximum symbols to aggregate */
+#define DNSTUN_SYMBOL_SIZE       110  /* Optimal rateless symbol size (matches legacy) */
+#define DNSTUN_MAX_SYMBOLS_PER_PACKET 1
 
 /* Aggregated packet - contains multiple symbols for one transmission */
 typedef struct {
