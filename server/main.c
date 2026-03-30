@@ -61,7 +61,7 @@ static int build_txt_reply_with_seq(uint8_t *outbuf, size_t *outlen,
                                     uint16_t query_id, const char *qname,
                                     const uint8_t *data, size_t data_len,
                                     uint16_t mtu, uint16_t seq,
-                                    uint8_t session_id);
+                                    uint8_t session_id, bool is_closed);
 static void send_udp_reply(const struct sockaddr_in *dest, const uint8_t *data,
                            size_t len);
 
