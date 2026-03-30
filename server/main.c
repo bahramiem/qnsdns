@@ -1010,7 +1010,27 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
      * (e.g., multiple curl requests), the second request's status will never
      * be sent because status_sent was set to true by the first request. */
     sess->status_sent = false;
-    LOG_INFO("Session %d: downstream_seq reset to 0 on handshake, handshake_done=true, status_sent=false\n", sidx);
+    /* CRITICAL FIX: Clear stale retransmit state when a new connection reuses
+     * this session slot.  If the previous upstream TCP is still open (race
+     * between google.com's FIN and the client's new handshake), retx_buf still
+     * holds the previous response's last chunk.  Without this reset the server
+     * retransmits retx_seq=16 (or whatever the previous last seq was) in reply
+     * to every FEC-chunk query of the new connection, keeping downstream_seq
+     * frozen at 0 while sending the client stale data.  The client's reorder
+     * buffer fills with the stale seq=16 slot before any real seq=0 arrives,
+     * and although the first_seq_received guard clears it on seq=0, the
+     * downstream_seq stays at 0 only by coincidence.  Clearing retx_len here
+     * forces the server to fall through to the "empty reply" path
+     * (downstream_seq++) for every incoming query until upstream data is
+     * available, which gives the client a clean seq=0..N-1 empty-poll stream
+     * followed by seq=N with the SOCKS5 status byte — exactly matching the
+     * first connection's behaviour. */
+    sess->retx_len = 0;
+    sess->retx_seq = 0;
+    /* Also discard any buffered upstream data left from the previous connection
+     * so it is not forwarded to the new curl request. */
+    sess->upstream_len = 0;
+    LOG_INFO("Session %d: downstream_seq reset to 0 on handshake, handshake_done=true, status_sent=false, retx cleared\n", sidx);
   }
 
   /* ── Handle FEC Burst Reassembly ──────────────────────────────────── */
