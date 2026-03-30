@@ -2318,6 +2318,17 @@ static size_t socks5_handle_data(socks5_client_t *c,
         /* Send MTU handshake to server before sending actual data */
         send_mtu_handshake(session_idx);
 
+        /* CRITICAL FIX: Clear the reorder buffer after sending the handshake.
+         * This discards any stale responses from previous requests that might
+         * still be arriving via DNS. Without this, old responses (e.g., seq=16
+         * from a previous request) can fill buffer slots 0-16, preventing new
+         * responses from being buffered and causing the handshake to never complete.
+         * The handshake response will be buffered when it arrives (seq=0 is within
+         * the reorder window from expected_seq=0). */
+        LOG_DEBUG("Clearing reorder buffer before data transfer (session=%d)\n", session_idx);
+        reorder_buffer_free(&sess->reorder_buf);
+        sess->reorder_buf.expected_seq = 0;
+
         /* Queue the CONNECT request to be sent to the server.
          * The server needs this to parse the target and establish upstream connection. */
         if (min_len > 0) {
