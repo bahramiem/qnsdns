@@ -91,7 +91,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "[WARN] Could not load %s, using defaults.\n", config_path);
     }
 
-    qns_log_init("qnsdns_server.log", (log_level_t)g_server_cfg->log_level);
+    qns_log_init("qnsdns_server.txt", (log_level_t)g_server_cfg->log_level);
     LOG_INFO("=== Starting DNS Tunnel Server ===\n");
 
     local_loop = uv_default_loop();

@@ -134,7 +134,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    qns_log_init("qnsdns_client.log", (log_level_t)g_client_cfg->log_level);
+    qns_log_init("qnsdns_client.txt", (log_level_t)g_client_cfg->log_level);
     LOG_INFO("=== Starting DNS Tunnel Client ===\n");
     
     g_pool = &local_pool;
