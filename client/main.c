@@ -2409,7 +2409,20 @@ static void on_socks5_read(uv_stream_t *s, ssize_t nread, const uv_buf_t *buf) {
         return;
     }
 
-    if (nread == 0) return; /* EAGAIN or similar, ignore */
+    if (nread == 0) {
+        /* EOF from curl (the SOCKS5 client closed its connection).
+         * In tunnel state, this means curl is done sending — close the tunnel
+         * so the client sends fresh DNS queries for any subsequent requests.
+         * Without this, the client stays in tunnel state waiting for DNS replies
+         * that never arrive (google.com already closed), creating a deadlock where
+         * the client keeps polling with stale sequence numbers while the server
+         * has moved on to a new request. */
+        if (c->state == 2 && !uv_is_closing((uv_handle_t*)s)) {
+            LOG_INFO("[SOCKS5] EOF from curl in tunnel state — closing tunnel\n");
+            uv_close((uv_handle_t*)s, on_socks5_close);
+        }
+        return;
+    }
 
     LOG_INFO("[SOCKS5] Read Callback: state=%d, nread=%zd\n", c->state, nread);
 

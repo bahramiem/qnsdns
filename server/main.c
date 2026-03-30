@@ -362,12 +362,33 @@ static void on_upstream_read(uv_stream_t *s, ssize_t nread,
      *      to send responses without has_seq, leading the client's fallback
      *      path to forward the raw SOCKS5 status byte directly to curl and
      *      produce "HTTP/0.9 when not allowed").
-     * Just tear down the upstream TCP handle and mark tcp_connected=false so
-     * the FEC decode for the next request can safely call uv_tcp_init again. */
-    if (sess->tcp_connected &&
-        !uv_is_closing((uv_handle_t *)&sess->upstream_tcp))
-      uv_close((uv_handle_t *)&sess->upstream_tcp, NULL);
-    sess->tcp_connected = false;
+     *
+     * Additionally, queue a SOCKS5 failure reply into upstream_buf BEFORE closing
+     * the TCP handle.  When the client polls, it receives this byte and forwards
+     * it to curl.  curl sees a SOCKS5 error and closes the SOCKS5 connection,
+     * which propagates to the client's tunnel state.  Without this, curl never
+     * closes and the client stays in tunnel state waiting for DNS replies that
+     * never come (creating the buffer-deadlock where the client reuses the same
+     * session slot for a second curl request while still polling with the old
+     * sequence numbers, causing the server to send replies at wrong seq values
+     * that the client's reorder buffer can't flush). */
+    if (sess->tcp_connected) {
+      /* SOCKS5 reply: VER=0x05, REP=0x01 (general failure), RSV=0, ATYP=0x01,
+       * BND.ADDR=0.0.0.0, BND.PORT=0 — tells curl the connection failed */
+      uint8_t socks5_fail[10] = {0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0};
+      size_t new_len = sess->upstream_len + sizeof(socks5_fail);
+      uint8_t *new_buf = realloc(sess->upstream_buf, new_len);
+      if (new_buf) {
+        sess->upstream_buf = new_buf;
+        memmove(sess->upstream_buf + sizeof(socks5_fail), sess->upstream_buf,
+                sess->upstream_len);
+        memcpy(sess->upstream_buf, socks5_fail, sizeof(socks5_fail));
+        sess->upstream_len = new_len;
+      }
+      if (!uv_is_closing((uv_handle_t *)&sess->upstream_tcp))
+        uv_close((uv_handle_t *)&sess->upstream_tcp, NULL);
+      sess->tcp_connected = false;
+    }
     return;
   }
 

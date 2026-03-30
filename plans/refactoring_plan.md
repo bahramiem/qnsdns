@@ -75,6 +75,13 @@ shared/
     log.c             (debug log buffer)
     log.h
     ansi.h            (ANSI escape codes - extracted from tui.c)
+  fec/
+    core.h            (fec_encode, fec_decode abstract interface)
+    raptorq.c         (RaptorQ implementation)
+    reedsolomon.c     (Future Reed-Solomon implementation)
+  window/
+    sliding.c         (Sliding window tracking, sequence management)
+    sliding.h
 ```
 
 ## Architecture Diagram
@@ -115,6 +122,8 @@ graph TD
         Sh_Codec["codec.c/h"]
         Sh_Base32["base32.c/h"]
         Sh_Mgmt["mgmt.c/h"]
+        Sh_FEC["fec/<br/>core.h<br/>raptorq.c"]
+        Sh_Window["window/<br/>sliding.c/h"]
     end
 
     SM --> S_Session
@@ -137,13 +146,18 @@ graph TD
     T_Input --> T_Core
 
     S_Session --> Sh_Resolver
+    S_Session --> Sh_Window
     S_Swarm --> Sh_Resolver
     C_Session --> Sh_Resolver
+    C_Session --> Sh_Window
     C_Resolver --> Sh_Resolver
 
     S_DNS --> Sh_Codec
+    S_DNS --> Sh_FEC
     C_DNS --> Sh_Codec
     C_Agg --> Sh_Codec
+    C_DNS --> Sh_FEC
+    C_Agg --> Sh_FEC
 
     C_DNS --> Sh_Base32
 
@@ -156,6 +170,13 @@ graph TD
 ```
 
 ## Module Responsibilities
+
+### UI Decoupling (Future-Proofing for Windows/Android)
+
+To make it easy to replace the TUI with a native Android or Windows GUI in the future:
+1. **Headless Core**: The networking core (`session`, `dns`, `socks5`, etc.) must NEVER include UI headers or call screen-drawing functions directly.
+2. **State Context**: The core logic should ONLY update numerical statistics and string states inside a centralized struct (e.g., `app_context_t`).
+3. **Swappable Interface**: The `tui` module acts as a "View" layer that reads from the `app_context_t` struct on a timer and renders it to the screen. To port to Android, the `tui` folder is simply excluded from the Android build, leaving the core intact.
 
 ### Server Modules
 
@@ -189,6 +210,19 @@ graph TD
 | `core.h` | Common TUI types (moved from tui.h) |
 | `ansi.h` | ANSI escape codes (extracted constants) |
 
+### Shared FEC Modules (Replaceable Error Correction)
+
+To support multiple Forward Error Correction algorithms (e.g., RaptorQ, Reed-Solomon):
+1. **Abstract Interface**: `shared/fec/core.h` defines generic functions (`fec_encoder_init`, `fec_encode`, `fec_decode`).
+2. **Pluggable Backends**: Implementations like `raptorq.c` and `reedsolomon.c` export structs conforming to the abstract interface.
+3. **No Hardcoding**: `server/dns/protocol.c` and `client/aggregation/packet.c` use the generic `fec_*` functions instead of calling RaptorQ directly.
+
+### Shared Windowing & Flow Control
+
+To ensure sequence tracking, reorder buffering, and sliding windows are unified between client and server:
+1. **`sliding.c`**: Manages sliding window limits, ACK tracking, and sequence verification.
+2. **`session` Abstraction**: `client/session/session.c` and `server/session/session.c` will no longer reinvent reorder buffers, instead they will initialize a `window_t` struct and push/pull packets from it.
+
 ## File Size Targets
 
 | File | Current | Target |
@@ -209,6 +243,7 @@ graph TD
 | `client/debug/packet.c` | - | ~8KB |
 | `shared/tui.c` | 45KB | Removed (split into modules) |
 | `shared/tui/*.c` | - | ~10KB each |
+| `shared/window/sliding.c` | - | ~10KB |
 
 ## Dependency Flow
 
@@ -247,18 +282,43 @@ The `CMakeLists.txt` will need updates to:
 
 ## Migration Strategy
 
-1. **Phase 1**: Create directory structure
-2. **Phase 2**: Extract server modules (session → swarm → dns → tui)
-3. **Phase 3**: Extract client modules (socks5 → dns → session → resolver → aggregation → debug → tui)
-4. **Phase 4**: Extract shared/tui modules
-5. **Phase 5**: Update CMakeLists.txt
-6. **Phase 6**: Compile and fix issues
+To ensure system stability, this refactoring must be incremental. The build must succeed and tests must pass after each phase.
+
+1. **Phase 1: Foundation & Shared UI** 
+   - Create directory structure.
+   - Refactor `shared/tui.c` into `shared/tui/` modules.
+   - Update `CMakeLists.txt` for the shared changes.
+   - **Verification**: Compile and run to ensure the UI still renders correctly.
+
+2. **Phase 2: Server Refactoring**
+   - Extract server modules iteratively: `session` → `swarm` → `dns` → `tui`.
+   - Update `CMakeLists.txt` for server changes.
+   - **Verification**: Compile server and verify SOCKS5 handshake and proxy functions work.
+
+3. **Phase 3: Client Refactoring**
+   - Extract client modules iteratively: `socks5` → `dns` → `session` → `resolver` → `aggregation` → `debug` → `tui`.
+   - Update `CMakeLists.txt` for client changes.
+   - **Verification**: Compile client and run end-to-end tunnel tests.
+
+4. **Phase 4: Final Polish**
+   - Remove dead code and legacy structs.
+   - Resolve any cyclic dependencies.
+   - Final end-to-end load testing to ensure no performance regressions.
+
+## Code Documentation Standards (Junior-Friendly)
+
+To ensure this project is accessible and understandable to junior programmers:
+1. **Top-of-File Examples**: Every single `.c` and `.h` file MUST start with a block comment explaining what the file does, why it exists, and a simple pseudo-code **example** of how to use its main functions.
+2. **Human-Readable Comments**: Avoid overly terse or strictly academic language. Explain *why* the code is doing something, not just *what* it is doing, especially for bitwise operations or complex network flows like FEC or sliding windows.
+3. **Clear Naming Conventions**: Do not abbreviate variables unnecessarily (e.g., use `connection_timeout` instead of `cto`).
+4. **Step-by-Step Logic**: For complex functions, break the logic into numbered steps inside the comments (e.g., `// 1. Verify connection status`).
 
 ## Notes for AI Agents
 
-- Each module should have a clear, single responsibility
-- Use forward declarations in headers to minimize includes
-- Keep global state minimal; prefer passing context pointers
-- Maintain existing function signatures to minimize changes
-- Add module-level documentation headers
-- Ensure thread safety is preserved during extraction
+- **Incremental Commits**: Commit or verify after each logical module extraction. Do not attempt to refactor the entire client or server in a single step.
+- **Single Responsibility**: Each module should have a clear, single responsibility.
+- **Headers & Includes**: Use forward declarations in headers to minimize includes. Avoid circular dependencies.
+- **Global State**: Keep global state minimal; prefer passing context pointers (like `app_context_t`) to functions.
+- **Signatures**: Maintain existing function signatures to minimize changes across the codebase.
+- **Documentation**: Add module-level documentation Doxygen-style headers to new files, strictly adhering to the "Junior-Friendly" standards outlined above.
+- **Parallel Safety**: Ensure thread safety and mutex locks are preserved verbatim during extraction. Watch out for global variables moved to static module variables.
