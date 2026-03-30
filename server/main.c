@@ -482,6 +482,20 @@ static void on_upstream_resolve(uv_getaddrinfo_t *resolver, int status,
   int sidx = cr->session_idx;
   srv_session_t *sess = &g_sessions[sidx];
 
+  /* CRITICAL: Check if session was reused by a newer request while this
+   * DNS resolution was pending. If tcp_connected is already true, it means
+   * another request reused this session slot and set up a new TCP connection.
+   * The old pending request must NOT overwrite the new TCP handle. */
+  if (sess->tcp_connected) {
+    LOG_DEBUG("Session %d: stale DNS resolution callback (session reused), ignoring\n", sidx);
+    free(cr->payload);
+    free(cr);
+    free(resolver);
+    if (res)
+      uv_freeaddrinfo(res);
+    return;
+  }
+
   if (status != 0 || res == NULL) {
     LOG_ERR("DNS resolution failed for session %d (%s:%d): %s\n", sidx,
             cr->target_host, cr->target_port, uv_strerror(status));
@@ -545,6 +559,17 @@ static void on_upstream_connect(uv_connect_t *req, int status) {
     return;
   }
   LOG_INFO("Upstream connected for session %d\n", sidx);
+
+  /* CRITICAL: Check if session was reused by a newer request while this
+   * DNS/TCP resolution was pending. If tcp_connected is already true but
+   * we got here, it means another request reused this session slot.
+   * The old pending request must NOT touch the TCP handle. */
+  if (sess->tcp_connected) {
+    LOG_DEBUG("Session %d: stale upstream connect callback (session reused), ignoring\n", sidx);
+    free(cr->payload);
+    free(cr);
+    return;
+  }
 
   sess->tcp_connected = true;
   static int sidx_store[SRV_MAX_SESSIONS];
