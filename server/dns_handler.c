@@ -8,6 +8,7 @@
 #include "swarm.h"
 #include "server_common.h"
 #include "../shared/base32.h"
+#include "../shared/codec.h"
 #include "../shared/types.h"
 #include "../SPCDNS/dns.h"
 #include <stdio.h>

@@ -15,7 +15,7 @@
 #include <stdlib.h>
 
 /* Internal forward declarations */
-static void dns_tx_send_raw(const uint8_t *buf, size_t len);
+void dns_tx_send_raw(const uint8_t *buf, size_t len);
 
 /* ────────────────────────────────────────────── */
 /*  Utility Functions                             */
