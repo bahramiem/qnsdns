@@ -131,6 +131,9 @@ typedef struct srv_session {
   uint16_t downstream_seq; /* Next seq to assign for downstream packets */
 
   bool status_sent;
+  bool closing;            /* true if upstream connection closed (EOF) */
+  bool zombie;             /* true if session was fully closed but kept as zombie */
+  time_t closed_at;        /* timestamp when session was marked as zombie */
   time_t last_active;
 
   /* Retransmit slot: last sent downstream data, resent on every poll until
@@ -261,8 +264,15 @@ static void session_close(int idx) {
   srv_session_t *s = &g_sessions[idx];
   if (!s->used)
     return;
+  
+  LOG_INFO("Session %d: closing (zombie state)\n", idx);
+  
   if (s->tcp_connected && !uv_is_closing((uv_handle_t *)&s->upstream_tcp))
     uv_close((uv_handle_t *)&s->upstream_tcp, NULL);
+  
+  /* [Fix] Move buffer freeing to a more final step if we want to support 
+   * retransmissions during zombie state, but for now we clear to save memory.
+   * The zombie state mainly serves to prevent sequence resets on late polls. */
   free(s->upstream_buf);
   s->upstream_buf = NULL;
 
@@ -270,9 +280,13 @@ static void session_close(int idx) {
     for (int i = 0; i < s->burst_count_needed; i++)
       free(s->burst_symbols[i]);
     free(s->burst_symbols);
+    s->burst_symbols = NULL;
   }
 
   s->used = false;
+  s->zombie = true;
+  s->closed_at = time(NULL);
+  
   if (g_stats.active_sessions > 0)
     g_stats.active_sessions--;
 }
@@ -351,7 +365,10 @@ static void on_upstream_read(uv_stream_t *s, ssize_t nread,
 
   if (nread <= 0) {
     free(buf->base);
-    session_close(sidx);
+    /* [Fix] Graceful closure: don't close immediately. 
+     * Set closing flag and let the main loop close it once upstream_len == 0. */
+    sess->closing = true;
+    LOG_INFO("Session %d: upstream EOF received, entering closing state\n", sidx);
     return;
   }
 
@@ -549,7 +566,7 @@ static int build_txt_reply_with_seq(uint8_t *outbuf, size_t *outlen,
                                     uint16_t query_id, const char *qname,
                                     const uint8_t *data, size_t data_len,
                                     uint16_t mtu, uint16_t seq,
-                                    uint8_t session_id) {
+                                    uint8_t session_id, bool is_closed) {
   /* [Fix] MTU Adjustment: Ensure the final Base64-encoded record
    * stays within the requested MTU limit (e.g. 220 characters).
    * Binary size = MTU * 3 / 4. */
@@ -565,6 +582,7 @@ static int build_txt_reply_with_seq(uint8_t *outbuf, size_t *outlen,
   hdr.session_id = session_id;
   hdr.flags = 0;                  /* base64 encoding (default) */
   hdr.flags |= RESP_FLAG_HAS_SEQ; /* Mark as sequenced */
+  if (is_closed) hdr.flags |= RESP_FLAG_CLOSED;
   hdr.seq = seq;
 
   /* Build packet: header + payload */

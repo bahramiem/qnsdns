@@ -173,7 +173,8 @@ typedef struct {
     uint8_t  session_id;     /* 8-bit session ID (0-255) */
     uint8_t  flags;          /* bit 0: encoding_type (0=base64, 1=hex)
                               * bit 1: has_sequence (1 = seq field is valid)
-                              * bits 2-7: reserved */
+                              * bit 2: session_closed (1 = server closed session)
+                              * bits 3-7: reserved */
     uint16_t seq;            /* sequence number (2 bytes) */
 } server_response_header_t;   /* Total: 4 bytes */
 #pragma pack(pop)
@@ -181,6 +182,7 @@ typedef struct {
 /* Flag bit masks for server_response_header_t */
 #define RESP_ENC_MASK        0x01  /* 0=base64, 1=hex */
 #define RESP_FLAG_HAS_SEQ    0x02  /* 1 = seq field is valid (downstream sequencing) */
+#define RESP_FLAG_CLOSED     0x04  /* 1 = server closed session */
 
 /* ──────────────────────────────────────────────
    Downstream Reordering Buffer
