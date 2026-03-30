@@ -68,25 +68,48 @@ static void on_tick_agg(uv_timer_t *handle) {
     agg_tick_bursts();
 }
 
+static void sync_stats_from_modules(void) {
+    if (!g_client_stats || !g_pool) return;
+    
+    /* 1. Sync Resolver Counts */
+    uv_mutex_lock(&g_pool->lock);
+    g_client_stats->active_resolvers = g_pool->active_count;
+    g_client_stats->dead_resolvers = g_pool->dead_count;
+    
+    /* Calculate Penalty count from the pool->resolvers state */
+    int penalty = 0;
+    for (int i = 0; i < g_pool->count; i++) {
+        if (g_pool->resolvers[i].state == RSV_PENALTY) penalty++;
+    }
+    g_client_stats->penalty_resolvers = penalty;
+    uv_mutex_unlock(&g_pool->lock);
+    
+    /* 2. Sync Session Counts */
+    g_client_stats->active_sessions = session_get_active_count();
+}
+
 static void on_tick_maintenance(uv_timer_t *handle) {
     (void)handle;
     
-    /* 2. Resolver Management: MTU / Recovery / Penalty */
+    /* 1. Resolver Management: MTU / Recovery / Penalty */
     resolver_tick_bg();
     
-    /* 3. Session Management: Idle cleanup */
+    /* 2. Session Management: Idle cleanup */
     int idle_timeout = g_client_cfg ? g_client_cfg->idle_timeout_sec : 300;
     session_tick_idle(idle_timeout);
     
-    /* 4. Reset rate counters */
-    if (g_client_stats) {
-        g_client_stats->tx_bytes_sec = 0;
-        g_client_stats->rx_bytes_sec = 0;
-    }
+    /* 3. Sync stats from all modules into TUI stats */
+    sync_stats_from_modules();
+    
+    /* 4. Reset rate counters (or handle accumulation if needed) */
+    /* ... (bytes_sec are normally set by tx/rx paths, here we just show they are active) ... */
     
     /* 5. Update TUI */
     if (g_client_tui) {
         tui_render(g_client_tui);
+        /* Clear byte counters after each TUI render to show instantaneous rate */
+        g_client_stats->tx_bytes_sec = 0;
+        g_client_stats->rx_bytes_sec = 0;
     }
 }
 
@@ -132,22 +155,22 @@ int main(int argc, char *argv[]) {
     tui_init(g_client_tui, g_client_stats, g_pool, g_client_cfg, "CLIENT", config_path);
     g_client_tui->get_clients_cb = proxy_get_clients_cb;
 
-    /* 6. Run Resolver Discovery (Init Phase) */
-    /* This will run a sub-loop for a few seconds to find working paths */
-    resolver_run_init_phase();
+    /* 6. Setup Background Timers (Early Start for responsiveness) */
+    uv_timer_init(g_client_loop, &poll_timer);
+    
+    int poll_int = g_client_cfg ? g_client_cfg->poll_interval_ms : 100;
+    if (poll_int < 10) poll_int = 100;
+    uv_timer_start(&poll_timer, on_tick_poll, poll_int, poll_int); /* High frequency poll */
+    
+    uv_timer_init(g_client_loop, &agg_timer);
+    uv_timer_start(&agg_timer, on_tick_agg, g_client_cfg->agg_timer_ms, g_client_cfg->agg_timer_ms); /* Aggregation burst driver */
+    
+    uv_timer_init(g_client_loop, &bg_timer);
+    uv_timer_start(&bg_timer, on_tick_maintenance, g_client_cfg->bg_timer_ms, g_client_cfg->bg_timer_ms);  /* Combined background maintenance & TUI refresh */
 
-      /* 7. Setup Background Timers */
-      uv_timer_init(g_client_loop, &poll_timer);
-      
-      int poll_int = g_client_cfg ? g_client_cfg->poll_interval_ms : 100;
-      if (poll_int < 10) poll_int = 100;
-      uv_timer_start(&poll_timer, on_tick_poll, poll_int, poll_int); /* High frequency poll */
-      
-      uv_timer_init(g_client_loop, &agg_timer);
-      uv_timer_start(&agg_timer, on_tick_agg, g_client_cfg->agg_timer_ms, g_client_cfg->agg_timer_ms); /* Aggregation burst driver */
-      
-      uv_timer_init(g_client_loop, &bg_timer);
-      uv_timer_start(&bg_timer, on_tick_maintenance, g_client_cfg->bg_timer_ms, g_client_cfg->bg_timer_ms);  /* Combined background maintenance & TUI refresh */
+    /* 7. Run Resolver Discovery (Init Phase) */
+    /* Starting discovery after timers ensures the TUI remains responsive during the 5s window */
+    resolver_run_init_phase();
 
     /* 8. Run Main Event Loop */
     LOG_INFO("dnstun-client started. SOCKS5 at 127.0.0.1:%d\n", socks_port);

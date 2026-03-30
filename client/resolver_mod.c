@@ -13,14 +13,47 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Internal test structure */
-typedef struct {
-     bool longname;
-     bool nxdomain;
-     bool edns;
-     bool txt;
-     uint16_t mtu;
-} test_result_t;
+/* Persistence File */
+static const char *g_resolvers_file = "client_resolvers.txt";
+
+/* ── Persistence Implementation ───────────────────────────────────────────── */
+
+static void resolver_save_persistence(void) {
+    if (!g_pool) return;
+    FILE *f = fopen(g_resolvers_file, "w");
+    if (!f) return;
+    
+    uv_mutex_lock(&g_pool->lock);
+    for (int i = 0; i < g_pool->count; i++) {
+        resolver_t *r = &g_pool->resolvers[i];
+        if (r->ip[0]) {
+            fprintf(f, "%s\n", r->ip);
+        }
+    }
+    uv_mutex_unlock(&g_pool->lock);
+    fclose(f);
+}
+
+static void resolver_load_persistence(void) {
+    if (!g_pool) return;
+    FILE *f = fopen(g_resolvers_file, "r");
+    if (!f) return;
+    
+    char line[64];
+    int added = 0;
+    while (fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        if (!line[0] || line[0] == '#') continue;
+        
+        if (rpool_add(g_pool, line) >= 0) {
+            added++;
+        }
+    }
+    fclose(f);
+    if (added > 0) {
+        LOG_INFO("Loaded %d resolvers from performance cache: %s\n", added, g_resolvers_file);
+    }
+}
 
 /* ── Init Phase Implementation (Scanner.py style) ─────────────────────────── */
 
@@ -51,6 +84,9 @@ void resolver_run_init_phase(void) {
         }
     }
 
+    /* 2. Load cached resolvers from disk */
+    resolver_load_persistence();
+
     /* 2. Run multi-phase testing (Simplified extraction for modularity) */
     /* Implementation would follow the 3-phase probe logic in main.c */
     LOG_INFO("Phase 1: Long QNAME probes...\n");
@@ -78,5 +114,7 @@ void resolver_mod_init(uv_loop_t *loop) {
 }
 
 void resolver_mod_shutdown(void) {
+    /* Persist final resolver list on shutdown */
+    resolver_save_persistence();
     LOG_INFO("Resolver Module shutdown\n");
 }
