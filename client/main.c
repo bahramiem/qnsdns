@@ -1982,10 +1982,10 @@ static void resolver_init_phase(void) {
 /* ────────────────────────────────────────────── */
 /* Forward declarations for functions defined later */
 static void send_mtu_handshake(int session_idx);
-/* Returns 0 on success, -1 on failure (no resolver available) */
-static int fire_dns_chunk_symbol(int session_idx, uint16_t seq,
-                                 const uint8_t *payload, size_t paylen,
-                                 int total_chunks, uint64_t oti_common, uint32_t oti_scheme);
+/* Fire one DNS query chunk for a session. Falls back to dead resolvers if needed. */
+static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
+                                  const uint8_t *payload, size_t paylen,
+                                  int total_chunks, uint64_t oti_common, uint32_t oti_scheme);
 
 typedef struct socks5_client {
     uv_tcp_t  tcp;
@@ -2890,9 +2890,8 @@ static void send_mtu_handshake(int session_idx) {
 
 /* Fire one DNS query chunk for a session.
    'seq' is the actual sequence number of this FEC symbol.
-   Returns 0 on success, -1 on failure (no resolver available).
    Fix: Fall back to dead resolvers if no active resolvers available. */
-static int fire_dns_chunk_symbol(int session_idx, uint16_t seq,
+static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
                                   const uint8_t *payload, size_t paylen,
                                   int total_symbols,
                                   uint64_t oti_common, uint32_t oti_scheme)
@@ -2911,10 +2910,10 @@ static int fire_dns_chunk_symbol(int session_idx, uint16_t seq,
     }
     
     if (ridx < 0) {
-        LOG_DEBUG("fire_dns_chunk_symbol: no resolvers available (session_idx=%d, seq=%u)\n",
+        LOG_ERR("fire_dns_chunk_symbol: no resolvers available at all (session_idx=%d, seq=%u)\n",
                 session_idx, seq);
         g_stats.queries_dropped++;
-        return -1;
+        return;
     }
 
     resolver_t *r = &g_pool.resolvers[ridx];
@@ -3100,21 +3099,12 @@ static void on_poll_timer(uv_timer_t *t) {
                 if (r < 10) r = 10;
             }
             
-            int symbols_sent = 0;
-            int symbols_failed = 0;
             fec_encoded_t fec = codec_fec_encode(enc_in, enc_len, k, r);
             if (fec.total_count > 0) {
                 /* 4. SEND SYMBOLS - include OTI for server-side FEC decoding */
                 for (int s = 0; s < fec.total_count; s++) {
-                    int rc = fire_dns_chunk_symbol(i, sess->tx_next++, fec.symbols[s], fec.symbol_len, fec.total_count,
+                    fire_dns_chunk_symbol(i, sess->tx_next++, fec.symbols[s], fec.symbol_len, fec.total_count,
                                          fec.has_oti ? fec.oti_common : 0, fec.has_oti ? fec.oti_scheme : 0);
-                    if (rc == 0) {
-                        symbols_sent++;
-                    } else {
-                        /* Symbol wasn't sent - don't increment tx_next and retry on next poll */
-                        sess->tx_next--;
-                        symbols_failed++;
-                    }
                 }
             }
 
@@ -3122,16 +3112,12 @@ static void on_poll_timer(uv_timer_t *t) {
             if (g_cfg.encryption) codec_free_result(&eret);
             codec_free_result(&cret);
             
-            /* Only clear send_len if ALL symbols were sent successfully.
-             * If any failed (no resolver), keep send_len > 0 so poll timer
-             * will retry on next cycle. This prevents burst truncation when
-             * resolvers are temporarily unavailable. */
-            if (symbols_failed == 0) {
-                sess->send_len = 0;
-            } else {
-                LOG_WARN("Session %d: %d/%d symbols failed to send, will retry\n",
-                        i, symbols_failed, symbols_sent + symbols_failed);
-            }
+            /* Clear send_len after sending burst. If any symbols were lost
+             * in transit, the server won't be able to decode (needs k symbols).
+             * But we can't easily detect which symbols were lost since DNS
+             * queries are fire-and-forget. A retransmission strategy would
+             * require ACK-based tracking, which adds latency. */
+            sess->send_len = 0;
         } else {
             /* No upload — send empty POLL to pull downstream data */
             fire_dns_chunk_symbol(i, sess->tx_next++, NULL, 0, 0, 0, 0);

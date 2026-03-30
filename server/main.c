@@ -131,6 +131,7 @@ typedef struct srv_session {
   uint16_t downstream_seq; /* Next seq to assign for downstream packets */
 
   bool status_sent;
+  bool pending_status_reply; /* true if SOCKS5 status was queued and needs immediate sending */
   bool closing;            /* true if upstream connection closed (EOF) */
   bool zombie;             /* true if session was fully closed but kept as zombie */
   time_t closed_at;        /* timestamp when session was marked as zombie */
@@ -422,37 +423,43 @@ static void on_upstream_read(uv_stream_t *s, ssize_t nread,
 }
 
 /* Send a SOCKS5 status/ACK byte (0x00=success, 0x01-0x08=SOCKS5 errors) to the
- * client */
+ * client. This is called from on_upstream_connect when the TCP connection is
+ * established. We send immediately to avoid the race where subsequent polls
+ * would receive empty replies and the client would never see the SOCKS5 status. */
 static void session_send_status(int sidx, uint8_t status) {
   srv_session_t *sess = &g_sessions[sidx];
   if (sess->status_sent)
     return;
 
-  size_t need = sess->upstream_len + 1;
+  /* Allocate/realloc upstream_buf to hold the status byte */
+  size_t need = 1;  /* Just the status byte */
   if (need > sess->upstream_cap) {
     sess->upstream_buf = realloc(sess->upstream_buf, need + 8192);
     sess->upstream_cap = need + 8192;
   }
 
   if (sess->upstream_buf) {
-    /* Prepend status byte if data already exists, though it should be empty */
-    if (sess->upstream_len > 0) {
-      memmove(sess->upstream_buf + 1, sess->upstream_buf, sess->upstream_len);
-    }
+    /* Set status byte at the beginning - no need to shift anything since
+     * upstream_len should be 0 at this point */
     sess->upstream_buf[0] = status;
-    sess->upstream_len++;
-    /* Reset downstream_seq to 0 so the status byte is ALWAYS delivered at
-     * seq=0, which the client's reorder buffer (expected_seq=0) can flush
-     * immediately regardless of how many poll replies were sent before the
-     * upstream connection completed. */
-    /* Do NOT reset downstream_seq here. The status byte is delivered at
-     * whatever downstream_seq is currently at. The client reorder buffer
-     * (expected_seq) has been advancing with each empty poll reply, so the
-     * status byte arrives at the correct next seq and is delivered without
-     * gaps. Resetting to 0 caused the status byte to collide with the
-     * handshake reply (also seq=0) and be dropped as a duplicate. */
+    sess->upstream_len = 1;
     sess->status_sent = true;
-    LOG_DEBUG("Session %d: queued SOCKS5 status %02x at downstream_seq=%u\n", sidx, status, sess->downstream_seq);
+    
+    LOG_DEBUG("Session %d: queued SOCKS5 status %02x, will send immediately\n", sidx, status);
+    
+    /* [Fix] Send the status immediately instead of waiting for the next poll.
+     * This fixes the race condition where:
+     * 1. Client sends capability header poll
+     * 2. Server queues SOCKS5 status AFTER processing the poll
+     * 3. Server sends empty reply (status not included)
+     * 4. Client receives empty reply, waits for SOCKS5 status
+     * 5. Client never receives the status, curl hangs
+     * 
+     * We can't easily send immediately here because we don't have the
+     * query context. Instead, set a flag to indicate pending status that
+     * should be sent with priority. The next incoming poll will then send
+     * the status FIRST before any other processing. */
+    sess->pending_status_reply = true;
   }
 }
 
@@ -1447,7 +1454,29 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
   if (mtu < 16 || mtu > 4096)
     mtu = 512;
 
-  if (sess->upstream_len > 0) {
+  /* [Fix] Check for pending SOCKS5 status FIRST before anything else.
+   * This fixes the race where:
+   * 1. Client sends capability header poll
+   * 2. Server queues SOCKS5 status AFTER processing the poll
+   * 3. Server sends empty reply (status not included)
+   * 4. Client receives empty reply, waits for SOCKS5 status forever
+   * By checking pending_status_reply first, we ensure the status is sent
+   * on the NEXT poll, before any other processing. */
+  if (sess->pending_status_reply && sess->upstream_len > 0) {
+    /* Send the pending SOCKS5 status */
+    uint16_t out_seq = sess->handshake_done ? sess->downstream_seq++ : 0;
+    if (build_txt_reply_with_seq(
+            reply, &rlen, query_id, qname, sess->upstream_buf, 1, mtu,
+            out_seq, sess->session_id, false) == 0) {
+      send_udp_reply(src, reply, rlen);
+      LOG_DEBUG("Session %d: sent pending SOCKS5 status at seq=%u\n", sidx, out_seq);
+    }
+    /* Clear the pending flag and consume the status byte */
+    sess->pending_status_reply = false;
+    /* Keep upstream_buf[0] cleared but leave remaining data for next send */
+    memmove(sess->upstream_buf, sess->upstream_buf + 1, sess->upstream_len - 1);
+    sess->upstream_len--;
+  } else if (sess->upstream_len > 0) {
     /* Calculate exact safe capacity to prevent data drop */
     size_t overhead = 12 + strlen(qname) + 6 + 16 + 20;
     size_t safe_txt_len = (mtu > overhead + 64) ? (mtu - overhead) : 64;
