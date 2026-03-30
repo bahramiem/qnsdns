@@ -183,6 +183,7 @@ typedef struct {
 #define RESP_ENC_MASK        0x01  /* 0=base64, 1=hex */
 #define RESP_FLAG_HAS_SEQ    0x02  /* 1 = seq field is valid (downstream sequencing) */
 #define RESP_FLAG_CLOSED     0x04  /* 1 = server closed session */
+#define RESP_FLAG_STATUS     0x08  /* 1 = SOCKS5 status byte prepended to payload (for handshake) */
 
 /* ──────────────────────────────────────────────
    Downstream Reordering Buffer

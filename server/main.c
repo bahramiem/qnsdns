@@ -22,7 +22,6 @@
 #include <string.h>
 #include <time.h>
 
-
 #ifdef _WIN32
 /* Include winsock2.h BEFORE windows.h to prevent winsock.h conflicts */
 #define WIN32_LEAN_AND_MEAN
@@ -46,7 +45,6 @@
 #include "SPCDNS/output.h"
 #include "uv.h"
 
-
 #include "shared/base32.h"
 #include "shared/codec.h"
 #include "shared/config.h"
@@ -54,7 +52,6 @@
 #include "shared/resolver_pool.h"
 #include "shared/tui.h"
 #include "shared/types.h"
-
 
 /* Forward declarations */
 static int build_txt_reply_with_seq(uint8_t *outbuf, size_t *outlen,
@@ -131,18 +128,21 @@ typedef struct srv_session {
   uint16_t downstream_seq; /* Next seq to assign for downstream packets */
 
   bool status_sent;
-  bool pending_status_reply; /* true if SOCKS5 status was queued and needs immediate sending */
-  bool closing;            /* true if upstream connection closed (EOF) */
-  bool zombie;             /* true if session was fully closed but kept as zombie */
-  time_t closed_at;        /* timestamp when session was marked as zombie */
+  bool pending_status_reply; /* true if SOCKS5 status was queued and needs
+                                immediate sending */
+  uint8_t pending_cap_buf[32];  /* stored capability header to combine with status */
+  size_t pending_cap_len;       /* length of pending capability header (0 if none) */
+  bool closing;              /* true if upstream connection closed (EOF) */
+  bool zombie;      /* true if session was fully closed but kept as zombie */
+  time_t closed_at; /* timestamp when session was marked as zombie */
   time_t last_active;
 
   /* Retransmit slot: last sent downstream data, resent on every poll until
    * new upstream data arrives (acts as implicit ACK that the old data was
    * received). Cleared when upstream_buf has new data to send. */
-  uint8_t retx_buf[4096];  /* copy of last sent payload */
-  size_t  retx_len;        /* bytes in retx_buf (0 = nothing to retransmit) */
-  uint16_t retx_seq;       /* downstream_seq that was used for retx_buf */
+  uint8_t retx_buf[4096]; /* copy of last sent payload */
+  size_t retx_len;        /* bytes in retx_buf (0 = nothing to retransmit) */
+  uint16_t retx_seq;      /* downstream_seq that was used for retx_buf */
 } srv_session_t;
 
 #define SRV_MAX_SESSIONS 1024
@@ -265,13 +265,13 @@ static void session_close(int idx) {
   srv_session_t *s = &g_sessions[idx];
   if (!s->used)
     return;
-  
+
   LOG_INFO("Session %d: closing (zombie state)\n", idx);
-  
+
   if (s->tcp_connected && !uv_is_closing((uv_handle_t *)&s->upstream_tcp))
     uv_close((uv_handle_t *)&s->upstream_tcp, NULL);
-  
-  /* [Fix] Move buffer freeing to a more final step if we want to support 
+
+  /* [Fix] Move buffer freeing to a more final step if we want to support
    * retransmissions during zombie state, but for now we clear to save memory.
    * The zombie state mainly serves to prevent sequence resets on late polls. */
   free(s->upstream_buf);
@@ -287,7 +287,7 @@ static void session_close(int idx) {
   s->used = false;
   s->zombie = true;
   s->closed_at = time(NULL);
-  
+
   if (g_stats.active_sessions > 0)
     g_stats.active_sessions--;
 }
@@ -366,30 +366,35 @@ static void on_upstream_read(uv_stream_t *s, ssize_t nread,
 
   if (nread <= 0) {
     free(buf->base);
-    /* [Fix] Graceful closure: don't close immediately. 
-     * Set closing flag and let the main loop close it once upstream_len == 0. */
+    /* [Fix] Graceful closure: don't close immediately.
+     * Set closing flag and let the main loop close it once upstream_len == 0.
+     */
     sess->closing = true;
-    LOG_INFO("Session %d: upstream EOF received, entering closing state\n", sidx);
+    LOG_INFO("Session %d: upstream EOF received, entering closing state\n",
+             sidx);
     return;
   }
 
-  /* Check if this data starts with SOCKS5 reply signature (0x05 0x00 0x00 0x01).
-   * The SOCKS5 reply is 10 bytes total and should NOT be sent through the DNS tunnel.
-   * It's an internal protocol response that the client doesn't need.
-   * Only the HTTP response data should go through the tunnel.
-   * 
-   * Format: VER(0x05) + REP(0x00) + RSV(0x00) + ATYP(0x01) + BND.ADDR(4 bytes) + BND.PORT(2 bytes) = 10 bytes
+  /* Check if this data starts with SOCKS5 reply signature (0x05 0x00 0x00
+   * 0x01). The SOCKS5 reply is 10 bytes total and should NOT be sent through
+   * the DNS tunnel. It's an internal protocol response that the client doesn't
+   * need. Only the HTTP response data should go through the tunnel.
+   *
+   * Format: VER(0x05) + REP(0x00) + RSV(0x00) + ATYP(0x01) + BND.ADDR(4 bytes)
+   * + BND.PORT(2 bytes) = 10 bytes
    */
-  if (nread >= 4 && buf->base[0] == 0x05 && buf->base[1] == 0x00 && 
+  if (nread >= 4 && buf->base[0] == 0x05 && buf->base[1] == 0x00 &&
       buf->base[2] == 0x00 && buf->base[3] == 0x01) {
-    LOG_DEBUG("Session %d: Received SOCKS5 reply (%zd bytes) - NOT sending to client via DNS tunnel\n",
+    LOG_DEBUG("Session %d: Received SOCKS5 reply (%zd bytes) - NOT sending to "
+              "client via DNS tunnel\n",
               sidx, nread);
     /* SOCKS5 reply received - do NOT buffer or send through DNS tunnel.
      * The client already received/sends the ACK via optimistic mode.
      * Only HTTP response data should go through the tunnel. */
     free(buf->base);
-    
-    /* If there's also HTTP response data in this same read, buffer only the HTTP part */
+
+    /* If there's also HTTP response data in this same read, buffer only the
+     * HTTP part */
     if (nread > 10) {
       size_t http_len = (size_t)nread - 10;
       size_t need = sess->upstream_len + http_len;
@@ -399,9 +404,11 @@ static void on_upstream_read(uv_stream_t *s, ssize_t nread,
       }
       memcpy(sess->upstream_buf + sess->upstream_len, buf->base + 10, http_len);
       sess->upstream_len += http_len;
-      LOG_DEBUG("Session %d: Buffered %zu bytes of HTTP data after SOCKS5 reply\n", sidx, http_len);
+      LOG_DEBUG(
+          "Session %d: Buffered %zu bytes of HTTP data after SOCKS5 reply\n",
+          sidx, http_len);
     }
-    
+
     g_stats.rx_total += (size_t)nread;
     g_stats.rx_bytes_sec += (size_t)nread;
     return;
@@ -424,12 +431,26 @@ static void on_upstream_read(uv_stream_t *s, ssize_t nread,
 
 /* Send a SOCKS5 status/ACK byte (0x00=success, 0x01-0x08=SOCKS5 errors) to the
  * client. This is called from on_upstream_connect when the TCP connection is
- * established. We send immediately to avoid the race where subsequent polls
- * would receive empty replies and the client would never see the SOCKS5 status. */
+ * established. We store the status and capability header to send together
+ * when the next poll arrives, avoiding duplicate replies. */
 static void session_send_status(int sidx, uint8_t status) {
   srv_session_t *sess = &g_sessions[sidx];
   if (sess->status_sent)
     return;
+
+  /* [Fix] Store capability header to send together with status.
+   * This ensures the client receives both in ONE reply, preventing
+   * sequence gaps in the client's reorder buffer. */
+  capability_header_t cap = {0};
+  cap.version = DNSTUN_VERSION;
+  cap.upstream_mtu = g_cfg.upstream_mtu;
+  cap.downstream_mtu = g_cfg.downstream_mtu;
+  cap.encoding = 0; /* base64 */
+  cap.loss_pct = (uint8_t)(sess->cl_loss_pct * 100.0);
+  
+  /* Store the capability header - will be prepended to status when sending */
+  memcpy(sess->pending_cap_buf, &cap, sizeof(cap));
+  sess->pending_cap_len = sizeof(cap);
 
   /* Allocate/realloc upstream_buf to hold the status byte */
   size_t need = 1;  /* Just the status byte */
@@ -439,26 +460,16 @@ static void session_send_status(int sidx, uint8_t status) {
   }
 
   if (sess->upstream_buf) {
-    /* Set status byte at the beginning - no need to shift anything since
-     * upstream_len should be 0 at this point */
+    /* Set status byte - will be prepended after capability when sending */
     sess->upstream_buf[0] = status;
     sess->upstream_len = 1;
     sess->status_sent = true;
     
-    LOG_DEBUG("Session %d: queued SOCKS5 status %02x, will send immediately\n", sidx, status);
+    LOG_DEBUG("Session %d: queued SOCKS5 status %02x + cap header, will send combined\n", sidx, status);
     
-    /* [Fix] Send the status immediately instead of waiting for the next poll.
-     * This fixes the race condition where:
-     * 1. Client sends capability header poll
-     * 2. Server queues SOCKS5 status AFTER processing the poll
-     * 3. Server sends empty reply (status not included)
-     * 4. Client receives empty reply, waits for SOCKS5 status
-     * 5. Client never receives the status, curl hangs
-     * 
-     * We can't easily send immediately here because we don't have the
-     * query context. Instead, set a flag to indicate pending status that
-     * should be sent with priority. The next incoming poll will then send
-     * the status FIRST before any other processing. */
+    /* Set flag to indicate pending status that should be sent with priority.
+     * The reply handler will combine the capability header + status + any
+     * upstream data into ONE reply, then return (no duplicate replies). */
     sess->pending_status_reply = true;
   }
 }
@@ -589,7 +600,8 @@ static int build_txt_reply_with_seq(uint8_t *outbuf, size_t *outlen,
   hdr.session_id = session_id;
   hdr.flags = 0;                  /* base64 encoding (default) */
   hdr.flags |= RESP_FLAG_HAS_SEQ; /* Mark as sequenced */
-  if (is_closed) hdr.flags |= RESP_FLAG_CLOSED;
+  if (is_closed)
+    hdr.flags |= RESP_FLAG_CLOSED;
   hdr.seq = seq;
 
   /* Build packet: header + payload */
@@ -736,27 +748,36 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
   /* For non-TXT queries (e.g. Cloudflare QNAME minimization A probes):
    * Respond with NOERROR + empty answer (no records). This tells the resolver
    * "this name exists, but has no A record" - so it proceeds to send the actual
-   * TXT query. Silently dropping these caused Cloudflare to never forward TXT. */
+   * TXT query. Silently dropping these caused Cloudflare to never forward TXT.
+   */
   if (qtype != RR_TXT) {
-      LOG_DEBUG("Non-TXT query (qtype=%u) from %s for %s - sending NOERROR empty\n",
-                qtype, src_ip, qname);
-      /* Build a minimal DNS NOERROR response with 0 answers.
-       * This tells Cloudflare's QNAME minimization: "name exists, no A record"
-       * so it continues and sends the actual TXT query to us. */
-      uint8_t noerr[512];
-      /* DNS header (12 bytes): ID + flags + counts */
-      noerr[0] = query_id >> 8; noerr[1] = query_id & 0xFF;
-      noerr[2] = 0x84; noerr[3] = 0x00; /* QR=1 AA=1 RA=0 RCODE=NOERROR */
-      noerr[4] = 0x00; noerr[5] = 0x01; /* QDCOUNT=1 */
-      noerr[6] = 0x00; noerr[7] = 0x00; /* ANCOUNT=0 */
-      noerr[8] = 0x00; noerr[9] = 0x00; /* NSCOUNT=0 */
-      noerr[10] = 0x00; noerr[11] = 0x00; /* ARCOUNT=0 */
-      /* Copy question section verbatim from the raw request */
-      size_t q_len = (size_t)nread > 12 ? (size_t)nread - 12 : 0;
-      if (q_len > sizeof(noerr) - 12) q_len = sizeof(noerr) - 12;
-      memcpy(noerr + 12, buf->base + 12, q_len);
-      send_udp_reply(src, noerr, 12 + q_len);
-      return;
+    LOG_DEBUG(
+        "Non-TXT query (qtype=%u) from %s for %s - sending NOERROR empty\n",
+        qtype, src_ip, qname);
+    /* Build a minimal DNS NOERROR response with 0 answers.
+     * This tells Cloudflare's QNAME minimization: "name exists, no A record"
+     * so it continues and sends the actual TXT query to us. */
+    uint8_t noerr[512];
+    /* DNS header (12 bytes): ID + flags + counts */
+    noerr[0] = query_id >> 8;
+    noerr[1] = query_id & 0xFF;
+    noerr[2] = 0x84;
+    noerr[3] = 0x00; /* QR=1 AA=1 RA=0 RCODE=NOERROR */
+    noerr[4] = 0x00;
+    noerr[5] = 0x01; /* QDCOUNT=1 */
+    noerr[6] = 0x00;
+    noerr[7] = 0x00; /* ANCOUNT=0 */
+    noerr[8] = 0x00;
+    noerr[9] = 0x00; /* NSCOUNT=0 */
+    noerr[10] = 0x00;
+    noerr[11] = 0x00; /* ARCOUNT=0 */
+    /* Copy question section verbatim from the raw request */
+    size_t q_len = (size_t)nread > 12 ? (size_t)nread - 12 : 0;
+    if (q_len > sizeof(noerr) - 12)
+      q_len = sizeof(noerr) - 12;
+    memcpy(noerr + 12, buf->base + 12, q_len);
+    send_udp_reply(src, noerr, 12 + q_len);
+    return;
   }
 
   /* Parse QNAME: <payload>.<configured_domain>
@@ -996,11 +1017,12 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         if (g_sessions[i].zombie && g_sessions[i].session_id == session_id) {
           time_t now = time(NULL);
           if (now - g_sessions[i].closed_at < 10) { /* 10s window */
-            LOG_INFO("Session %d: Absorbing delayed poll for zombie session (sid=%u)\n", 
+            LOG_INFO("Session %d: Absorbing delayed poll for zombie session "
+                     "(sid=%u)\n",
                      i, session_id);
             uint8_t reply[512];
             size_t rlen = sizeof(reply);
-            if (build_txt_reply_with_seq(reply, &rlen, query_id, qname, NULL, 0, 
+            if (build_txt_reply_with_seq(reply, &rlen, query_id, qname, NULL, 0,
                                          512, 0, session_id, true) == 0) {
               send_udp_reply(src, reply, rlen);
             }
@@ -1050,13 +1072,14 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
       LOG_INFO("Session %d: MTU handshake - Up=%u, Down=%u\n", sidx,
                hs.upstream_mtu, hs.downstream_mtu);
     }
-    
+
     /* [Fix] Session Reuse Protection:
      * If this session ID was already connected to an upstream target, we MUST
      * close that connection before starting a new one. Otherwise, the second
      * request would try to forward data to the old stale socket. */
     if (sess->tcp_connected) {
-      LOG_INFO("Session %d: closing existing connection (sid=%u) for new handshake\n", 
+      LOG_INFO("Session %d: closing existing connection (sid=%u) for new "
+               "handshake\n",
                sidx, session_id);
       if (!uv_is_closing((uv_handle_t *)&sess->upstream_tcp)) {
         uv_close((uv_handle_t *)&sess->upstream_tcp, NULL);
@@ -1072,13 +1095,13 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     sess->status_sent = false;
     sess->closing = false;
     sess->zombie = false;
-    
+
     /* Clear any stale upstream data from previous requests on this session.
      * Without this, old data with old sequence numbers could conflict with
      * new handshake data, causing "jumping expected_seq" issues on client. */
     sess->upstream_len = 0;
     sess->retx_len = 0;
-    
+
     /* Also clear burst state to prevent old FEC data from being decoded
      * and sent with old sequence numbers after a new handshake. */
     if (sess->burst_symbols) {
@@ -1091,8 +1114,10 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
       sess->burst_received = 0;
       sess->burst_decoded = true; /* Set to true to prevent duplicate decodes */
     }
-    
-    LOG_INFO("Session %d: downstream_seq reset to 0 on handshake, handshake_done=true (cleared upstream_buf and burst)\n", sidx);
+
+    LOG_INFO("Session %d: downstream_seq reset to 0 on handshake, "
+             "handshake_done=true (cleared upstream_buf and burst)\n",
+             sidx);
   }
 
   /* ── Handle FEC Burst Reassembly ──────────────────────────────────── */
@@ -1106,7 +1131,8 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
      * chunk_total symbols into one burst accumulator regardless of which
      * symbol arrives first. Previously, burst_seq_start was set to the
      * first-received seq, causing each later symbol to appear as a new burst
-     * when its offset relative to the first-received seq exceeded chunk_total. */
+     * when its offset relative to the first-received seq exceeded chunk_total.
+     */
     uint16_t esi = (uint16_t)(seq % (uint16_t)chunk_total);
     uint16_t burst_base_seq = (uint16_t)(seq - esi);
     bool is_new_burst = (sess->burst_count_needed == 0) ||
@@ -1132,7 +1158,8 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
       sess->burst_oti_scheme = hdr.oti_scheme;
       sess->burst_has_oti = (hdr.oti_common != 0 && hdr.oti_scheme != 0);
       sess->burst_decoded = false;
-      LOG_INFO("FEC burst start: base_seq=%u esi=%u total=%u fec_k(r)=%u OTI common=0x%llx "
+      LOG_INFO("FEC burst start: base_seq=%u esi=%u total=%u fec_k(r)=%u OTI "
+               "common=0x%llx "
                "scheme=0x%x has_oti=%d\n",
                burst_base_seq, esi, chunk_total, fec_k,
                (unsigned long long)sess->burst_oti_common,
@@ -1140,8 +1167,8 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     }
 
     /* Store symbol at its ESI slot within the burst buffer */
-    if (esi < (uint16_t)sess->burst_count_needed &&
-        sess->burst_symbols && !sess->burst_symbols[esi]) {
+    if (esi < (uint16_t)sess->burst_count_needed && sess->burst_symbols &&
+        !sess->burst_symbols[esi]) {
       sess->burst_symbols[esi] = malloc(payload_len);
       if (sess->burst_symbols[esi]) {
         memcpy(sess->burst_symbols[esi], payload, payload_len);
@@ -1159,7 +1186,8 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     if (k_est > sess->burst_count_needed)
       k_est = sess->burst_count_needed;
 
-    LOG_INFO("FEC burst status: received=%d need=%d (total=%d r=%d base_seq=%u esi=%u)\n",
+    LOG_INFO("FEC burst status: received=%d need=%d (total=%d r=%d base_seq=%u "
+             "esi=%u)\n",
              sess->burst_received, k_est, sess->burst_count_needed,
              sess->cl_fec_k, burst_base_seq, esi);
 
@@ -1170,8 +1198,9 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
        * which without this gate causes 10+ duplicate decodes that burn
        * downstream_seq slots before any client poll can receive them. */
       if (sess->burst_decoded) {
-        LOG_DEBUG("FEC burst seq=%u already decoded, discarding duplicate symbol\n",
-                  sess->burst_seq_start);
+        LOG_DEBUG(
+            "FEC burst seq=%u already decoded, discarding duplicate symbol\n",
+            sess->burst_seq_start);
         goto skip_fec_processing;
       }
       LOG_INFO("DEBUG FEC: Starting decode with %d symbols (need %d)\n",
@@ -1431,10 +1460,10 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     size_t rlen = sizeof(reply);
     /* SWARM reply: only advance seq if handshake already done */
     uint16_t swarm_seq = sess->handshake_done ? sess->downstream_seq++ : 0;
-    if (build_txt_reply_with_seq(
-            reply, &rlen, query_id, qname, (const uint8_t *)swarm_text, slen,
-            sess->cl_downstream_mtu, swarm_seq,
-            sess->session_id, sess->closing) == 0) {
+    if (build_txt_reply_with_seq(reply, &rlen, query_id, qname,
+                                 (const uint8_t *)swarm_text, slen,
+                                 sess->cl_downstream_mtu, swarm_seq,
+                                 sess->session_id, sess->closing) == 0) {
       send_udp_reply(src, reply, rlen);
     }
     return;
@@ -1455,27 +1484,108 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     mtu = 512;
 
   /* [Fix] Check for pending SOCKS5 status FIRST before anything else.
-   * This fixes the race where:
-   * 1. Client sends capability header poll
-   * 2. Server queues SOCKS5 status AFTER processing the poll
-   * 3. Server sends empty reply (status not included)
-   * 4. Client receives empty reply, waits for SOCKS5 status forever
-   * By checking pending_status_reply first, we ensure the status is sent
-   * on the NEXT poll, before any other processing. */
-  if (sess->pending_status_reply && sess->upstream_len > 0) {
-    /* Send the pending SOCKS5 status */
-    uint16_t out_seq = sess->handshake_done ? sess->downstream_seq++ : 0;
-    if (build_txt_reply_with_seq(
-            reply, &rlen, query_id, qname, sess->upstream_buf, 1, mtu,
-            out_seq, sess->session_id, false) == 0) {
-      send_udp_reply(src, reply, rlen);
-      LOG_DEBUG("Session %d: sent pending SOCKS5 status at seq=%u\n", sidx, out_seq);
+   * This fixes multiple bugs:
+   * 1. Race: Server queues status AFTER processing poll, client never receives it
+   * 2. Duplicate replies: Old code sent status (1 byte) then continued to send more
+   * 3. Sequence gap: Client's reorder buffer has gap when second reply is dropped
+   * 4. Retransmit loss: Retransmit slot overwritten by second (empty) reply
+   * 
+   * FIX: Send ONE combined reply with status + capability, then return.
+   * The client will extract the status byte and process the capability header.
+   */
+  if (sess->pending_status_reply) {
+    /* Build combined payload: [pending_cap | status | upstream_data] */
+    uint8_t combined[8192];
+    size_t combined_len = 0;
+    
+    /* Prepend pending capability header if any */
+    if (sess->pending_cap_len > 0 && sess->pending_cap_len <= sizeof(sess->pending_cap_buf)) {
+      memcpy(combined, sess->pending_cap_buf, sess->pending_cap_len);
+      combined_len += sess->pending_cap_len;
+      sess->pending_cap_len = 0; /* Clear after prepending */
     }
-    /* Clear the pending flag and consume the status byte */
+    
+    /* Prepend status byte */
+    if (sess->upstream_len > 0 && combined_len + sess->upstream_len < sizeof(combined)) {
+      memcpy(combined + combined_len, sess->upstream_buf, sess->upstream_len);
+      combined_len += sess->upstream_len;
+    }
+    
+    if (combined_len > 0) {
+      uint16_t out_seq = sess->handshake_done ? sess->downstream_seq++ : 0;
+      
+      /* Build reply with RESP_FLAG_STATUS to signal client to extract status */
+      server_response_header_t hdr = {0};
+      hdr.session_id = sess->session_id;
+      hdr.flags = RESP_FLAG_HAS_SEQ | RESP_FLAG_STATUS; /* Signal status + seq */
+      hdr.seq = out_seq;
+      
+      /* Build packet: header + combined data */
+      uint8_t packet[8192];
+      size_t packet_len = 0;
+      memcpy(packet, &hdr, sizeof(hdr));
+      packet_len += sizeof(hdr);
+      
+      /* Copy combined data, respecting MTU */
+      size_t overhead = 12 + strlen(qname) + 6 + 16 + 20;
+      size_t safe_txt_len = (mtu > overhead + 64) ? (mtu - overhead) : 64;
+      size_t max_packet_len = (safe_txt_len * 3) / 4;
+      size_t binary_mtu = max_packet_len > 4 ? max_packet_len - 4 : 0;
+      size_t send_len = (combined_len > binary_mtu) ? binary_mtu : combined_len;
+      
+      memcpy(packet + packet_len, combined, send_len);
+      packet_len += send_len;
+      
+      /* Encode and send */
+      char encoded[8192];
+      size_t encoded_len = encode_downstream_data(encoded, packet, packet_len);
+      if (encoded_len >= sizeof(encoded)) encoded_len = sizeof(encoded) - 1;
+      encoded[encoded_len] = '\0';
+      
+      dns_question_t q = {0};
+      q.name = qname;
+      q.type = RR_TXT;
+      q.class = CLASS_IN;
+      
+      dns_answer_t ans = {0};
+      ans.txt.name = qname;
+      ans.txt.type = RR_TXT;
+      ans.txt.class = CLASS_IN;
+      ans.txt.ttl = 0;
+      ans.txt.len = (uint16_t)encoded_len;
+      ans.txt.text = encoded;
+      
+      dns_query_t resp = {0};
+      resp.id = query_id;
+      resp.query = false;
+      resp.rd = true;
+      resp.ra = true;
+      resp.qdcount = 1;
+      resp.ancount = 1;
+      resp.questions = &q;
+      resp.answers = &ans;
+      
+      rlen = sizeof(reply);
+      dns_rcode_t rc = dns_encode((dns_packet_t *)reply, &rlen, &resp);
+      if (rc == RCODE_OKAY) {
+        /* Save to retransmit slot BEFORE consuming */
+        if (send_len <= sizeof(sess->retx_buf)) {
+          memcpy(sess->retx_buf, combined, send_len);
+          sess->retx_len = send_len;
+          sess->retx_seq = out_seq;
+        }
+        send_udp_reply(src, reply, rlen);
+        LOG_DEBUG("Session %d: sent combined status+cap at seq=%u (len=%zu)\n", sidx, out_seq, send_len);
+      }
+    }
+    
+    /* Clear pending status and upstream_buf */
     sess->pending_status_reply = false;
-    /* Keep upstream_buf[0] cleared but leave remaining data for next send */
-    memmove(sess->upstream_buf, sess->upstream_buf + 1, sess->upstream_len - 1);
-    sess->upstream_len--;
+    sess->upstream_len = 0;
+    
+    /* [Fix] Do NOT continue to else-if blocks - we already sent ONE reply!
+     * This prevents duplicate replies which cause sequence gaps in client's reorder buffer. */
+    return;
   } else if (sess->upstream_len > 0) {
     /* Calculate exact safe capacity to prevent data drop */
     size_t overhead = 12 + strlen(qname) + 6 + 16 + 20;
@@ -1497,9 +1607,9 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
      * without consuming a slot so the MTU-handshake reply is always seq=0. */
     uint16_t out_seq = sess->handshake_done ? sess->downstream_seq++ : 0;
     bool is_closed_packet = sess->closing && (sess->upstream_len == 0);
-    if (build_txt_reply_with_seq(
-            reply, &rlen, query_id, qname, sess->upstream_buf, sz, mtu,
-            out_seq, sess->session_id, is_closed_packet) == 0) {
+    if (build_txt_reply_with_seq(reply, &rlen, query_id, qname,
+                                 sess->upstream_buf, sz, mtu, out_seq,
+                                 sess->session_id, is_closed_packet) == 0) {
       /* Save to retransmit slot BEFORE consuming from upstream_buf */
       if (sz <= sizeof(sess->retx_buf)) {
         memcpy(sess->retx_buf, sess->upstream_buf, sz);
@@ -1511,10 +1621,12 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
               sess->upstream_len - sz);
       sess->upstream_len -= sz;
       send_udp_reply(src, reply, rlen);
-      
-      /* [Fix] Fully close session if it was in closing state and we just sent the last bytes */
+
+      /* [Fix] Fully close session if it was in closing state and we just sent
+       * the last bytes */
       if (is_closed_packet) {
-        LOG_INFO("Session %d: final closing packet sent, destroying session\n", sidx);
+        LOG_INFO("Session %d: final closing packet sent, destroying session\n",
+                 sidx);
         session_close(sidx);
       }
     }
@@ -1524,24 +1636,27 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
      * SAME seq (do NOT advance downstream_seq) so the client's reorder
      * buffer can fill the gap. Once new upstream data appears, the retx
      * slot is overwritten and downstream_seq advances normally. */
-    fprintf(stderr,
-            "[DEBUG] Server retransmitting seq=%u len=%zu\n",
+    fprintf(stderr, "[DEBUG] Server retransmitting seq=%u len=%zu\n",
             sess->retx_seq, sess->retx_len);
-    if (build_txt_reply_with_seq(
-            reply, &rlen, query_id, qname, sess->retx_buf, sess->retx_len,
-            mtu, sess->retx_seq, sess->session_id, sess->closing) == 0) {
+    if (build_txt_reply_with_seq(reply, &rlen, query_id, qname, sess->retx_buf,
+                                 sess->retx_len, mtu, sess->retx_seq,
+                                 sess->session_id, sess->closing) == 0) {
       send_udp_reply(src, reply, rlen);
     }
   } else {
     /* Empty reply — acknowledge the query with NO payload */
     uint16_t out_seq = sess->handshake_done ? sess->downstream_seq++ : 0;
     if (build_txt_reply_with_seq(reply, &rlen, query_id, qname, NULL, 0, mtu,
-                                 out_seq, sess->session_id, sess->closing) == 0) {
+                                 out_seq, sess->session_id,
+                                 sess->closing) == 0) {
       send_udp_reply(src, reply, rlen);
-      
-      /* [Fix] Fully close session if it was in closing state and we just sent the final empty poll response */
+
+      /* [Fix] Fully close session if it was in closing state and we just sent
+       * the final empty poll response */
       if (sess->closing) {
-        LOG_INFO("Session %d: final empty closing packet sent, destroying session\n", sidx);
+        LOG_INFO(
+            "Session %d: final empty closing packet sent, destroying session\n",
+            sidx);
         session_close(sidx);
       }
     }
