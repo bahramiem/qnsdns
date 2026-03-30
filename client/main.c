@@ -2342,6 +2342,7 @@ static size_t socks5_handle_data(socks5_client_t *c,
          * Now we reply 'connected' immediately to pull the user data into our buffer. */
         uint8_t reply[10] = {0x05, 0x00, 0x00, 0x01, 0,0,0,0,0,0};
         socks5_send(c, reply, 10);
+        sess->socks5_connected = true;
         
         LOG_INFO("SOCKS5 state 1 -> 2 (Tunnel). Consumed %zu bytes. (Optimistic ACK sent)\n", min_len);
         return min_len;
@@ -2625,30 +2626,44 @@ static void on_dns_recv(uv_udp_t *h,
                                         size_t data_start = 0;
                                         
                                         /* Detect the ACK/status byte at the start of the sequence (only once per session) */
-                                        if (flush_len >= 1 && !s->socks5_connected) {
+                                        if (flush_len >= 1 && !s->status_consumed) {
                                             uint8_t status_byte = flush_buf[0];
+                                            s->status_consumed = true;
+                                            data_start = 1; /* Always skip the status byte; don't send to application */
+
                                             if (s->client_ptr) {
                                                 socks5_client_t *c = (socks5_client_t*)s->client_ptr;
-                                                if (status_byte == 0x00) {
-                                                    /* Success: Send SOCKS5 success reply (Address Type IPv4, 0.0.0.0:0) */
-                                                    uint8_t ok[10] = {0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0};
-                                                    socks5_send(c, ok, 10);
-                                                    s->socks5_connected = true;
-                                                    g_stats.socks5_last_error = 0;
-                                                    LOG_INFO("Session %d: SOCKS5 success (ACK processed in sequence)\n", sidx);
+                                                if (!s->socks5_connected) {
+                                                    /* Non-optimistic mode or first reply: send status to app */
+                                                    if (status_byte == 0x00) {
+                                                        /* Success: Send SOCKS5 success reply (Address Type IPv4, 0.0.0.0:0) */
+                                                        uint8_t ok[10] = {0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0};
+                                                        socks5_send(c, ok, 10);
+                                                        s->socks5_connected = true;
+                                                        g_stats.socks5_last_error = 0;
+                                                        LOG_INFO("Session %d: SOCKS5 success (ACK processed in sequence)\n", sidx);
+                                                    } else {
+                                                        /* Mapped Error: status_byte from server mapped to SOCKS5 reply field */
+                                                        uint8_t err[10] = {0x05, status_byte, 0x00, 0x01, 0, 0, 0, 0, 0, 0};
+                                                        socks5_send(c, err, 10);
+                                                        g_stats.socks5_total_errors++;
+                                                        g_stats.socks5_last_error = status_byte;
+                                                        LOG_WARN("Session %d: SOCKS5 error %02x from server\n", sidx, status_byte);
+                                                        uv_close((uv_handle_t*)&c->tcp, on_socks5_close);
+                                                    }
                                                 } else {
-                                                    /* Mapped Error: status_byte from server mapped to SOCKS5 reply field */
-                                                    /* 0x01=General, 0x02=Not allowed, 0x03=Net unreachable, 
-                                                     * 0x04=Host unreachable, 0x05=Refused, etc. */
-                                                    uint8_t err[10] = {0x05, status_byte, 0x00, 0x01, 0, 0, 0, 0, 0, 0};
-                                                    socks5_send(c, err, 10);
-                                                    g_stats.socks5_total_errors++;
-                                                    g_stats.socks5_last_error = status_byte;
-                                                    LOG_WARN("Session %d: SOCKS5 error %02x from server\n", sidx, status_byte);
-                                                    uv_close((uv_handle_t*)&c->tcp, on_socks5_close);
+                                                    /* Optimistic mode: we already sent Success. 
+                                                     * If server reports error now, we must close the connection. */
+                                                    if (status_byte != 0x00) {
+                                                        LOG_WARN("Session %d: Post-optimistic SOCKS5 error %02x from server, closing\n", sidx, status_byte);
+                                                        g_stats.socks5_total_errors++;
+                                                        g_stats.socks5_last_error = status_byte;
+                                                        uv_close((uv_handle_t*)&c->tcp, on_socks5_close);
+                                                    } else {
+                                                        LOG_INFO("Session %d: SOCKS5 status 00 confirmed by server (optimistic ACK was correct)\n", sidx);
+                                                    }
                                                 }
                                             }
-                                            data_start = 1; /* Skip the status byte; don't send to application */
                                         }
 
                                         size_t data_len = flush_len - data_start;

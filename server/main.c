@@ -355,7 +355,41 @@ static void on_upstream_read(uv_stream_t *s, ssize_t nread,
     return;
   }
 
-  /* Append received bytes into the session's persistent buffer */
+  /* Check if this data starts with SOCKS5 reply signature (0x05 0x00 0x00 0x01).
+   * The SOCKS5 reply is 10 bytes total and should NOT be sent through the DNS tunnel.
+   * It's an internal protocol response that the client doesn't need.
+   * Only the HTTP response data should go through the tunnel.
+   * 
+   * Format: VER(0x05) + REP(0x00) + RSV(0x00) + ATYP(0x01) + BND.ADDR(4 bytes) + BND.PORT(2 bytes) = 10 bytes
+   */
+  if (nread >= 4 && buf->base[0] == 0x05 && buf->base[1] == 0x00 && 
+      buf->base[2] == 0x00 && buf->base[3] == 0x01) {
+    LOG_DEBUG("Session %d: Received SOCKS5 reply (%zd bytes) - NOT sending to client via DNS tunnel\n",
+              sidx, nread);
+    /* SOCKS5 reply received - do NOT buffer or send through DNS tunnel.
+     * The client already received/sends the ACK via optimistic mode.
+     * Only HTTP response data should go through the tunnel. */
+    free(buf->base);
+    
+    /* If there's also HTTP response data in this same read, buffer only the HTTP part */
+    if (nread > 10) {
+      size_t http_len = (size_t)nread - 10;
+      size_t need = sess->upstream_len + http_len;
+      if (need > sess->upstream_cap) {
+        sess->upstream_buf = realloc(sess->upstream_buf, need + 8192);
+        sess->upstream_cap = need + 8192;
+      }
+      memcpy(sess->upstream_buf + sess->upstream_len, buf->base + 10, http_len);
+      sess->upstream_len += http_len;
+      LOG_DEBUG("Session %d: Buffered %zu bytes of HTTP data after SOCKS5 reply\n", sidx, http_len);
+    }
+    
+    g_stats.rx_total += (size_t)nread;
+    g_stats.rx_bytes_sec += (size_t)nread;
+    return;
+  }
+
+  /* Normal case: append HTTP response data to buffer for DNS tunnel */
   size_t need = sess->upstream_len + (size_t)nread;
   if (need > sess->upstream_cap) {
     sess->upstream_buf = realloc(sess->upstream_buf, need + 8192);
