@@ -167,6 +167,41 @@ void dns_handler_on_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     int payload_labels = pcount - dparts;
     if (payload_labels < 1) return;
 
+    /* Handle Special Probes (Restored from stable version) */
+    const char *first_label = parts[0];
+    
+    /* MTU Probe: mtu-req-[size].domain.com */
+    if (strncmp(first_label, "mtu-req-", 8) == 0) {
+        int requested_mtu = atoi(first_label + 8);
+        if (requested_mtu > 0 && requested_mtu <= 4096) {
+            uint8_t *mtu_payload = malloc(requested_mtu);
+            if (mtu_payload) {
+                for (int i = 0; i < requested_mtu; i++) mtu_payload[i] = (uint8_t)(rand() & 0xFF);
+                uint8_t reply[5120];
+                size_t rlen = sizeof(reply);
+                /* build_txt_reply expected to handle raw data. Using 10-arg signature with default seq/sid. */
+                if (build_txt_reply(reply, &rlen, query_id, qname, mtu_payload, (size_t)requested_mtu, 512, 0, 0, false) == 0) {
+                    send_udp_reply_direct(h, src, reply, rlen);
+                }
+                free(mtu_payload);
+            }
+        }
+        return;
+    }
+
+    /* Crypto Probe: CRYPTO_[nonce_hex].domain.com */
+    if (strncmp(first_label, "CRYPTO_", 7) == 0) {
+        const char *nonce_hex = first_label + 7;
+        /* For now, just echo the nonce back to prove reachability/protocol-parity */
+        LOG_INFO("CRYPTO probe from %s: nonce=%s\n", src_ip, nonce_hex);
+        uint8_t reply[1024];
+        size_t rlen = sizeof(reply);
+        if (build_txt_reply(reply, &rlen, query_id, qname, (const uint8_t *)nonce_hex, strlen(nonce_hex), 512, 0, 0, false) == 0) {
+            send_udp_reply_direct(h, src, reply, rlen);
+        }
+        return;
+    }
+
     /* Reconstruct Base32 Payload (ignoring dots) */
     char b32[512] = {0};
     for (int i = 0; i < payload_labels; i++) {
