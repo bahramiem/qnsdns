@@ -81,6 +81,7 @@ static uv_timer_t       g_poll_timer;       /* downstream POLL */
 static uv_timer_t       g_tui_timer;        /* TUI refresh     */
 static uv_timer_t       g_recovery_timer;   /* dead pool probe */
 static uv_timer_t       g_penalty_timer;    /* release penalties */
+static uv_timer_t       g_mtu_search_timer; /* MTU binary search continuation */
 static mgmt_server_t    *g_mgmt;            /* Management server for TUI */
 
 /* Active SOCKS5 sessions */
@@ -734,11 +735,149 @@ static void on_probe_recv(uv_udp_t *h, ssize_t nread,
                     p->got_reply = true;
                 }
             }
+        }
+        else if ((p->test_type == PROBE_TEST_MTU_UP || p->test_type == PROBE_TEST_MTU_DOWN) && p->result) {
+            /* Phase 4: MTU Binary Search Response Handler
+             * For upload tests: Check if we got a valid response at the requested MTU size
+             * For download tests: Check if server can send a response of the requested size
+             * Success means the MTU value works, failure means it's too large */
+            bool mtu_success = false;
+            
+            if (nread >= 12) {
+                uint8_t *resp = (uint8_t *)buf->base;
+                uint8_t rcode = resp[3] & 0x0F;
+                
+                /* RCODE 0 (NOERROR) or 3 (NXDOMAIN) means the resolver processed our query
+                 * For download MTU tests, we care if the packet got through
+                 * If we got any valid DNS response, the packet was not dropped by the path */
+                if (rcode == 0 || rcode == 3) {
+                    mtu_success = true;
+                    
+                    /* For upload MTU tests, also check if the resolver echoed our EDNS payload size
+                     * This tells us the actual MTU the resolver will accept */
+                    if (p->test_type == PROBE_TEST_MTU_UP && nread > 12) {
+                        size_t offset = 12;
+                        
+                        /* Skip question section */
+                        while (offset < (size_t)nread) {
+                            uint8_t len = resp[offset];
+                            if (len == 0) {
+                                offset++;
+                                break;
+                            }
+                            if ((len & 0xC0) == 0xC0) {
+                                if (offset + 2 > (size_t)nread) break;
+                                offset = ((len & 0x3F) << 8) | resp[offset + 1];
+                                break;
+                            }
+                            if (offset + 1 + len > (size_t)nread) break;
+                            offset += 1 + len;
+                        }
+                        offset += 5; /* Skip null + QTYPE + QCLASS */
+                        if (offset > (size_t)nread) offset = (size_t)nread;
+                        
+                        /* Parse records to find OPT record (EDNS) */
+                        while (offset + 11 <= (size_t)nread) {
+                            uint8_t name = resp[offset];
+                            uint16_t rtype = (resp[offset + 1] << 8) | resp[offset + 2];
+                            
+                            if ((name & 0xC0) == 0xC0) {
+                                if (offset + 2 + 11 > (size_t)nread) break;
+                                offset = ((name & 0x3F) << 8) | resp[offset + 1];
+                                if (offset >= (size_t)nread) break;
+                                continue;
+                            }
+                            
+                            if (name == 0 && rtype == 41) { /* OPT record - EDNS */
+                                /* Extract the UDP payload size the resolver advertised */
+                                uint16_t resolver_payload = (resp[offset + 3] << 8) | resp[offset + 4];
+                                if (resolver_payload > 0) {
+                                    /* Update optimal with the actual resolver-supported MTU */
+                                    if (p->mtu_under_test <= (int)resolver_payload) {
+                                        /* Our test MTU was within the resolver's capability */
+                                        p->result->up_mtu_search.optimal = p->mtu_under_test;
+                                    }
+                                }
+                                break;
+                            }
+                            
+                            uint16_t rdlen = (resp[offset + 9] << 8) | resp[offset + 10];
+                            if (offset + 11 + rdlen > (size_t)nread) break;
+                            offset += 11 + rdlen;
+                        }
+                    }
+                    
+                    /* For download MTU tests, we can't directly measure packet size acceptance
+                     * from the response alone. We rely on receiving any response as success,
+                     * and the binary search will narrow down based on failures */
+                }
+            }
+            
+            /* Mark this MTU as tested with the result */
+            if (p->test_type == PROBE_TEST_MTU_UP) {
+                mark_mtu_tested(&p->result->up_mtu_search, p->mtu_under_test, mtu_success);
+                if (mtu_success && p->result->up_mtu_search.optimal == 0) {
+                    /* Record successful MTU (unless we already got resolver's payload from above) */
+                    p->result->up_mtu_search.optimal = p->mtu_under_test;
+                }
+                LOG_INFO("MTU_UP test %s: resolver=%d, mtu=%d, size=%d\n",
+                         mtu_success ? "SUCCESS" : "FAIL", p->resolver_idx, 
+                         p->mtu_under_test, (int)nread);
+            } else {
+                mark_mtu_tested(&p->result->down_mtu_search, p->mtu_under_test, mtu_success);
+                if (mtu_success && p->result->down_mtu_search.optimal == 0) {
+                    p->result->down_mtu_search.optimal = p->mtu_under_test;
+                }
+                LOG_INFO("MTU_DOWN test %s: resolver=%d, mtu=%d, size=%d\n",
+                         mtu_success ? "SUCCESS" : "FAIL", p->resolver_idx,
+                         p->mtu_under_test, (int)nread);
+            }
+            
+            p->got_reply = true;
+            
+            /* Continue binary search: fire next MTU probe if available
+             * Note: Probes are fired immediately to maintain binary search timing */
+            int next_mtu = 0;
+            if (p->test_type == PROBE_TEST_MTU_UP) {
+                next_mtu = get_next_mtu_to_test(&p->result->up_mtu_search);
+                if (next_mtu > 0) {
+                    fire_mtu_test_probe(p->resolver_idx, PROBE_TEST_MTU_UP, p->result, next_mtu);
+                }
+            } else {
+                next_mtu = get_next_mtu_to_test(&p->result->down_mtu_search);
+                if (next_mtu > 0) {
+                    fire_mtu_test_probe(p->resolver_idx, PROBE_TEST_MTU_DOWN, p->result, next_mtu);
+                }
+            }
         } else {
             /* Default behavior for legacy POLL probes */
             p->got_reply = true;
         }
     } else {
+        /* MTU test failed (timeout/no response) - mark as failed and continue search */
+        if ((p->test_type == PROBE_TEST_MTU_UP || p->test_type == PROBE_TEST_MTU_DOWN) && p->result) {
+            if (p->test_type == PROBE_TEST_MTU_UP) {
+                mark_mtu_tested(&p->result->up_mtu_search, p->mtu_under_test, false);
+                LOG_INFO("MTU_UP timeout: resolver=%d, mtu=%d (too large)\n", 
+                         p->resolver_idx, p->mtu_under_test);
+                
+                /* Try lower MTU */
+                int next_mtu = get_next_mtu_to_test(&p->result->up_mtu_search);
+                if (next_mtu > 0) {
+                    fire_mtu_test_probe(p->resolver_idx, PROBE_TEST_MTU_UP, p->result, next_mtu);
+                }
+            } else {
+                mark_mtu_tested(&p->result->down_mtu_search, p->mtu_under_test, false);
+                LOG_INFO("MTU_DOWN timeout: resolver=%d, mtu=%d (too large)\n",
+                         p->resolver_idx, p->mtu_under_test);
+                
+                /* Try lower MTU */
+                int next_mtu = get_next_mtu_to_test(&p->result->down_mtu_search);
+                if (next_mtu > 0) {
+                    fire_mtu_test_probe(p->resolver_idx, PROBE_TEST_MTU_DOWN, p->result, next_mtu);
+                }
+            }
+        }
         rpool_on_loss(&g_pool, p->resolver_idx);
     }
 
@@ -1296,7 +1435,8 @@ static void run_mtu_binary_search_tests(resolver_test_result_t *results) {
         /* Initialize download MTU binary search */
         init_mtu_binary_search(&results[i].down_mtu_search,
                               0, g_cfg.max_download_mtu > 0 ? g_cfg.max_download_mtu : 1200,
-                              30, g_cfg.min_download_mtu, g_cfg.mtu_test_retries > 0 ? g_cfg.mtu_test_retries : 2,
+                              30, g_cfg.min_download_mtu > 0 ? g_cfg.min_download_mtu : 400,
+                              g_cfg.mtu_test_retries > 0 ? g_cfg.mtu_test_retries : 2,
                               false, results[i].upstream_mtu);
         
         /* Fire initial MTU test probes */
@@ -1330,23 +1470,6 @@ static uint16_t find_max_upstream_mtu(int resolver_idx, uint16_t suggested_mtu) 
     
     if (optimal == 0 && suggested_mtu > 0) {
         optimal = suggested_mtu;
-    }
-    
-    return (uint16_t)optimal;
-}
-
-/* Find maximum downstream MTU for a resolver */
-static uint16_t find_max_downstream_mtu(int resolver_idx, uint16_t upstream_mtu) {
-    /* Binary search for maximum downstream MTU */
-    int low = 30;
-    int high = g_cfg.max_download_mtu > 0 ? g_cfg.max_download_mtu : 1200;
-    int optimal = 0;
-    
-    /* In a real implementation, we would send test probes here */
-    /* For now, use a conservative default based on upstream MTU */
-    if (upstream_mtu > 0) {
-        optimal = (upstream_mtu * 2 > high) ? high : upstream_mtu * 2;
-        if (optimal < 512) optimal = 512;
     }
     
     return (uint16_t)optimal;
@@ -1722,15 +1845,22 @@ static void resolver_init_phase(void) {
                                  true, 0);
             
             init_mtu_binary_search(&results[i].down_mtu_search,
-                                 0, g_cfg.downstream_mtu > 0 ? g_cfg.downstream_mtu : 220,
-                                 30, g_cfg.min_download_mtu,
+                                 0, g_cfg.max_download_mtu > 0 ? g_cfg.max_download_mtu : 1200,
+                                 30, g_cfg.min_download_mtu > 0 ? g_cfg.min_download_mtu : 400,
                                  g_cfg.mtu_test_retries > 0 ? g_cfg.mtu_test_retries : 2,
                                  false, results[i].upstream_mtu);
             
-            /* Fire initial MTU test probes */
+            /* Fire initial MTU test probes for both upload and download */
             int first_up_mtu = get_next_mtu_to_test(&results[i].up_mtu_search);
             if (first_up_mtu > 0) {
                 fire_mtu_test_probe(i, PROBE_TEST_MTU_UP, &results[i], first_up_mtu);
+                phase4_count++;
+                if (phase4_count % 20 == 0) uv_run(g_loop, UV_RUN_NOWAIT);
+            }
+            
+            int first_down_mtu = get_next_mtu_to_test(&results[i].down_mtu_search);
+            if (first_down_mtu > 0) {
+                fire_mtu_test_probe(i, PROBE_TEST_MTU_DOWN, &results[i], first_down_mtu);
                 phase4_count++;
                 if (phase4_count % 20 == 0) uv_run(g_loop, UV_RUN_NOWAIT);
             }
@@ -1766,9 +1896,16 @@ static void resolver_init_phase(void) {
             /* Update downstream MTU from binary search */
             if (results[i].down_mtu_search.optimal > 0) {
                 r->downstream_mtu = results[i].down_mtu_search.optimal;
+                /* Cap at safe value to avoid intermediate resolver drops */
+                if (r->downstream_mtu > 700) r->downstream_mtu = 700;
             } else {
-                r->downstream_mtu = r->upstream_mtu * 2; /* Default downstream */
-                if (r->downstream_mtu > 1200) r->downstream_mtu = 1200;
+                /* Binary search didn't complete - use conservative fallback
+                 * DON'T use upstream * 2 as it can exceed intermediate resolver limits
+                 * Instead, use a safe conservative value that works on most paths */
+                r->downstream_mtu = (r->upstream_mtu > 0 && r->upstream_mtu < 350) 
+                                    ? r->upstream_mtu * 2 : 512;
+                /* Ensure we don't exceed what intermediate resolvers accept */
+                if (r->downstream_mtu > 700) r->downstream_mtu = 700;
             }
             
             r->edns0_supported = true;
@@ -2688,6 +2825,11 @@ static void send_mtu_handshake(int session_idx) {
         downstream_mtu = (uint16_t)(down_sum / active_count);
     }
     
+    /* Cap downstream MTU at 700 to avoid intermediate resolver drops
+     * Intermediate resolvers (Cloudflare, ISP) often drop packets > 1232 EDNS0
+     * or even lower. A safe maximum for most paths is 700 bytes. */
+    if (downstream_mtu > 700) downstream_mtu = 700;
+    
     LOG_INFO("Sending MTU handshake: session=%d, upstream=%u, downstream=%u\n",
              session_idx, upstream_mtu, downstream_mtu);
     
@@ -2999,6 +3141,19 @@ static void on_recovery_timer(uv_timer_t *t) {
 }
 
 /* ────────────────────────────────────────────── */
+/*  MTU Binary Search Continuation Timer         */
+/*  Continues MTU binary search by firing next    */
+/*  probes for resolvers that are mid-search      */
+/* ────────────────────────────────────────────── */
+static void on_mtu_search_timer(uv_timer_t *t) {
+    (void)t;
+    
+    /* MTU binary search continuation is now handled in on_probe_recv()
+     * when responses are received. This timer is kept for future
+     * use if we want to do periodic MTU re-testing. */
+}
+
+/* ────────────────────────────────────────────── */
 /*  TUI Render Timer (1 second)                   */
 /* ────────────────────────────────────────────── */
 static void on_tui_timer(uv_timer_t *t) {
@@ -3284,6 +3439,9 @@ int main(int argc, char *argv[]) {
 
     uv_timer_init(g_loop, &g_recovery_timer);
     uv_timer_start(&g_recovery_timer, on_recovery_timer, 1000, 1000);
+
+    uv_timer_init(g_loop, &g_mtu_search_timer);
+    uv_timer_start(&g_mtu_search_timer, on_mtu_search_timer, 500, 500);
 
     uv_timer_init(g_loop, &g_tui_timer);
     uv_timer_start(&g_tui_timer, on_tui_timer, 1000, 1000);
