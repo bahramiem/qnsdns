@@ -24,16 +24,21 @@ typedef struct {
 
 /* ── Init Phase Implementation (Scanner.py style) ─────────────────────────── */
 
+static void on_probe_close(uv_handle_t *h) {
+    free(h);
+}
+
 static void on_probe_timeout(uv_timer_t *t) {
     uv_stop(t->loop);
 }
 
 static void run_event_loop_ms(int ms) {
-    uv_timer_t wait;
-    uv_timer_init(g_client_loop, &wait);
-    uv_timer_start(&wait, on_probe_timeout, (uint64_t)ms, 0);
+    uv_timer_t *wait = malloc(sizeof(uv_timer_t));
+    if (!wait) return;
+    uv_timer_init(g_client_loop, wait);
+    uv_timer_start(wait, on_probe_timeout, (uint64_t)ms, 0);
     uv_run(g_client_loop, UV_RUN_DEFAULT);
-    uv_close((uv_handle_t*)&wait, NULL);
+    uv_close((uv_handle_t*)wait, on_probe_close);
 }
 
 void resolver_run_init_phase(void) {

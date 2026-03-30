@@ -115,6 +115,11 @@ void session_upstream_write(srv_session_t *s, const uint8_t *data, size_t len);
 void session_send_status(srv_session_t *s, uint8_t status);
 
 /**
+ * @brief Manually append data to the upstream buffer (for protocol bytes).
+ */
+void session_upstream_write_to_buffer(srv_session_t *s, const uint8_t *data, size_t len);
+
+/**
  * @brief Initiate upstream TCP connection (supports DNS resolution).
  * @param s The session.
  * @param target_host Hostname or IP.

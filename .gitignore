@@ -29,3 +29,6 @@ _deps/
 *.swp
 *.swo
 .DS_Store
+verification_temp/old_client_main.c
+verification_temp/old_server_main.c
+verification_temp/old_shared_tui.c

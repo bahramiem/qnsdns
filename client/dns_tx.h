@@ -44,4 +44,11 @@ void dns_tx_send_poll(int session_idx);
  */
 void dns_tx_send_handshake(int session_idx);
 
+/**
+ * @brief Send a raw binary packet to a selected resolver from the pool.
+ * @param buf Data buffer.
+ * @param len Data length.
+ */
+void dns_tx_send_raw(const uint8_t *buf, size_t len);
+
 #endif /* QNS_CLIENT_DNS_TX_H */

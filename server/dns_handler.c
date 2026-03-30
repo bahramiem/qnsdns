@@ -8,15 +8,11 @@
 #include "swarm.h"
 #include "server_common.h"
 #include "../shared/base32.h"
-#include "../shared/codec.h"
-#include "../shared/fec/core.h"
-#include "../shared/window/sliding.h"
 #include "../shared/types.h"
-#include "SPCDNS/dns.h"
+#include "../SPCDNS/dns.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-#include <ctype.h>
 
 /* Forward Declarations */
 static int build_txt_reply(uint8_t *out, size_t *outlen, uint16_t qid, const char *qname,
@@ -156,15 +152,17 @@ void dns_handler_on_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     char *tok = strtok(tmp_qname, ".");
     while (tok && pcount < 16) { parts[pcount++] = tok; tok = strtok(NULL, "."); }
 
-    /* Identify Domain Suffix */
-    int dparts = 0;
-    if (g_server_cfg) {
-        for (int d = 0; d < g_server_cfg->domain_count; d++) {
-            /* Case-insensitive suffix match logic ... (omitted for brevity, assume 2 labels) */
-            /* In a real implementation we would iterate labels of g_server_cfg->domains[d] */
-        }
+    /* Identify Domain Suffix (Restored from stable version) */
+    int dparts = 2; /* Default */
+    if (g_server_cfg && g_server_cfg->domain_count > 0) {
+        const char *domain = g_server_cfg->domains[0];
+        char dtmp[256]; strncpy(dtmp, domain, sizeof(dtmp)-1);
+        char *dtok = strtok(dtmp, ".");
+        int cur_d = 0;
+        while (dtok) { cur_d++; dtok = strtok(NULL, "."); }
+        if (cur_d > 0) dparts = cur_d;
     }
-    dparts = 2; /* Simplified for now: assume example.com suffix */
+    
     int payload_labels = pcount - dparts;
     if (payload_labels < 1) return;
 
@@ -176,7 +174,7 @@ void dns_handler_on_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
 
     /* 4. Base32 Decode to Chunk Header and Payload */
     uint8_t raw[1024];
-    ssize_t rawlen = base32_decode(raw, b32, strlen(b32));
+    ssize_t rawlen = base32_decode(raw, b32, (size_t)strlen(b32));
     if (rawlen < (ssize_t)sizeof(chunk_header_t)) return;
 
     chunk_header_t *hdr = (chunk_header_t *)raw;
@@ -199,14 +197,17 @@ void dns_handler_on_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
 
     /* 6. Protocol Logic (FEC Reassembly or Direct Forward) */
     if (total > 1) {
-        /* FEC Multi-symbol Burst Handle ... (Modular integration) */
+        /* FEC Multi-symbol Burst Handle */
         uint16_t esi = (uint16_t)(seq % total);
         uint16_t base = (uint16_t)(seq - esi);
         
         bool is_new = (sess->burst_count_needed == 0) || (base != sess->burst_seq_start);
         if (is_new) {
             /* Cleanup and Start New Burst */
-            if (sess->burst_symbols) { /* Free logic ... */ }
+            if (sess->burst_symbols) { 
+                for (int m=0; m<sess->burst_count_needed; m++) if (sess->burst_symbols[m]) free(sess->burst_symbols[m]);
+                free(sess->burst_symbols);
+            }
             sess->burst_seq_start = base;
             sess->burst_count_needed = total;
             sess->cl_fec_k = k_source;
@@ -230,7 +231,6 @@ void dns_handler_on_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         /* Trigger Decoding if K symbols reached */
         if (sess->burst_received >= k_source && !sess->burst_decoded) {
             sess->burst_decoded = true;
-            /* In modular version, we use the abstract FEC interface */
             fec_encoded_t fenc = {
                 .symbols = sess->burst_symbols, .symbol_len = dlen,
                 .total_count = total, .k_source = k_source,
@@ -240,16 +240,33 @@ void dns_handler_on_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
             
             codec_result_t fdec = codec_fec_decode_oti(&fenc);
             if (!fdec.error) {
-                /* Decrypt and Decompress ... (Simplified for focus) */
+                /* Decompress (skip 4-byte nonce automatically encoded by client) */
                 codec_result_t zdec = codec_decompress(fdec.data, fdec.len, 0);
                 if (!zdec.error && zdec.len > 4) {
-                    const uint8_t *p = zdec.data + 4; /* Skip nonce */
+                    const uint8_t *p = zdec.data + 4; 
                     size_t plen = zdec.len - 4;
                     
-                    if (plen >= 10 && p[0] == 0x05 && p[1] == 0x01) {
-                         /* Handle SOCKS5 CONNECT (hostname/IP parse) */
-                         char host[256] = "google.com"; uint16_t port = 80;
-                         session_upstream_connect(sess, host, port, NULL, 0);
+                    if (!sess->tcp_connected && plen >= 10 && p[0] == 0x05 && p[1] == 0x01) {
+                        /* RESTORATION: Parse SOCKS5 Target from real payload */
+                        char target[256] = {0}; uint16_t tport = 0;
+                        uint8_t atype = p[3];
+                        if (atype == 0x01) { /* IPv4 */
+                            sprintf(target, "%d.%d.%d.%d", p[4], p[5], p[6], p[7]);
+                            tport = (uint16_t)((p[8] << 8) | p[9]);
+                        } else if (atype == 0x03) { /* Domain */
+                            uint8_t hlen = p[4];
+                            if (hlen < 255 && hlen + 7 <= plen) {
+                                memcpy(target, p + 5, hlen);
+                                tport = (uint16_t)((p[5 + hlen] << 8) | p[6 + hlen]);
+                            }
+                        }
+                        if (target[0]) {
+                            LOG_INFO("SOCKS5 CONNECT: %s:%d (ID %u)\n", target, tport, sid);
+                            session_upstream_connect(sess, target, tport, NULL, 0);
+                            /* Prepend the mandatory SOCKS5 Success status byte to the response stream */
+                            uint8_t status[10] = {0x05, 0x00, 0x00, 0x01, 0,0,0,0,0,0};
+                            session_upstream_write_to_buffer(sess, status, 10);
+                        }
                     } else if (sess->tcp_connected) {
                          session_upstream_write(sess, p, plen);
                     }
@@ -260,10 +277,10 @@ void dns_handler_on_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         }
     } else if (!is_poll && dlen > 0) {
         /* Handshake or Direct Tunnel (non-FEC) */
-        if (dlen == 5 && data[0] == DNSTUN_VERSION) {
+        if (dlen >= 3 && data[0] == DNSTUN_VERSION) {
             sess->handshake_done = true;
             sess->cl_downstream_mtu = (uint16_t)((data[1] << 8) | data[2]);
-            sess->downstream_seq = 0; /* Reset for client reorder buffer */
+            sess->downstream_seq = 0; 
             sess->status_sent = false;
         } else if (sess->tcp_connected) {
             session_upstream_write(sess, data, dlen);

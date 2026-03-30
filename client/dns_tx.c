@@ -8,7 +8,7 @@
 #include "session.h"
 #include "../shared/base32.h"
 #include "../shared/resolver_pool.h"
-#include "../shared/codec.h"
+#include "../shared/base32.h"
 #include "../SPCDNS/dns.h"
 #include <stdio.h>
 #include <string.h>
@@ -68,7 +68,7 @@ int dns_tx_build_query(uint8_t *outbuf, size_t *outlen,
 
     /* 2. Base32 Encoding */
     char b32_raw[2048];
-    size_t b32_len = base32_encode((uint8_t*)b32_raw, raw, rawlen);
+    size_t b32_len = base32_encode(b32_raw, raw, rawlen);
 
     /* 3. Dotification */
     char b32_dotted[2048];
@@ -111,7 +111,7 @@ static void on_udp_send_done(uv_udp_send_t *req, int status) {
     (void)status;
 }
 
-static void dns_tx_send_raw(const uint8_t *buf, size_t len) {
+void dns_tx_send_raw(const uint8_t *buf, size_t len) {
     /* Multipath scattering: select a resolver from the active pool */
     if (!g_pool) return;
     int idx = rpool_select_active(g_pool);

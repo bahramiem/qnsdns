@@ -331,3 +331,20 @@ int session_get_snapshots(tui_client_snap_t *out, int max_clients) {
     }
     return count;
 }
+void session_upstream_write_to_buffer(srv_session_t *s, const uint8_t *data, size_t len) {
+    if (!s || !s->used || !data || len == 0) return;
+    
+    size_t need = s->upstream_len + len;
+    if (need > s->upstream_cap) {
+        size_t new_cap = need + 8192;
+        uint8_t *new_buf = realloc(s->upstream_buf, new_cap);
+        if (!new_buf) return;
+        s->upstream_buf = new_buf;
+        s->upstream_cap = new_cap;
+    }
+    
+    if (s->upstream_buf) {
+        memcpy(s->upstream_buf + s->upstream_len, data, len);
+        s->upstream_len += len;
+    }
+}
