@@ -351,7 +351,23 @@ static void on_upstream_read(uv_stream_t *s, ssize_t nread,
 
   if (nread <= 0) {
     free(buf->base);
-    session_close(sidx);
+    /* Do NOT call session_close() here.  The upstream TCP has finished
+     * (google.com sent its response and closed), but the DNS tunnel session
+     * must stay alive so that:
+     *   1. Any remaining data already in upstream_buf is still delivered to
+     *      the client via the next DNS TXT poll replies.
+     *   2. The session preserves handshake_done / downstream_seq so that a
+     *      second curl request reusing the same session slot does not get a
+     *      fresh memset (which would clear handshake_done and cause the server
+     *      to send responses without has_seq, leading the client's fallback
+     *      path to forward the raw SOCKS5 status byte directly to curl and
+     *      produce "HTTP/0.9 when not allowed").
+     * Just tear down the upstream TCP handle and mark tcp_connected=false so
+     * the FEC decode for the next request can safely call uv_tcp_init again. */
+    if (sess->tcp_connected &&
+        !uv_is_closing((uv_handle_t *)&sess->upstream_tcp))
+      uv_close((uv_handle_t *)&sess->upstream_tcp, NULL);
+    sess->tcp_connected = false;
     return;
   }
 
@@ -1247,6 +1263,14 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                          cr->payload_len);
 
                 sess->burst_decoded = true;
+                /* Guard: skip if upstream is already connected (duplicate
+                 * FEC decode should not open a second TCP connection). */
+                if (sess->tcp_connected) {
+                  LOG_INFO("Session %d: upstream already connected; skipping duplicate connect\n", sidx);
+                  free(cr->payload);
+                  free(cr);
+                  goto reset_burst;
+                }
                 uv_tcp_init(g_loop, &sess->upstream_tcp);
                 /* Enable TCP_NODELAY to minimize latency for interactive
                  * traffic */
