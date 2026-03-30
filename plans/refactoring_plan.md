@@ -82,6 +82,11 @@ shared/
   window/
     sliding.c         (Sliding window tracking, sequence management)
     sliding.h
+  errors.h            (Unified error code definitions)
+
+tests/
+  fec_tests.c         (Unit tests for FEC algorithms)
+  window_tests.c      (Unit tests for sliding window logics)
 ```
 
 ## Architecture Diagram
@@ -124,6 +129,7 @@ graph TD
         Sh_Mgmt["mgmt.c/h"]
         Sh_FEC["fec/<br/>core.h<br/>raptorq.c"]
         Sh_Window["window/<br/>sliding.c/h"]
+        Sh_Errors["errors.h"]
     end
 
     SM --> S_Session
@@ -223,6 +229,16 @@ To ensure sequence tracking, reorder buffering, and sliding windows are unified 
 1. **`sliding.c`**: Manages sliding window limits, ACK tracking, and sequence verification.
 2. **`session` Abstraction**: `client/session/session.c` and `server/session/session.c` will no longer reinvent reorder buffers, instead they will initialize a `window_t` struct and push/pull packets from it.
 
+### Standardized Error Handling
+
+1. **Unified Format**: All modules MUST return standardized error codes defined in `shared/errors.h` (e.g., `enum qns_err { QNS_OK, QNS_ERR_TIMEOUT, QNS_ERR_FEC_DECODE, ... }`).
+2. **Graceful Degradation**: Avoid raw integers or silent `exit(1)` failures within isolated modules. Let the core application context decide how to handle failures.
+
+### Unit Testing (`tests/`)
+
+1. **Fast Verification**: Key mathematical and structural logic (FEC, Sliding Windows, Codecs) must be decoupled entirely from network sockets so they can be tested locally using `tests/*_tests.c`.
+2. **Test Framework**: Use standard C `assert()` or a lightweight test framework. These tests will be integrated into the CMake build target so regressions are caught immediately.
+
 ## File Size Targets
 
 | File | Current | Target |
@@ -312,6 +328,7 @@ To ensure this project is accessible and understandable to junior programmers:
 2. **Human-Readable Comments**: Avoid overly terse or strictly academic language. Explain *why* the code is doing something, not just *what* it is doing, especially for bitwise operations or complex network flows like FEC or sliding windows.
 3. **Clear Naming Conventions**: Do not abbreviate variables unnecessarily (e.g., use `connection_timeout` instead of `cto`).
 4. **Step-by-Step Logic**: For complex functions, break the logic into numbered steps inside the comments (e.g., `// 1. Verify connection status`).
+5. **Doxygen CI/CD**: All block comments and signatures must adhere to Doxygen standards. A build step will be added to `.github/workflows` to auto-generate a static HTML site hosting this documentation so backend logic is easily searchable for all contributors.
 
 ## Notes for AI Agents
 
