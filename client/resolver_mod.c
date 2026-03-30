@@ -278,34 +278,43 @@ void resolver_run_init_phase(void) {
 
     resolver_test_result_t *results = calloc(count, sizeof(resolver_test_result_t));
 
-    /* Multi-phase probing */
+    int wait_ms = 5000; /* Reverted to 5s from old code for high-latency stability */
+    
+    /* Multi-phase probing with legacy relaxation */
     LOG_INFO("Phase 1: Long QNAME probes...\n");
     for (int i = 0; i < count; i++) fire_test_probe(i, PROBE_TEST_LONGNAME, &results[i]);
-    run_event_loop_ms(2000);
+    run_event_loop_ms(wait_ms);
 
     LOG_INFO("Phase 2: NXDOMAIN hijack probes...\n");
     for (int i = 0; i < count; i++) fire_test_probe(i, PROBE_TEST_NXDOMAIN, &results[i]);
-    run_event_loop_ms(2000);
+    run_event_loop_ms(wait_ms);
 
     LOG_INFO("Phase 3: EDNS0 + TXT support probes...\n");
     for (int i = 0; i < count; i++) fire_test_probe(i, PROBE_TEST_EDNS_TXT, &results[i]);
-    run_event_loop_ms(2500);
+    run_event_loop_ms(wait_ms);
 
-    /* Evaluation & Promotion */
+    /* Evaluation & Promotion (exactly as in old code) */
     int promoted = 0;
     for (int i = 0; i < count; i++) {
-        bool ok = results[i].longname_supported && results[i].nxdomain_correct && results[i].txt_supported;
+        /* [Legacy Relaxation] Phase 1 & 2 failures are logged but not fatal */
+        if (!results[i].longname_supported) {
+            LOG_WARN("Resolver %s: Long QNAME fail, relaxing...\n", g_pool->resolvers[i].ip);
+            results[i].longname_supported = true;
+        }
+        if (!results[i].nxdomain_correct) {
+            LOG_WARN("Resolver %s: NXDOMAIN fail (hijack?), relaxing...\n", g_pool->resolvers[i].ip);
+            results[i].nxdomain_correct = true;
+        }
+
+        /* Essential requirement: must have at least ONE of EDNS or TXT working */
+        bool ok = results[i].longname_supported && 
+                  results[i].nxdomain_correct && 
+                  (results[i].edns_supported || results[i].txt_supported);
+
         if (ok) {
             resolver_t *r = &g_pool->resolvers[i];
-            /* Initialize congestion and performance baselines */
-            r->cwnd = 10.0;
-            r->max_qps = 50.0;
-            r->fec_k = rpool_fec_k(g_pool, i, 10);
-            
             rpool_set_state(g_pool, i, RSV_ACTIVE);
             promoted++;
-        } else {
-            /* Keep as DEAD, rpool_tick_bg will retry later */
         }
     }
 

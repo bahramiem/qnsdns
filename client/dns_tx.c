@@ -313,7 +313,10 @@ static void on_proto_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
 void dns_tx_send_debug_packet(const char *payload, uint32_t seq) {
     if (!g_pool || !g_client_loop) return;
     int idx = rpool_select_active(g_pool);
-    if (idx < 0) return;
+    if (idx < 0) {
+        LOG_WARN("Loopback: No active resolver found! (Run Phase 6 or check resolvers)\n");
+        return;
+    }
     resolver_t *r = &g_pool->resolvers[idx];
 
     proto_ctx_t *ctx = calloc(1, sizeof(proto_ctx_t));
