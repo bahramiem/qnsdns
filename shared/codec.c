@@ -507,12 +507,14 @@ codec_result_t codec_fec_decode_oti(fec_encoded_t *encoded) {
     /* Step 2: signal no more input */
     api->end_of_input(dec, RQ_NO_FILL);
 
-    /* Step 3: trigger computation — use RQ_COMPUTE_NONE + future_get with
-     * timeout to avoid hanging forever if decoding is impossible. */
+    /* Step 3: trigger computation and wait for it to complete.
+     * CRITICAL: future_wait() MUST be called before future_free() and before
+     * decode_aligned(). Without future_wait(), the asynchronous computation
+     * has not finished when decode_aligned() is called, which returns 0 bytes
+     * written → error=1. */
     struct RFC6330_future *f = api->compute(dec, RQ_COMPUTE_COMPLETE);
     if (f) {
-        /* future_wait blocks indefinitely; use a tight loop with future_get
-         * which returns immediately without blocking. Free future regardless. */
+        api->future_wait(f);
         api->future_free(&f);
     }
 
