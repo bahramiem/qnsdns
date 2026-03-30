@@ -310,9 +310,6 @@ void dns_handler_on_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                         if (target[0]) {
                             LOG_INFO("SOCKS5 CONNECT: %s:%d (ID %u)\n", target, tport, sid);
                             session_upstream_connect(sess, target, tport, NULL, 0);
-                            /* Prepend the mandatory SOCKS5 Success status byte to the response stream */
-                            uint8_t status[10] = {0x05, 0x00, 0x00, 0x01, 0,0,0,0,0,0};
-                            session_upstream_write_to_buffer(sess, status, 10);
                         }
                     } else if (sess->tcp_connected) {
                          session_upstream_write(sess, p, plen);

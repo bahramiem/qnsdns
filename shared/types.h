@@ -15,9 +15,9 @@
 #  include <arpa/inet.h>
 #endif
 
-/* ──────────────────────────────────────────────
-   Constants
-────────────────────────────────────────────── */
+/* ----------------------------------------------
+   Data Encoding Formats
+---------------------------------------------- */
 #define DNSTUN_MAX_RESOLVERS     4096
 #define DNSTUN_MAX_SESSIONS      256    /* 8-bit session ID: 0-255 */
 #define DNSTUN_MAX_DOMAINS       32
@@ -42,18 +42,18 @@
 #define DNSTUN_SESSION_ID_LEN    8
 #define DNSTUN_VERSION           1
 
-/* Downstream encoding types (for server → client) */
+/* Downstream encoding types (for server -> client) */
 #define DNSTUN_ENC_BASE64       0      /* Default */
 #define DNSTUN_ENC_HEX          1
 
 #define DNSTUN_DEBUG_PREFIX "PROTO_TEST_"      /* Prefix for protocol loop test (matches 't'/'T' key) */
 
-/* ──────────────────────────────────────────────
+/* ----------------------------------------------
    Client Capability Header (prepended to every query)
    This tells the server the client's capabilities for this resolver path.
    Format: version(1) + upstream_mtu(2) + downstream_mtu(2) + encoding(1) + loss_pct(1)
    Total: 7 bytes
-────────────────────────────────────────────── */
+---------------------------------------------- */
 #pragma pack(push, 1)
 typedef struct {
     uint8_t  version;         /* DNSTUN_VERSION */
@@ -64,9 +64,9 @@ typedef struct {
 } capability_header_t;
 #pragma pack(pop)
 
-/* ──────────────────────────────────────────────
+/* ----------------------------------------------
    Resolver Health States
-────────────────────────────────────────────── */
+---------------------------------------------- */
 typedef enum {
     RSV_ACTIVE   = 0,   /* healthy, in round-robin */
     RSV_PENALTY  = 1,   /* rate-limited, in cooldown */
@@ -75,17 +75,17 @@ typedef enum {
     RSV_TESTING  = 4    /* currently being benchmarked */
 } resolver_state_t;
 
-/* ──────────────────────────────────────────────
+/* ----------------------------------------------
    Encoding format discovered per resolver
-────────────────────────────────────────────── */
+---------------------------------------------- */
 typedef enum {
     ENC_BINARY = 0,
     ENC_BASE64 = 1
 } enc_format_t;
 
-/* ──────────────────────────────────────────────
+/* ----------------------------------------------
    Cipher suite
-────────────────────────────────────────────── */
+---------------------------------------------- */
 typedef enum {
     CIPHER_NONE       = 0,
     CIPHER_CHACHA20   = 1,
@@ -93,18 +93,18 @@ typedef enum {
     CIPHER_NOISE_NK   = 3
 } cipher_t;
 
-/* ──────────────────────────────────────────────
+/* ----------------------------------------------
    Transport mode
-────────────────────────────────────────────── */
+---------------------------------------------- */
 typedef enum {
     TRANSPORT_UDP  = 0,  /* raw UDP port 53 */
     TRANSPORT_DOH  = 1,  /* DNS-over-HTTPS port 443 */
     TRANSPORT_DOT  = 2   /* DNS-over-TLS  port 853 */
 } transport_t;
 
-/* ──────────────────────────────────────────────
-   Resolver record — all discovered capabilities
-────────────────────────────────────────────── */
+/* ----------------------------------------------
+   Resolver record - all discovered capabilities
+---------------------------------------------- */
 typedef struct resolver {
     struct sockaddr_in addr;
     char               ip[46];
@@ -127,7 +127,7 @@ typedef struct resolver {
     double             cwnd_max;       /* config-capped ceiling */
 
     /* Loss */
-    double             loss_rate;      /* EWMA 0.0–1.0 */
+    double             loss_rate;      /* EWMA 0.0-1.0 */
     uint32_t           fec_k;          /* current FEC redundancy ratio */
     int                fail_count;     /* consecutive failures for death threshold */
 
@@ -145,12 +145,12 @@ typedef struct resolver {
     char               fail_reason[64]; /* Reason for failure in resolver testing */
 } resolver_t;
 
-/* ──────────────────────────────────────────────
-   New Compact DNS Tunnel chunk header (20 bytes)
-    Used for upstream: Client → Server (Base32 in QNAME)
-    Extended for FEC support with larger chunk_info field (32 bits)
-    Layout: session_id(1) + flags(1) + seq(2) + chunk_info(4) + oti_common(8) + oti_scheme(4)
- ────────────────────────────────────────────── */
+/* ----------------------------------------------
+   Chunk header (20 bytes)
+   Used for upstream: Client -> Server (Base32 in QNAME)
+   Extended for FEC support with larger chunk_info field (32 bits)
+   Layout: session_id(1) + flags(1) + seq(2) + chunk_info(4) + oti_common(8) + oti_scheme(4)
+---------------------------------------------- */
 #pragma pack(push, 1)
 typedef struct {
     uint8_t  session_id;     /* 8-bit session ID (0-255) */
@@ -182,10 +182,10 @@ typedef struct {
 #define RESP_ENC_MASK        0x01  /* 0=base64, 1=hex */
 #define RESP_FLAG_HAS_SEQ    0x02  /* 1 = seq field is valid (downstream sequencing) */
 
-/* ──────────────────────────────────────────────
+/* ----------------------------------------------
    Downstream Reordering Buffer
    Used for handling out-of-order packets on downstream
-────────────────────────────────────────────── */
+---------------------------------------------- */
 #define RX_REORDER_WINDOW    32     /* Number of slots in reorder buffer */
 
 /* Single slot in the reorder buffer */
@@ -383,9 +383,9 @@ typedef struct {
     uint8_t   encoding_id;      /* Encoding type (systematic, random, etc.) */
 } symbol_encoder_t;
 
-/* ──────────────────────────────────────────────
+/* ----------------------------------------------
    Active SOCKS5 session
-────────────────────────────────────────────── */
+---------------------------------------------- */
 /* Resource limits to prevent memory exhaustion (10MB max per session buffer) */
 #define MAX_SESSION_BUFFER (10 * 1024 * 1024)
 
@@ -415,6 +415,7 @@ typedef struct session {
     /* Client-specific: SOCKS5 handshake state */
     bool      socks5_connected;  /* true once SOCKS5 success sent */
     bool      status_consumed;   /* true once server status byte is stripped */
+    uint8_t   status_byte;       /* SOCKS5 status code (0x00=success) */
     bool      first_seq_received; /* true once first seq=0 response received (used to clear stale buffer) */
     
     /* Client-specific: back-pointer to SOCKS5 client (client only) */

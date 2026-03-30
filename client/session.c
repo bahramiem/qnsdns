@@ -164,14 +164,11 @@ void session_process_incoming_chunk(int sidx, uint16_t seq, const uint8_t *paylo
         if (flush_len >= 1 && !s->status_consumed) {
             uint8_t status_byte = flush_buf[0];
             s->status_consumed = true;
+            s->status_byte = status_byte;
             data_start = 1; /* Skip status byte for application data */
             
-            if (status_byte != 0x00) {
-                LOG_WARN("Session %d: SOCKS5 error 0x%02x from server\n", sidx, status_byte);
-                /* In a real app we'd trigger a SOCKS5 error reply here if not already sent */
-            } else {
-                LOG_INFO("Session %d: SOCKS5 connection confirmed by server\n", sidx);
-            }
+            /* Forward the SOCKS5 status (0x00=Success, 0x01+=Error) to the application */
+            socks5_send_ack(sidx, status_byte);
         }
 
         /* 4. Write data to SOCKS5 client */

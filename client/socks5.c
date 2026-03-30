@@ -93,9 +93,7 @@ static size_t socks5_handle_data(socks5_client_t *c, const uint8_t *data, size_t
             LOG_INFO("SOCKS5 CONNECT: %s:%d (Sess %d, wire %u)\n", 
                      s->target_host, s->target_port, sidx, s->session_id);
 
-            /* Optimistic Success ACK */
-            uint8_t reply[10] = {0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0};
-            socks5_send_reply(c, reply, 10);
+            /* [REMOVED] Optimistic Success ACK. We now wait for server status byte. */
             c->state = 2;
 
             dns_tx_send_handshake(sidx);
@@ -208,6 +206,26 @@ void socks5_write_to_session_client(int sidx, const uint8_t *data, size_t len) {
     
     socks5_client_t *c = (socks5_client_t *)s->client_ptr;
     socks5_send_reply(c, data, len);
+}
+
+void socks5_send_ack(int sidx, uint8_t status) {
+    session_t *s = session_get(sidx);
+    if (!s || s->closed || !s->client_ptr) return;
+
+    socks5_client_t *c = (socks5_client_t *)s->client_ptr;
+    if (s->socks5_connected) return;
+
+    /* RFC 1928 SOCKS5 Reply: VER(1) REP(1) RSV(1) ATYP(1) BND.ADDR(4) BND.PORT(2) */
+    uint8_t reply[10] = {0x05, status, 0x00, 0x01, 0, 0, 0, 0, 0, 0};
+    socks5_send_reply(c, reply, 10);
+    s->socks5_connected = true;
+
+    if (status != 0x00) {
+        LOG_WARN("Session %d: Handshake failed with status 0x%02x, closing\n", sidx, status);
+        uv_close((uv_handle_t *)&c->tcp, on_socks5_close);
+    } else {
+        LOG_INFO("Session %d: Handshake success, tunnel linked\n", sidx);
+    }
 }
 
 void socks5_server_shutdown(void) {

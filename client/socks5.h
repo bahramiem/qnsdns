@@ -31,6 +31,13 @@ void socks5_server_init(uv_loop_t *loop, const char *bind_addr, int port);
  */
 void socks5_write_to_session_client(int sidx, const uint8_t *data, size_t len);
 
+/**
+ * @brief Send SOCKS5 handshake reply (success or error) to the application.
+ * @param sidx Session index.
+ * @param status SOCKS5 status code (0x00=success, 0x01-0x08=error).
+ */
+void socks5_send_ack(int sidx, uint8_t status);
+
 void socks5_server_shutdown(void);
 
 #endif /* QNS_CLIENT_SOCKS5_H */
