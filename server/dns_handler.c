@@ -52,10 +52,10 @@ static void send_udp_reply_direct(uv_udp_t *h, const struct sockaddr_in *dest,
 }
 
 /**
- * @brief Decode downstream data using Base64 (DNS compatible).
+ * @brief Encode downstream data using Base32 (DNS compatible).
  */
 static size_t encode_payload(char *out, const uint8_t *in, size_t inlen) {
-    return base64_encode(out, in, inlen);
+    return base32_encode(out, in, inlen);
 }
 
 static int build_txt_reply(uint8_t *out, size_t *outlen, uint16_t qid, const char *qname,
@@ -72,7 +72,7 @@ static int build_txt_reply(uint8_t *out, size_t *outlen, uint16_t qid, const cha
     /* Build Tunnel Header */
     server_response_header_t hdr = {0};
     hdr.session_id = sid;
-    hdr.flags = 0; /* Base64 encoding */
+    hdr.flags = 0x01; /* Base32 encoding */
     if (has_seq) hdr.flags |= RESP_FLAG_HAS_SEQ;
     hdr.seq = seq;
 

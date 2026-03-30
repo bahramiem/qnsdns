@@ -173,6 +173,7 @@ set(SHARED_SOURCES
     ${WINDOW_SOURCES}
     ${TUI_SOURCES}
     shared/mgmt.c
+    shared/log.c
 )
 
 # ── Core Settings ─────────────────────────────────────────────────────────────
