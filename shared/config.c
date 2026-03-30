@@ -50,9 +50,9 @@ void config_defaults(dnstun_config_t *cfg, bool is_server) {
 
     /* mtu_testing - Binary search MTU testing like client.py */
     cfg->max_upload_mtu       = 512;     /* Maximum upload MTU to test */
-    cfg->max_download_mtu      = 1200;    /* Maximum download MTU to test */
+    cfg->max_download_mtu      = 700;    /* Maximum download MTU to test (400-700 like Python reference) */
     cfg->min_upload_mtu        = 0;       /* Minimum acceptable upload MTU (0 = no minimum) */
-    cfg->min_download_mtu      = 0;       /* Minimum acceptable download MTU (0 = no minimum) */
+    cfg->min_download_mtu      = 400;    /* Minimum download MTU to test */
     cfg->mtu_test_retries     = 2;       /* Number of retries per MTU test */
     cfg->mtu_test_timeout_ms   = 1000;    /* Timeout for MTU test packets (ms) */
     cfg->mtu_test_parallelism  = 10;      /* Parallel MTU tests */

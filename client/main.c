@@ -1434,8 +1434,8 @@ static void run_mtu_binary_search_tests(resolver_test_result_t *results) {
         
         /* Initialize download MTU binary search */
         init_mtu_binary_search(&results[i].down_mtu_search,
-                              0, g_cfg.max_download_mtu > 0 ? g_cfg.max_download_mtu : 1200,
-                              30, g_cfg.min_download_mtu > 0 ? g_cfg.min_download_mtu : 400,
+                              0, g_cfg.max_download_mtu,
+                              30, g_cfg.min_download_mtu,
                               g_cfg.mtu_test_retries > 0 ? g_cfg.mtu_test_retries : 2,
                               false, results[i].upstream_mtu);
         
@@ -1448,31 +1448,6 @@ static void run_mtu_binary_search_tests(resolver_test_result_t *results) {
     }
     
     LOG_INFO("Started %d MTU tests\n", mtu_test_count);
-}
-
-/* Find maximum upstream MTU for a resolver */
-static uint16_t find_max_upstream_mtu(int resolver_idx, uint16_t suggested_mtu) {
-    /* Binary search for maximum upstream MTU */
-    int low = 30;
-    int high = g_cfg.max_upload_mtu > 0 ? g_cfg.max_upload_mtu : 512;
-    int optimal = 0;
-    int retries = g_cfg.mtu_test_retries > 0 ? g_cfg.mtu_test_retries : 2;
-    
-    for (int mtu = high; mtu >= low; mtu -= 10) {
-        bool success = false;
-        /* In a real implementation, we would send test probes here */
-        /* For now, use the suggested MTU from EDNS as a starting point */
-        if (mtu <= suggested_mtu) {
-            optimal = mtu;
-            break;
-        }
-    }
-    
-    if (optimal == 0 && suggested_mtu > 0) {
-        optimal = suggested_mtu;
-    }
-    
-    return (uint16_t)optimal;
 }
 
 /* ────────────────────────────────────────────── */
@@ -1845,8 +1820,8 @@ static void resolver_init_phase(void) {
                                  true, 0);
             
             init_mtu_binary_search(&results[i].down_mtu_search,
-                                 0, g_cfg.max_download_mtu > 0 ? g_cfg.max_download_mtu : 1200,
-                                 30, g_cfg.min_download_mtu > 0 ? g_cfg.min_download_mtu : 400,
+                                 0, g_cfg.max_download_mtu,
+                                 30, g_cfg.min_download_mtu,
                                  g_cfg.mtu_test_retries > 0 ? g_cfg.mtu_test_retries : 2,
                                  false, results[i].upstream_mtu);
             
@@ -1897,15 +1872,13 @@ static void resolver_init_phase(void) {
             if (results[i].down_mtu_search.optimal > 0) {
                 r->downstream_mtu = results[i].down_mtu_search.optimal;
                 /* Cap at safe value to avoid intermediate resolver drops */
-                if (r->downstream_mtu > 700) r->downstream_mtu = 700;
+                if (r->downstream_mtu > g_cfg.max_download_mtu) 
+                    r->downstream_mtu = g_cfg.max_download_mtu;
             } else {
                 /* Binary search didn't complete - use conservative fallback
                  * DON'T use upstream * 2 as it can exceed intermediate resolver limits
-                 * Instead, use a safe conservative value that works on most paths */
-                r->downstream_mtu = (r->upstream_mtu > 0 && r->upstream_mtu < 350) 
-                                    ? r->upstream_mtu * 2 : 512;
-                /* Ensure we don't exceed what intermediate resolvers accept */
-                if (r->downstream_mtu > 700) r->downstream_mtu = 700;
+                 * Use min_download_mtu as safe fallback */
+                r->downstream_mtu = g_cfg.min_download_mtu;
             }
             
             r->edns0_supported = true;
@@ -2825,10 +2798,10 @@ static void send_mtu_handshake(int session_idx) {
         downstream_mtu = (uint16_t)(down_sum / active_count);
     }
     
-    /* Cap downstream MTU at 700 to avoid intermediate resolver drops
-     * Intermediate resolvers (Cloudflare, ISP) often drop packets > 1232 EDNS0
-     * or even lower. A safe maximum for most paths is 700 bytes. */
-    if (downstream_mtu > 700) downstream_mtu = 700;
+    /* Cap downstream MTU to avoid intermediate resolver drops
+     * Use config's max_download_mtu as the ceiling */
+    if (downstream_mtu > g_cfg.max_download_mtu) 
+        downstream_mtu = g_cfg.max_download_mtu;
     
     LOG_INFO("Sending MTU handshake: session=%d, upstream=%u, downstream=%u\n",
              session_idx, upstream_mtu, downstream_mtu);
