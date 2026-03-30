@@ -1005,7 +1005,27 @@ static void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
      * reorder buffer expects after it sends the capability/handshake. */
     sess->downstream_seq = 0;
     sess->handshake_done = true;
-    LOG_INFO("Session %d: downstream_seq reset to 0 on handshake, handshake_done=true\n", sidx);
+    
+    /* Clear any stale upstream data from previous requests on this session.
+     * Without this, old data with old sequence numbers could conflict with
+     * new handshake data, causing "jumping expected_seq" issues on client. */
+    sess->upstream_len = 0;
+    sess->retx_len = 0;
+    
+    /* Also clear burst state to prevent old FEC data from being decoded
+     * and sent with old sequence numbers after a new handshake. */
+    if (sess->burst_symbols) {
+      for (int i = 0; i < sess->burst_count_needed; i++) {
+        free(sess->burst_symbols[i]);
+      }
+      free(sess->burst_symbols);
+      sess->burst_symbols = NULL;
+      sess->burst_count_needed = 0;
+      sess->burst_received = 0;
+      sess->burst_decoded = true; /* Set to true to prevent duplicate decodes */
+    }
+    
+    LOG_INFO("Session %d: downstream_seq reset to 0 on handshake, handshake_done=true (cleared upstream_buf and burst)\n", sidx);
   }
 
   /* ── Handle FEC Burst Reassembly ──────────────────────────────────── */
