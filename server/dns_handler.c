@@ -197,7 +197,18 @@ void dns_handler_on_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     sess->client_addr = *src;
 
     /* 6. Protocol Logic (FEC Reassembly or Direct Forward) */
-    if (total > 1) {
+    if (sid == 255) {
+        /* Protocol Loopback Test: echo data directly back to upstream buffer */
+        if (dlen > 0) {
+            if (sess->upstream_buf) free(sess->upstream_buf);
+            sess->upstream_buf = malloc(dlen);
+            if (sess->upstream_buf) {
+                memcpy(sess->upstream_buf, data, dlen);
+                sess->upstream_len = dlen;
+                LOG_DEBUG("Loopback: Echoed %zu bytes for Sess 255\n", dlen);
+            }
+        }
+    } else if (total > 1) {
         /* FEC Multi-symbol Burst Handle */
         uint16_t esi = (uint16_t)(seq % total);
         uint16_t base = (uint16_t)(seq - esi);

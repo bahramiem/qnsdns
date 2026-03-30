@@ -51,4 +51,11 @@ void dns_tx_send_handshake(int session_idx);
  */
 void dns_tx_send_raw(const uint8_t *buf, size_t len);
 
+/**
+ * @brief Send a specialized debug packet with session 255.
+ * @param payload Payload string.
+ * @param seq Sequence number.
+ */
+void dns_tx_send_debug_packet(const char *payload, uint32_t seq);
+
 #endif /* QNS_CLIENT_DNS_TX_H */

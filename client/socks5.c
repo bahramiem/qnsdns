@@ -202,6 +202,14 @@ void socks5_server_init(uv_loop_t *loop, const char *bind_addr, int port) {
     }
 }
 
+void socks5_write_to_session_client(int sidx, const uint8_t *data, size_t len) {
+    session_t *s = session_get(sidx);
+    if (!s || s->closed || !s->client_ptr) return;
+    
+    socks5_client_t *c = (socks5_client_t *)s->client_ptr;
+    socks5_send_reply(c, data, len);
+}
+
 void socks5_server_shutdown(void) {
     if (!uv_is_closing((uv_handle_t *)&g_socks_listener)) {
         uv_close((uv_handle_t *)&g_socks_listener, NULL);

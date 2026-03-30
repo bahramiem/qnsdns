@@ -4,6 +4,7 @@
  */
 
 #include "session.h"
+#include "socks5.h"
 #include "client_common.h"
 #include "../shared/window/sliding.h"
 #include <stdio.h>
@@ -142,4 +143,45 @@ int session_get_next_active(int start_idx) {
         return -1;
     }
     return g_active_sessions[start_idx];
+}
+
+void session_process_incoming_chunk(int sidx, uint16_t seq, const uint8_t *payload, size_t len) {
+    session_t *s = session_get(sidx);
+    if (!s || s->closed) return;
+    
+    s->last_active = time(NULL);
+
+    /* 1. Insert into reorder buffer */
+    qns_reorder_insert(&s->reorder_buf, seq, payload, len);
+
+    /* 2. Flush contiguous data */
+    uint8_t flush_buf[8192];
+    size_t flush_len = 0;
+    while (qns_reorder_flush(&s->reorder_buf, flush_buf, sizeof(flush_buf), &flush_len) > 0) {
+        size_t data_start = 0;
+        
+        /* 3. Handle SOCKS5 status byte (seq 0 / first byte) */
+        if (flush_len >= 1 && !s->status_consumed) {
+            uint8_t status_byte = flush_buf[0];
+            s->status_consumed = true;
+            data_start = 1; /* Skip status byte for application data */
+            
+            if (status_byte != 0x00) {
+                LOG_WARN("Session %d: SOCKS5 error 0x%02x from server\n", sidx, status_byte);
+                /* In a real app we'd trigger a SOCKS5 error reply here if not already sent */
+            } else {
+                LOG_INFO("Session %d: SOCKS5 connection confirmed by server\n", sidx);
+            }
+        }
+
+        /* 4. Write data to SOCKS5 client */
+        size_t data_len = flush_len - data_start;
+        if (data_len > 0) {
+            socks5_write_to_session_client(sidx, flush_buf + data_start, data_len);
+            if (g_client_stats) {
+                g_client_stats->rx_total += data_len;
+                g_client_stats->rx_bytes_sec += data_len;
+            }
+        }
+    }
 }

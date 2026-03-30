@@ -10,6 +10,7 @@
 #include <stdbool.h>
 #include <time.h>
 #include "../shared/types.h"
+#include "socks5.h"
 
 /**
  * @brief Initialize the client session table.
@@ -60,5 +61,14 @@ int session_get_active_count(void);
  * @return Next active session index or -1 if none found.
  */
 int session_get_next_active(int start_idx);
+
+/**
+ * @brief Process an incoming data chunk from the DNS tunnel.
+ * @param sidx Session index.
+ * @param seq Sequence number.
+ * @param payload Data payload.
+ * @param len Payload length.
+ */
+void session_process_incoming_chunk(int sidx, uint16_t seq, const uint8_t *payload, size_t len);
 
 #endif /* QNS_CLIENT_SESSION_H */

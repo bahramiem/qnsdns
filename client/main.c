@@ -19,10 +19,10 @@
 
 #include "client_common.h"
 #include "session.h"
-#include "socks5.h"
 #include "dns_tx.h"
-#include "agg.h"
+#include "socks5.h"
 #include "resolver_mod.h"
+#include "agg.h"
 #include "../shared/config.h"
 #include "../shared/tui/tui.h"
 #include "../shared/codec.h"
@@ -174,6 +174,7 @@ int main(int argc, char *argv[]) {
     /* Accessing global resolver_pool via shared header */
     tui_init(g_client_tui, g_client_stats, g_pool, g_client_cfg, "CLIENT", config_path);
     g_client_tui->get_clients_cb = proxy_get_clients_cb;
+    g_client_tui->send_debug_cb = dns_tx_send_debug_packet;
 
     /* 6. Setup Background Timers (Early Start for responsiveness) */
     uv_timer_init(g_client_loop, &poll_timer);
