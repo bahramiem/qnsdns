@@ -24,7 +24,8 @@
  *
  * SessID (4 bits): Session ID (0-15 for multiplexing)
  * Sequence (12 bits): Per-session sequence number (0-4095)
- * Flags (8 bits): [Comp][Enc][FEC][Dir] + reserved - Compression, Encryption, FEC, Direction
+ * Flags (8 bits): Lower 4 bits: [Comp][Enc][FEC][Dir] - Compression, Encryption, FEC, Direction
+ *                Upper 4 bits: Reserved for future use (must be zero)
  */
 
 typedef struct {
