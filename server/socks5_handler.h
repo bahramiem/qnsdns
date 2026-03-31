@@ -32,6 +32,16 @@ typedef struct socks5_handler {
     void *user_data;
 } socks5_handler_t;
 
+/* SOCKS5 handler statistics */
+typedef struct socks5_handler_stats {
+    uint64_t total_clients;
+    uint64_t active_clients;
+    uint64_t bytes_sent;
+    uint64_t bytes_received;
+    uint32_t errors;
+    time_t start_time;
+} socks5_handler_stats_t;
+
 /* API Functions */
 
 /* Create SOCKS5 handler */

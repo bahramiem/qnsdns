@@ -88,6 +88,16 @@ typedef struct socks5_server {
                                  socks5_client_t *client);
 } socks5_server_t;
 
+/* SOCKS5 statistics */
+typedef struct socks5_stats {
+    uint64_t total_connections;
+    uint64_t active_connections;
+    uint64_t bytes_sent;
+    uint64_t bytes_received;
+    uint32_t errors;
+    time_t start_time;
+} socks5_stats_t;
+
 /* API Functions */
 
 /* Initialize SOCKS5 proxy module */

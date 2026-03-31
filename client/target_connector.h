@@ -42,6 +42,16 @@ typedef struct target_connector {
     void *user_data;
 } target_connector_t;
 
+/* Target connector statistics */
+typedef struct target_connector_stats {
+    uint64_t total_connections;
+    uint64_t active_connections;
+    uint64_t bytes_sent;
+    uint64_t bytes_received;
+    uint32_t errors;
+    time_t start_time;
+} target_connector_stats_t;
+
 /* API Functions */
 
 /* Create target connector */
