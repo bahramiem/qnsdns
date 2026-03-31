@@ -247,7 +247,7 @@ endif()
 if(BUILD_ULTRA_EFFICIENT)
     # Ultra-Efficient Client (Experimental high-performance tunnel)
     add_executable(dnstun-ultra-client
-        client/main.c  # TODO: Create ultra-efficient main
+        client/main.c  # TODO: Adapt main.c for ultra-efficient mode
         ${SPCDNS_SOURCES}
         ${SHARED_SOURCES}
     )
@@ -264,7 +264,7 @@ if(BUILD_ULTRA_EFFICIENT)
 
     # Ultra-Efficient Server (Experimental high-performance tunnel)
     add_executable(dnstun-ultra-server
-        server/main.c  # TODO: Create ultra-efficient main
+        server/main.c  # TODO: Adapt main.c for ultra-efficient mode
         ${SPCDNS_SOURCES}
         ${SHARED_SOURCES}
     )
