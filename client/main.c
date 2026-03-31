@@ -1992,7 +1992,20 @@ typedef struct socks5_client {
 static void on_socks5_close(uv_handle_t *h) {
     socks5_client_t *c = h->data;
     if (c && c->session_idx >= 0) {
-        g_sessions[c->session_idx].closed = true;
+        session_t *s = &g_sessions[c->session_idx];
+        
+        /* Cleanup session buffers to prevent memory leaks */
+        reorder_buffer_free(&s->reorder_buf);
+        free(s->send_buf);
+        free(s->recv_buf);
+        s->send_buf = NULL;
+        s->recv_buf = NULL;
+        s->send_len = 0;
+        s->recv_len = 0;
+        s->send_cap = 0;
+        s->recv_cap = 0;
+        
+        s->closed = true;
         g_stats.active_sessions--;
     }
     free(c);
@@ -2273,6 +2286,13 @@ static size_t socks5_handle_data(socks5_client_t *c,
         }
 
         session_t *sess = &g_sessions[session_idx];
+        
+        /* CRITICAL FIX: Cleanup any existing session resources before reuse.
+         * This prevents memory leaks from reorder buffer slots, send_buf, and recv_buf
+         * that may have been allocated by a previous session using this slot. */
+        reorder_buffer_free(&sess->reorder_buf);
+        free(sess->send_buf);
+        free(sess->recv_buf);
         memset(sess, 0, sizeof(*sess));
         sess->session_id = get_unused_session_id();
         sess->established = true;
