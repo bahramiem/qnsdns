@@ -1980,6 +1980,7 @@ static void send_mtu_handshake(int session_idx);
 static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
                                  const uint8_t *payload, size_t paylen,
                                  int total_chunks, uint64_t oti_common, uint32_t oti_scheme);
+static void reorder_buffer_free(reorder_buffer_t *rb);
 
 typedef struct socks5_client {
     uv_tcp_t  tcp;
