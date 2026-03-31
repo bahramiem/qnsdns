@@ -190,19 +190,19 @@ void parallel_resolver_pool_process_response(parallel_resolver_pool_t *pool,
 
     pool->total_responses_received++;
 
-    /* TODO: Extract query ID from DNS response */
-    /* For now, assume we can correlate based on addr and find the matching query */
-    /* This would require parsing the DNS response header to get the query ID */
+    /* Extract query ID from DNS response header (first 2 bytes, big-endian) */
+    if (len < 12) {  /* Minimum DNS header size */
+        uv_mutex_unlock(&pool->lock);
+        return;
+    }
 
-    uint16_t query_id = 0; /* Extract from response */
+    uint16_t query_id = (response[0] << 8) | response[1];
     parallel_query_t *query = pool->active_queries;
     parallel_query_t *prev = NULL;
 
-    /* Find matching query */
+    /* Find matching query by query_id */
     while (query) {
-        /* TODO: Proper correlation logic - for now just mark first active query */
-        if (!query->completed) {
-            query_id = query->query_id;
+        if (!query->completed && query->query_id == query_id) {
             query->completed = true;
             break;
         }

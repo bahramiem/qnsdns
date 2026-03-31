@@ -23,17 +23,16 @@ static uv_mutex_t g_mutex;
 
 bool ultra_header_create(ultra_header_t *header, uint16_t session_id,
                         uint16_t sequence, uint8_t flags) {
-    if (!header || session_id >= 16 || sequence >= 4096 || flags >= 16) {
+    if (!header || session_id >= 16 || sequence >= 4096) {
         return false;
     }
 
     uint8_t seq_high = (sequence >> 8) & 0x0F;  /* Top 4 bits of sequence */
     uint8_t seq_low = sequence & 0xFF;          /* Bottom 8 bits of sequence */
 
-    header->byte0 = (uint8_t)((session_id << ULTRA_SESSION_SHIFT) | flags);
-    header->byte0 |= seq_high;  /* Add sequence high bits to bottom 4 bits */
-
+    header->byte0 = (uint8_t)((session_id << ULTRA_SESSION_SHIFT) | seq_high);
     header->byte1 = seq_low;
+    header->flags = flags;
     return true;
 }
 
@@ -42,7 +41,7 @@ bool ultra_header_parse(const ultra_header_t *header, uint16_t *session_id,
     if (!header || !session_id || !sequence || !flags) return false;
 
     *session_id = (header->byte0 & ULTRA_SESSION_MASK) >> ULTRA_SESSION_SHIFT;
-    *flags = (header->byte0 >> 4) & 0x0F;  /* Extract actual flags (top 4 bits of byte0) */
+    *flags = header->flags;
 
     uint8_t seq_high = header->byte0 & ULTRA_SEQ_HIGH_MASK;  /* Bottom 4 bits are sequence high */
     uint8_t seq_low = header->byte1 & ULTRA_SEQ_LOW_MASK;
@@ -316,12 +315,12 @@ ultra_codec_result_t ultra_dns_encode(const uint8_t *binary, size_t len) {
     *out++ = (uint8_t)len;
     out_len++;
 
-    /* Copy binary data, escaping if necessary */
+    /* Copy binary data, escaping problematic bytes */
     for (size_t i = 0; i < len && out_len < max_encoded - 1; i++) {
         uint8_t byte = binary[i];
 
-        /* Escape null bytes and dots (label separators) */
-        if (byte == 0x00 || byte == 0x2E) {
+        /* Escape null bytes, dots (label separators), and non-printable chars */
+        if (byte == 0x00 || byte == 0x2E || byte < 0x20 || byte > 0x7E || byte == 0x5C) {
             if (out_len >= max_encoded - 2) break;
             *out++ = 0x5C;  /* Escape character '\' */
             *out++ = byte;

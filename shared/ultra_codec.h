@@ -13,24 +13,24 @@
 /* ────────────────────────────────────────────────────────────── */
 
 /*
- * Ultra-Header Format (16 bits total):
+ * Ultra-Header Format (24 bits total):
  *
- *  15 14 13 12  11 10  9  8  7  6  5  4  3  2  1  0
- * ┌─────────────────────────────────────────────────────────┐
- * │  SessID   │ Flags │  Sequence High 4 bits              │
- * ├─────────────────────────────────────────────────────────┤
- * │           Sequence Low 8 bits                           │
- * └─────────────────────────────────────────────────────────┘
+ *  23 22 21 20  19 18 17 16  15 14 13 12  11 10  9  8  7  6  5  4  3  2  1  0
+ * ┌─────────────────────────────────────────────────────────────────────────────┐
+ * │  SessID   │  Sequence High 4 bits  │           Sequence Low 8 bits          │
+ * ├─────────────────────────────────────────────────────────────────────────────┤
+ * │                             Flags byte                                     │
+ * └─────────────────────────────────────────────────────────────────────────────┘
  *
  * SessID (4 bits): Session ID (0-15 for multiplexing)
- * Flags (4 bits): [Comp][Enc][FEC][Dir] - Compression, Encryption, FEC, Direction
  * Sequence (12 bits): Per-session sequence number (0-4095)
+ * Flags (8 bits): [Comp][Enc][FEC][Dir] + reserved - Compression, Encryption, FEC, Direction
  */
 
 typedef struct {
-    uint8_t byte0;  /* SessID(4) + Flags(4) */
+    uint8_t byte0;  /* SessID(4) + Sequence High(4) */
     uint8_t byte1;  /* Sequence Low(8) */
-    /* Sequence High(4) stored in byte0 bits 0-3 */
+    uint8_t flags;  /* Flags byte */
 } ultra_header_t;
 
 /* Header flag bits */
