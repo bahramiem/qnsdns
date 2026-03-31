@@ -8,20 +8,50 @@ echo "==========================================================="
 echo "  dnstun Installation Script"
 echo "==========================================================="
 echo ""
-echo "Please select what you want to install:"
-echo "  1) dnstun-server (for the remote VPS/server)"
-echo "  2) dnstun-client (for your local machine/router)"
-echo "  3) Cancel"
+echo "Please select architecture:"
+echo "  1) Original Architecture"
+echo "  2) Redesigned Architecture (AI-enhanced, server-side SOCKS5)"
+echo ""
+# When piping script via 'curl | bash', stdin is closed. We must read from /dev/tty.
+read -p "Enter choice [1-2]: " arch_choice < /dev/tty
+
+if [ "$arch_choice" == "1" ]; then
+    ARCH_TYPE="original"
+    echo ""
+    echo "Please select what you want to install:"
+    echo "  1) dnstun-server (for the remote VPS/server)"
+    echo "  2) dnstun-client (for your local machine/router)"
+    echo "  3) Cancel"
+elif [ "$arch_choice" == "2" ]; then
+    ARCH_TYPE="redesigned"
+    echo ""
+    echo "Please select what you want to install:"
+    echo "  1) dnstun-server-redesigned (SOCKS5 proxy + DNS encoder)"
+    echo "  2) dnstun-client-redesigned (tunnel endpoint)"
+    echo "  3) Cancel"
+else
+    echo "Invalid architecture choice."
+    exit 1
+fi
+
 echo ""
 # When piping script via 'curl | bash', stdin is closed. We must read from /dev/tty.
 read -p "Enter choice [1-3]: " choice < /dev/tty
 
 if [ "$choice" == "1" ]; then
     INSTALL_TYPE="server"
-    TARGET_BIN="dnstun-server"
+    if [ "$ARCH_TYPE" == "original" ]; then
+        TARGET_BIN="dnstun-server"
+    else
+        TARGET_BIN="dnstun-server-redesigned"
+    fi
 elif [ "$choice" == "2" ]; then
     INSTALL_TYPE="client"
-    TARGET_BIN="dnstun-client"
+    if [ "$ARCH_TYPE" == "original" ]; then
+        TARGET_BIN="dnstun-client"
+    else
+        TARGET_BIN="dnstun-client-redesigned"
+    fi
 else
     echo "Installation cancelled."
     exit 0
@@ -58,7 +88,13 @@ if [ ! -f "build/CMakeCache.txt" ]; then
     rm -rf build
 fi
 mkdir -p build && cd build
-cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+if [ "$ARCH_TYPE" == "redesigned" ]; then
+    cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_REDESIGNED=ON
+else
+    cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release
+fi
+
 ninja $TARGET_BIN
 cd ..
 
