@@ -276,31 +276,3 @@ int rpool_swarm_merge(resolver_pool_t *pool, const char **ips, int count) {
     }
     return added;
 }
-
-int rpool_get_active_count(resolver_pool_t *pool) {
-    if (!pool) return 0;
-    uv_mutex_lock(&pool->lock);
-    int c = pool->active_count;
-    uv_mutex_unlock(&pool->lock);
-    return c;
-}
-
-int rpool_select_active(resolver_pool_t *pool) {
-    return rpool_next(pool);
-}
-
-void rpool_tick_bg(resolver_pool_t *pool) {
-    if (!pool) return;
-    rpool_release_penalties(pool);
-    
-    /* Incremental recovery for dead resolvers */
-    int probe_ids[16];
-    int rate = (pool->cfg) ? pool->cfg->background_recovery_rate : 5;
-    int n = rpool_dead_to_probe(pool, probe_ids, 16, rate);
-    
-    for (int i = 0; i < n; i++) {
-        /* In this modular version, we just mark them for probing; 
-           the resolver_mod would normally initiate a probe DNS query here. */
-        fprintf(stderr, "[RESOLVER] Background probe initiated for: %s\n", pool->resolvers[probe_ids[i]].ip);
-    }
-}

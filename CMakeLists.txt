@@ -144,36 +144,14 @@ set(SPCDNS_SOURCES
     SPCDNS/output.c
 )
 
-# ── Modularized FEC sources ───────────────────────────────────────────────────
-set(FEC_SOURCES
-    shared/fec/raptorq.c
-    shared/fec/reedsolomon.c
-)
-
-# ── Modularized Sliding Window sources ─────────────────────────────────────────
-set(WINDOW_SOURCES
-    shared/window/sliding.c
-)
-
-# ── Modularized TUI sources ────────────────────────────────────────────────────
-set(TUI_SOURCES
-    shared/tui/render.c
-    shared/tui/log.c
-    shared/tui/input.c
-    shared/tui/panels.c
-)
-
 # ── Shared tunnel sources ─────────────────────────────────────────────────────
 set(SHARED_SOURCES
     shared/config.c
-    shared/codec.c
     shared/base32.c
     shared/resolver_pool.c
-    ${FEC_SOURCES}
-    ${WINDOW_SOURCES}
-    ${TUI_SOURCES}
+    shared/tui.c
+    shared/codec.c
     shared/mgmt.c
-    shared/log.c
 )
 
 # ── Core Settings ─────────────────────────────────────────────────────────────
@@ -185,11 +163,6 @@ option(BUILD_SERVER "Build the tunnel server" ON)
 # ── Client ────────────────────────────────────────────────────────────────────
 add_executable(dnstun-client
     client/main.c
-    client/socks5.c
-    client/session.c
-    client/dns_tx.c
-    client/agg.c
-    client/resolver_mod.c
     ${SPCDNS_SOURCES}
     ${SHARED_SOURCES}
 )
@@ -206,14 +179,8 @@ endif()
 
 # ── Server ────────────────────────────────────────────────────────────────────
 if(BUILD_SERVER)
-    set(SERVER_SOURCES
-        server/main.c
-        server/swarm.c
-        server/session.c
-        server/dns_handler.c
-    )
     add_executable(dnstun-server
-        ${SERVER_SOURCES}
+        server/main.c
         ${SPCDNS_SOURCES}
         ${SHARED_SOURCES}
     )
@@ -235,13 +202,6 @@ option(BUILD_STANDALONE_TUI "Build standalone TUI executable (connects to core v
 if(BUILD_STANDALONE_TUI)
     add_subdirectory(tui-standalone)
 endif()
-
-# ── Tests ───────────────────────────────────────────────────────────────────
-add_executable(test-window
-    tests/test_sliding_window.c
-    shared/window/sliding.c
-)
-target_include_directories(test-window PRIVATE . shared)
 
 # ── Install ───────────────────────────────────────────────────────────────────
 include(GNUInstallDirs)

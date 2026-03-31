@@ -8,7 +8,7 @@
 #include <RaptorQ/RFC6330.h>
 
 /* For uv_mutex_t type */
-#include "../uv.h"
+#include "uv.h"
 
 /*
  * [HIGH] Buffer Pool to Avoid Frequent Allocations

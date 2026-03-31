@@ -34,7 +34,6 @@ typedef struct dnstun_config {
     /* [tuning] */
     int      poll_interval_ms;  /* downstream POLL interval */
     int      fec_window;        /* chunks between FEC recalc */
-    int      fec_redundancy;    /* percentage of repair symbols (default: 20%) */
     double   cwnd_init;         /* starting cong window */
     double   cwnd_max;          /* max cong window */
     int      idle_timeout_sec;
@@ -87,15 +86,9 @@ typedef struct dnstun_config {
     bool     chaffing;
     bool     chrome_cover;      /* Chrome DNS fingerprint traffic */
 
-     /* [ota] */
-     bool     ota_enabled;
-     int      ota_check_interval_sec;
-
-     /* [timing] */
-     int      idle_timer_ms;        /* Server: session cleanup interval */
-     int      tui_update_ms;        /* TUI refresh interval */
-     int      agg_timer_ms;         /* Client: aggregation burst driver */
-     int      bg_timer_ms;          /* Client: background maintenance */
+    /* [ota] */
+    bool     ota_enabled;
+    int      ota_check_interval_sec;
 
 } dnstun_config_t;
 

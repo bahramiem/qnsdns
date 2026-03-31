@@ -1,97 +1,111 @@
-# qnsdns — High-Performance DNS Tunnel VPN
+# qnsdns: High-Performance DNS Tunnel VPN 🚀
 
-Welcome to **qnsdns**, a modular, high-performance DNS tunnel proxy. It is designed to help you bypass restrictive firewalls or captive portals by encapsulating your internet traffic within standard DNS queries.
+**qnsdns** (also referred to as `dnstun`) is a cutting-edge SOCKS5 proxy that encapsulates all your real web traffic inside standard DNS queries. It is meticulously engineered for speed, absolute reliability, and evading Deep Packet Inspection (DPI) in heavily restricted environments.
 
-This project is built from the ground up to be **educational, modular, and fast**. If you are a junior programmer or a networking enthusiast, the codebase is meticulously documented with clear examples and separated concerns to help you understand how a modern VPN protocol works.
-
----
-
-## 🚀 Key Features
-
-- **Standard SOCKS5 Interface**: Exposes a local SOCKS5 proxy (default `127.0.0.1:1080`) that seamlessly integrates with any browser, Telegram, or application.
-- **Advanced Forward Error Correction (FEC)**: Uses industry-standard RaptorQ (RFC 6330) and Reed-Solomon encoding to mathematically recover lost packets. This means we can drop retransmissions entirely and achieve high speeds even on terrible connections.
-- **Multipath Scattering**: Automatically distributes your tunnel traffic across hundreds of public DNS resolvers (like 1.1.1.1 or 8.8.8.8) to bypass per-resolver strict rate limits.
-- **Binary MTU Discovery**: Automatically finds the maximum safe packet size for your network to prevent silent packet drops and sequence desynchronization.
-- **Real-Time TUI Dashboard**: A professional, dynamic terminal interface to monitor latency, throughput, session health, and FEC recovery rates.
+By hiding your traffic inside identical-looking DNS TXT queries, `qnsdns` allows you to bypass captive portals, public Wi-Fi limitations, and national firewalls.
 
 ---
 
-## 🛠 For the End User: Configuration & Setup
+## 🧠 How It Works (Implementation Details)
 
-Once installed, `qnsdns` is driven by simple configuration files (`client.ini` and `server.ini`). The most critical setting for a stable connection is your **FEC Redundancy**.
+Unlike traditional OpenVPN or WireGuard which use a dedicated port, modern network firewalls often block unknown UDP/TCP traffic. However, almost all networks allow **DNS (Port 53)** traffic because without it, the internet simply doesn't work.
 
-### Understanding FEC (Forward Error Correction)
-DNS is fundamentally lossy. Firewalls often drop large or frequent DNS queries. Instead of waiting to realize a packet was dropped and asking the server to resend it (which is incredibly slow over DNS), `qnsdns` sends mathematically redundant "extra" packets alongside your data. If the server drops 10% of your packets, but you sent 10% extra redundant symbols, the server can perfectly reconstruct the original data without ever asking for a retransmission!
+1. **Scatter-Gather Multiplexing**: Instead of sending all queries to a single DNS server (which would look suspicious and run very slowly), the client "scatters" concurrent DNS queries across a huge swarm of public resolvers (like `8.8.8.8` and `1.1.1.1`).
+2. **Forward Error Correction (FEC)**: DNS protocols natively drop packets over UDP. Instead of relying on slow TCP-like retransmissions, this implementation uses advanced Forward Error Correction (Forward Error Correction - RaptorsQ / Reed-Solomon) to send "parity" math equations alongside the data. If a packet drops, the receiver solves the math equation to permanently recover the lost data without asking for it again!
+3. **AIMD Congestion Control**: Similar to TCP Cubic, the active client tracks the health of every single DNS resolver. If a resolver gets overloaded, the client smoothly slides down the allowed requests (Congestion Window) and shifts the traffic to faster resolvers in real time.
+4. **Active Obfuscation**: The tunnel optionally adds randomized time delays (Jitter), fake decoy queries (Chaffing), and disguises its query structure to look perfectly identical to a vanilla Google Chrome browser.
 
-#### 🟢 Scenario: Low-Loss Networks (Home Wi-Fi, Fiber, Corporate LAN)
-If your network is relatively stable and just happens to restrict certain traffic, you don't need much redundancy. Set a low FEC overhead to maximize your throughput and minimize DNS spam.
-**In `client.ini`:**
+---
+
+## ⚙️ Configuration & Network Tuning
+
+When you run the binaries, the system utilizes the `client.ini` and `server.ini` files. 
+You can edit these files dynamically—press `3` on your keyboard while the client is running to open the live configuration panel!
+
+### 🛡️ Forward Error Correction (FEC) Settings
+Because DNS is carried over UDP, packet loss is entirely normal. The `[tuning]` section in `client.ini` determines how aggressively the application fights packet loss.
+
+* **`fec_window`**: How many data chunks are combined together before a parity equation is generated. Smaller windows fix losses *faster* but use more CPU.
+* **`fec_repair_rate`**: Fixed percentage of overhead "repair" symbols to automatically generate (e.g. `25` = 25% mathematical overhead). Set this to `0` to let the system auto-adapt based on live latency.
+
+#### 🌍 Profiles for Different Networks
+
+**1. Fast & Stable Networks (Ethernet / Good Home Wi-Fi)**
+Your internet rarely drops packets. You prioritize max bandwidth.
 ```ini
-[Tunnel]
-# 10% extra symbols. Very little overhead, fast speeds.
-fec_redundancy = 10    
-# Standard safe size for most modern networks.
-symbol_size = 110      
+[tuning]
+fec_window       = 64    ; Larger window (saves CPU overhead)
+fec_repair_rate  = 0     ; Auto-adapt (minimal overhead)
+poll_interval_ms = 50    ; High responsiveness
+cwnd_max         = 512   ; High parallelism
 ```
 
-#### 🟡 Scenario: Medium-Loss Networks (Public Wi-Fi, Captive Portals)
-If you are on a hotel Wi-Fi or airport portal, they often strictly rate-limit UDP packets or drop anything slightly unusual. Increase the redundancy to guarantee delivery.
-**In `client.ini`:**
+**2. Lossy Networks (Coffee Shop Public Wi-Fi / Overloaded Cellular)**
+Your connection frequently drops data. You prioritize stability over raw bandwidth.
 ```ini
-[Tunnel]
-# 30% extra symbols. Modest overhead, survives burst packet loss.
-fec_redundancy = 30
-# Slightly smaller chunks to avoid generic packet inspection filters.
-symbol_size = 90
+[tuning]
+fec_window       = 16    ; Small window (recovers lost packets instantly)
+fec_repair_rate  = 25    ; Pre-send 25% redundant repair packets
+poll_interval_ms = 100   ; Balanced polling
+cwnd_max         = 256   ; Prevent overloading the fragile router
 ```
 
-#### 🔴 Scenario: High-Loss Environments (3G/4G Mobile Data, Heavily Censored Networks)
-Cellular networks and heavily censored environments will savagely drop UDP packets and fragment large payloads. Here, reliability is more important than raw speed.
-**In `client.ini`:**
+**3. High-Latency Networks (Satellite / Remote Deep Cellular)**
+Packets don't drop, but they take 600ms+ to arrive. You need to blast as much info as possible simultaneously.
 ```ini
-[Tunnel]
-# 50% extra symbols. Massive overhead, but practically guarantees delivery even if half your packets are destroyed.
-fec_redundancy = 50
-# Smallest chunks. Highly evasive, avoids almost all MTU fragmentation drops.
-symbol_size = 64
+[tuning]
+fec_window       = 32    ; Balanced window
+fec_repair_rate  = 5     ; Minimal static repair overhead
+poll_interval_ms = 200   ; Slower polling (saves bandwidth over satellite)
+cwnd_max         = 1024  ; Blast enormous amounts of queries simultaneously
 ```
 
 ---
 
-## 📁 Architecture (Modular Design)
+## 🚀 Installation Guide
 
-The project has been aggressively refactored to separate concerns. Each major file starts with a **Usage Example** in its header, making it easy to learn from.
+### Fast Install (Ubuntu / Debian x86_64)
+Run this single command to fetch the latest pre-compiled binaries:
+```bash
+curl -sSL https://raw.githubusercontent.com/bahramiem/qnsdns/main/fast_install.sh | bash
+```
 
-### `shared/` — The Foundation
-- **`fec/`**: The error-correction core. Contains drivers for `raptorq` and `reedsolomon`. Abstracted so the main app doesn't need to care about the math.
-- **`window/`**: Unified sliding window and sequence reorder logic to ensure out-of-order UDP packets arrive perfectly sequenced at the SOCKS5 proxy.
-- **`tui/`**: A professional Terminal UI engine built with raw ANSI escapes.
-- **`codec.c`**: Maps payload data to robust Base32/64 text ready for DNS transit.
-
-### `server/` — The Bridge
-- **`dns_handler.c`**: Parses incoming DNS queries, decodes Base32, runs the FEC decoder to recover payloads, and acknowledges sequences.
-- **`session.c`**: Manages the actual TCP connections to the real internet websites you are requesting.
-- **`swarm.c`**: Tracks the dynamic IP addresses of the client and resolver pool.
-
-### `client/` — The Entry Point
-- **`socks5.c`**: Speaks the SOCKS5 proxy protocol to your local browser.
-- **`agg.c (Aggregator)`**: The "Burster". Gathers your browse traffic, chunks it into `symbol_size` pieces, and runs the FEC encoder to attach `fec_redundancy` blocks.
-- **`dns_tx.c`**: The transmitter. Takes the encoded burst symbols and sends them rapidly outwards utilizing multipath resolver scattering.
-- **`resolver_mod.c`**: Tests public resolvers behind the scenes to find the fastest and most reliable paths.
+### Manual Compilation
+For security enthusiasts who want to compile from source natively:
+```bash
+sudo apt install build-essential cmake ninja-build
+mkdir build && cd build
+cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release
+ninja
+```
 
 ---
 
-## 💻 Building the Project
+## 📖 Usage Guide
 
-Ensure you have `cmake`, `ninja`, and a C/C++ compiler installed.
-**Dependencies:** `libuv` (async IO), `zstd` (compression), `libsodium` (encryption), `RaptorQ` (FEC).
+Both nodes feature an integrated ANSI Dashboard. Use your `Number Keys` (1, 2, 3) to switch panels and monitor health, live resolvers, and config!
+
+### 1. Launch the Server
+The Server must be run on a cloud VPS with port 53 UDP open. Remember to edit `server.ini`, or let the app prompt you for your Domain.
+```bash
+sudo ./build/server/dnstun-server
+```
+
+### 2. Launch the Client
+Run your client locally. It will auto-locate `client.ini`.
+```bash
+./build/client/dnstun-client
+```
+
+### 3. Connect Apps!
+Configure Firefox, Chrome, or any application to use the SOCKS5 proxy running precisely at `127.0.0.1:1080`!
 
 ```bash
-mkdir build && cd build
-cmake -G Ninja -D BUILD_SERVER=ON ..
-cmake --build . --config Release
+# Test command!
+curl -x socks5h://127.0.0.1:1080 http://example.com
 ```
-This will produce `dnstun-client` and `dnstun-server` executables in the `build/` directory!
 
 ---
-*Created with ❤️ for the privacy community. Stay safe, stay connected.*
+
+### Security Note
+If you want to prevent unauthorized users from using your Server, define a custom string in the `[encryption]` -> `psk` section of both your `client.ini` and `server.ini`. Any clients not providing this Pre-Shared Key will be silently dropped.

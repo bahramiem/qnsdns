@@ -43,7 +43,6 @@ void config_defaults(dnstun_config_t *cfg, bool is_server) {
     /* tuning */
     cfg->poll_interval_ms     = 500;
     cfg->fec_window           = 32;
-    cfg->fec_redundancy       = 20;
     cfg->cwnd_init            = 16.0;
     cfg->cwnd_max             = 512.0;
     cfg->idle_timeout_sec     = 120;
@@ -91,15 +90,9 @@ void config_defaults(dnstun_config_t *cfg, bool is_server) {
     cfg->chaffing             = false;
     cfg->chrome_cover         = false;
 
-     /* OTA */
-     cfg->ota_enabled          = false;
-     cfg->ota_check_interval_sec = 3600;
-
-     /* [timing] */
-     cfg->idle_timer_ms        = 1000;    /* Server: session cleanup interval */
-     cfg->tui_update_ms        = 1000;    /* TUI refresh interval */
-     cfg->agg_timer_ms         = 50;      /* Client: aggregation burst driver */
-     cfg->bg_timer_ms          = 1000;    /* Client: background maintenance */
+    /* OTA */
+    cfg->ota_enabled          = false;
+    cfg->ota_check_interval_sec = 3600;
 }
 
 /* ── Per-key setter (also used by TUI live edit) ────────────────────────────*/
@@ -149,7 +142,6 @@ int config_set_key(dnstun_config_t *cfg,
     else if (strcmp(section,"tuning")==0) {
         if      (strcmp(key,"poll_interval_ms")==0) cfg->poll_interval_ms = atoi(value);
         else if (strcmp(key,"fec_window")==0)       cfg->fec_window       = atoi(value);
-        else if (strcmp(key,"fec_redundancy")==0)   cfg->fec_redundancy   = atoi(value);
         else if (strcmp(key,"cwnd_init")==0)        cfg->cwnd_init        = atof(value);
         else if (strcmp(key,"cwnd_max")==0)         cfg->cwnd_max         = atof(value);
         else if (strcmp(key,"idle_timeout_sec")==0)  cfg->idle_timeout_sec  = atoi(value);
@@ -227,18 +219,11 @@ int config_set_key(dnstun_config_t *cfg,
         if      (strcmp(key,"serve")==0)       cfg->swarm_serve    = parse_bool(value);
         else if (strcmp(key,"save_to_disk")==0) cfg->swarm_save_disk = parse_bool(value);
     }
-     /* [ota] */
-     else if (strcmp(section,"ota")==0) {
-         if      (strcmp(key,"enabled")==0)             cfg->ota_enabled = parse_bool(value);
-         else if (strcmp(key,"check_interval_sec")==0)  cfg->ota_check_interval_sec = atoi(value);
-     }
-     /* [timing] */
-     else if (strcmp(section,"timing")==0) {
-         if      (strcmp(key,"idle_timer_ms")==0)       cfg->idle_timer_ms = atoi(value);
-         else if (strcmp(key,"tui_update_ms")==0)       cfg->tui_update_ms = atoi(value);
-         else if (strcmp(key,"agg_timer_ms")==0)        cfg->agg_timer_ms = atoi(value);
-         else if (strcmp(key,"bg_timer_ms")==0)         cfg->bg_timer_ms = atoi(value);
-     }
+    /* [ota] */
+    else if (strcmp(section,"ota")==0) {
+        if      (strcmp(key,"enabled")==0)             cfg->ota_enabled = parse_bool(value);
+        else if (strcmp(key,"check_interval_sec")==0)  cfg->ota_check_interval_sec = atoi(value);
+    }
     else {
         return -1; /* unknown section */
     }
