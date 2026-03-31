@@ -22,8 +22,8 @@ static uv_mutex_t g_mutex;
 /* ────────────────────────────────────────────────────────────── */
 
 bool ultra_header_create(ultra_header_t *header, uint16_t session_id,
-                        uint16_t sequence, uint8_t flags) {
-    if (!header || session_id >= 16 || sequence >= 4096) {
+                         uint16_t sequence, uint8_t flags) {
+    if (!header || session_id >= 16 || sequence >= 4096 || flags >= 16) {
         return false;
     }
 
