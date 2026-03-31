@@ -23,13 +23,15 @@ jobs:
           libuv1-dev libzstd-dev libsodium-dev
 
     - name: Configure CMake
-      run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+      run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_REDESIGNED=ON
 
     - name: Build
       run: |
         cmake --build build --config Release --parallel
         mv build/dnstun-client build/dnstun-client-linux-amd64
         mv build/dnstun-server build/dnstun-server-linux-amd64
+        mv build/dnstun-client-redesigned build/dnstun-client-redesigned-linux-amd64
+        mv build/dnstun-server-redesigned build/dnstun-server-redesigned-linux-amd64
 
     - name: Upload Artifacts
       uses: actions/upload-artifact@v4
@@ -38,6 +40,8 @@ jobs:
         path: |
           build/dnstun-client-linux-amd64
           build/dnstun-server-linux-amd64
+          build/dnstun-client-redesigned-linux-amd64
+          build/dnstun-server-redesigned-linux-amd64
 
   build-windows:
     name: Build on Windows
@@ -90,7 +94,7 @@ jobs:
       with:
         tag: "latest"
         name: "Latest Build"
-        body: "Automated deployment of the latest commit on the main branch. Includes Linux (Client + Server) and Windows (Client only)."
+        body: "Automated deployment of the latest commit on the main branch. Includes Linux (Client + Server + Redesigned AI-enhanced versions) and Windows (Client only)."
         artifacts: "release-artifacts/*"
         allowUpdates: true
         replacesArtifacts: true

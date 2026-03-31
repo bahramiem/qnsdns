@@ -99,11 +99,82 @@ ninja $TARGET_BIN
 cd ..
 
 # ── 5. Create default config if missing ────────────────────────────────────
-if [ "$INSTALL_TYPE" == "server" ]; then
-    if [ ! -f "server.ini" ]; then
-        echo "==> Creating default server.ini..."
-        RANDOM_PSK=$(head -c 16 /dev/urandom | xxd -p)
-        cat > server.ini <<EOF
+if [ "$ARCH_TYPE" == "redesigned" ]; then
+    # Redesigned architecture configuration
+    if [ "$INSTALL_TYPE" == "server" ]; then
+        if [ ! -f "server_redesigned.ini" ]; then
+            echo "==> Creating default server_redesigned.ini..."
+            RANDOM_PSK=$(head -c 16 /dev/urandom | xxd -p)
+            cat > server_redesigned.ini <<EOF
+[core]
+socks5_bind              = 0.0.0.0:1080
+server_bind              = 0.0.0.0:53
+is_server               = true
+workers                  = 4
+threads                  = 2
+log_level                = info
+
+[tuning]
+idle_timeout_sec         = 120
+
+[domains]
+domain1                  = tun.example.com
+
+[encryption]
+enabled                  = false
+cipher                   = chacha20
+psk                      = ${RANDOM_PSK}
+
+[ai]
+enabled                  = true
+ai_model_type            = 0
+ai_optimization_interval_ms = 1000
+ai_learning_rate         = 0.001
+EOF
+            echo "    PSK written to server_redesigned.ini: ${RANDOM_PSK}"
+            echo "    Copy this PSK into your client_redesigned.ini [encryption] psk ="
+        fi
+        CONFIG_FILE="server_redesigned.ini"
+    else
+        if [ ! -f "client_redesigned.ini" ]; then
+            echo "==> Creating default client_redesigned.ini..."
+            cat > client_redesigned.ini <<'EOF'
+[core]
+is_server               = false
+workers                  = 4
+threads                  = 2
+log_level                = info
+
+[tuning]
+idle_timeout_sec         = 120
+
+[domains]
+domain1                  = tun.example.com
+
+[encryption]
+enabled                  = false
+psk                      = REPLACE_WITH_SERVER_PSK
+
+[ai]
+enabled                  = true
+ai_model_type            = 0
+ai_optimization_interval_ms = 1000
+ai_learning_rate         = 0.001
+EOF
+            echo ""
+            echo "    IMPORTANT: edit client_redesigned.ini and set:"
+            echo "      [domains] domain1   = your.server.domain"
+            echo "      [encryption] psk    = (copy from server_redesigned.ini)"
+        fi
+        CONFIG_FILE="client_redesigned.ini"
+    fi
+else
+    # Original architecture configuration
+    if [ "$INSTALL_TYPE" == "server" ]; then
+        if [ ! -f "server.ini" ]; then
+            echo "==> Creating default server.ini..."
+            RANDOM_PSK=$(head -c 16 /dev/urandom | xxd -p)
+            cat > server.ini <<EOF
 [core]
 server_bind              = 0.0.0.0:53
 workers                  = 4
@@ -125,13 +196,14 @@ psk                      = ${RANDOM_PSK}
 serve                    = true
 save_to_disk             = true
 EOF
-        echo "    PSK written to server.ini: ${RANDOM_PSK}"
-        echo "    Copy this PSK into your client.ini [encryption] psk ="
-    fi
-else
-    if [ ! -f "client.ini" ]; then
-        echo "==> Creating default client.ini..."
-        cat > client.ini <<'EOF'
+            echo "    PSK written to server.ini: ${RANDOM_PSK}"
+            echo "    Copy this PSK into your client.ini [encryption] psk ="
+        fi
+        CONFIG_FILE="server.ini"
+    else
+        if [ ! -f "client.ini" ]; then
+            echo "==> Creating default client.ini..."
+            cat > client.ini <<'EOF'
 [core]
 socks5_bind              = 127.0.0.1:1080
 workers                  = 4
@@ -157,10 +229,12 @@ dns_flux                 = false
 enabled                  = false
 psk                      = REPLACE_WITH_SERVER_PSK
 EOF
-        echo ""
-        echo "    IMPORTANT: edit client.ini and set:"
-        echo "      [domains] list      = your.server.domain"
-        echo "      [encryption] psk    = (copy from server.ini)"
+            echo ""
+            echo "    IMPORTANT: edit client.ini and set:"
+            echo "      [domains] list      = your.server.domain"
+            echo "      [encryption] psk    = (copy from server.ini)"
+        fi
+        CONFIG_FILE="client.ini"
     fi
 fi
 
@@ -169,16 +243,29 @@ BINARY="$(pwd)/build/$TARGET_BIN"
 echo ""
 echo "==> Done!"
 echo "    Binary : $BINARY"
-if [ "$INSTALL_TYPE" == "server" ]; then
-    echo "    Config : $(pwd)/server.ini"
-    echo ""
-    echo "    Run (requires root to bind UDP port 53):"
-    echo "      sudo $BINARY"
+echo "    Config : $(pwd)/$CONFIG_FILE"
+echo ""
+
+if [ "$ARCH_TYPE" == "redesigned" ]; then
+    if [ "$INSTALL_TYPE" == "server" ]; then
+        echo "    Run (may require root to bind UDP port 53):"
+        echo "      $BINARY $CONFIG_FILE"
+        echo ""
+        echo "    External applications connect to: socks5h://your-server:1080"
+    else
+        echo "    Run:"
+        echo "      $BINARY $CONFIG_FILE"
+        echo ""
+        echo "    This client acts as a tunnel endpoint and makes outbound connections."
+    fi
 else
-    echo "    Config : $(pwd)/client.ini"
-    echo ""
-    echo "    Run:"
-    echo "      $BINARY"
-    echo ""
-    echo "    Configure proxy: socks5h://127.0.0.1:1080"
+    if [ "$INSTALL_TYPE" == "server" ]; then
+        echo "    Run (requires root to bind UDP port 53):"
+        echo "      sudo $BINARY"
+    else
+        echo "    Run:"
+        echo "      $BINARY"
+        echo ""
+        echo "    Configure proxy: socks5h://127.0.0.1:1080"
+    fi
 fi
