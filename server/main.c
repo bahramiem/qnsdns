@@ -246,6 +246,11 @@ static int session_find_by_id(uint8_t id) {
 static int session_alloc_by_id(uint8_t id) {
   for (int i = 0; i < SRV_MAX_SESSIONS; i++) {
     if (!g_sessions[i].used) {
+      /* Cleanup any existing session resources before reuse.
+       * This prevents memory leaks from upstream_buf and burst_symbols
+       * that may have been allocated by a previous session using this slot. */
+      session_close(i);
+      
       memset(&g_sessions[i], 0, sizeof(g_sessions[i]));
       g_sessions[i].session_id = id;
       g_sessions[i].used = true;
