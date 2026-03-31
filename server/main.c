@@ -248,15 +248,31 @@ static int session_find_by_id(uint8_t id) {
 static int session_alloc_by_id(uint8_t id) {
   for (int i = 0; i < SRV_MAX_SESSIONS; i++) {
     if (!g_sessions[i].used) {
-      /* Cleanup any existing session resources before reuse.
-       * This prevents memory leaks from upstream_buf and burst_symbols
-       * that may have been allocated by a previous session using this slot. */
-      session_close(i);
-      
-      memset(&g_sessions[i], 0, sizeof(g_sessions[i]));
-      g_sessions[i].session_id = id;
-      g_sessions[i].used = true;
-      g_sessions[i].last_active = time(NULL);
+      /* CRITICAL FIX: Complete session slot cleanup before reuse.
+       * This prevents stale FEC state from causing decoder hangs/freezes on subsequent requests.
+       * We must manually free all allocated resources since session_close() only works on active sessions. */
+
+      srv_session_t *s = &g_sessions[i];
+
+      /* Free allocated buffers that might remain from previous sessions */
+      if (s->upstream_buf) {
+        free(s->upstream_buf);
+        s->upstream_buf = NULL;
+      }
+
+      if (s->burst_symbols) {
+        for (int j = 0; j < s->burst_count_needed; j++) {
+          if (s->burst_symbols[j]) free(s->burst_symbols[j]);
+        }
+        free(s->burst_symbols);
+        s->burst_symbols = NULL;
+      }
+
+      /* Zero the entire session structure to ensure no stale state remains */
+      memset(s, 0, sizeof(*s));
+      s->session_id = id;
+      s->used = true;
+      s->last_active = time(NULL);
       g_stats.active_sessions++;
       return i;
     }
