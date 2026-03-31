@@ -156,6 +156,8 @@ set(SHARED_SOURCES
     shared/socks5_proxy.c
     shared/session_mgr.c
     shared/ai_optimizer.c
+    shared/ultra_codec.c
+    shared/parallel_resolver.c
 )
 
 # ── Core Settings ─────────────────────────────────────────────────────────────
@@ -164,6 +166,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # ── Options ───────────────────────────────────────────────────────────────────
 option(BUILD_SERVER "Build the tunnel server" ON)
 option(BUILD_REDESIGNED "Build the redesigned architecture versions" ON)
+option(BUILD_ULTRA_EFFICIENT "Build ultra-efficient DNS tunnel (experimental)" OFF)
 
 # ── Client ────────────────────────────────────────────────────────────────────
 add_executable(dnstun-client
@@ -237,6 +240,43 @@ if(BUILD_REDESIGNED)
 
     if(WIN32)
         target_link_libraries(dnstun-server-redesigned ws2_32 iphlpapi userenv)
+    endif()
+endif()
+
+# ── Ultra-Efficient DNS Tunnel ───────────────────────────────────────────────
+if(BUILD_ULTRA_EFFICIENT)
+    # Ultra-Efficient Client (Experimental high-performance tunnel)
+    add_executable(dnstun-ultra-client
+        client/main.c  # TODO: Create ultra-efficient main
+        ${SPCDNS_SOURCES}
+        ${SHARED_SOURCES}
+    )
+    target_include_directories(dnstun-ultra-client PRIVATE . shared client SPCDNS ${EXTRA_INCLUDES})
+    target_link_libraries(dnstun-ultra-client
+        ${UV_LIBRARIES} ${ZSTD_LIBRARIES} ${SODIUM_LIBRARIES}
+        ${RAPTORQ_LIBRARIES} ${PLATFORM_LINK_LIBS}
+    )
+    set_target_properties(dnstun-ultra-client PROPERTIES LINKER_LANGUAGE CXX)
+
+    if(WIN32)
+        target_link_libraries(dnstun-ultra-client ws2_32 iphlpapi userenv)
+    endif()
+
+    # Ultra-Efficient Server (Experimental high-performance tunnel)
+    add_executable(dnstun-ultra-server
+        server/main.c  # TODO: Create ultra-efficient main
+        ${SPCDNS_SOURCES}
+        ${SHARED_SOURCES}
+    )
+    target_include_directories(dnstun-ultra-server PRIVATE . shared server SPCDNS ${EXTRA_INCLUDES})
+    target_link_libraries(dnstun-ultra-server
+        ${UV_LIBRARIES} ${ZSTD_LIBRARIES} ${SODIUM_LIBRARIES}
+        ${RAPTORQ_LIBRARIES} ${PLATFORM_LINK_LIBS}
+    )
+    set_target_properties(dnstun-ultra-server PROPERTIES LINKER_LANGUAGE CXX)
+
+    if(WIN32)
+        target_link_libraries(dnstun-ultra-server ws2_32 iphlpapi userenv)
     endif()
 endif()
 
