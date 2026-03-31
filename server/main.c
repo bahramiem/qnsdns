@@ -234,6 +234,8 @@ static void swarm_load(void) {
 /*  Session lookup / alloc                        */
 /* ────────────────────────────────────────────── */
 
+static void session_close(int idx);
+
 /* Find session by 8-bit session ID */
 static int session_find_by_id(uint8_t id) {
   for (int i = 0; i < SRV_MAX_SESSIONS; i++)
