@@ -33,9 +33,9 @@
 #include <sys/select.h>
 #endif
 
-#include "uv.h"
-#include "SPCDNS/dns.h"
-#include "SPCDNS/output.h"
+#include "third_party/uv.h"
+#include "third_party/SPCDNS/dns.h"
+#include "third_party/SPCDNS/output.h"
 
 #include "shared/config.h"
 #include "shared/types.h"
