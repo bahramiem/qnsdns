@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "third_party/uv.h"
+#include "uv.h"
 #include "third_party/SPCDNS/dns.h"
 #include "third_party/SPCDNS/output.h"
 

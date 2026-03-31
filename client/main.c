@@ -33,7 +33,7 @@
 #include <sys/select.h>
 #endif
 
-#include "third_party/uv.h"
+#include "uv.h"
 #include "third_party/SPCDNS/dns.h"
 #include "third_party/SPCDNS/output.h"
 

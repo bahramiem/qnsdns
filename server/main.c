@@ -44,7 +44,7 @@
 
 #include "third_party/SPCDNS/dns.h"
 #include "third_party/SPCDNS/output.h"
-#include "third_party/uv.h"
+#include "uv.h"
 
 
 #include "shared/base32.h"

@@ -139,9 +139,9 @@ endif()
 
 # ── Shared SPCDNS codec sources ───────────────────────────────────────────────
 set(SPCDNS_SOURCES
-    SPCDNS/codec.c
-    SPCDNS/mappings.c
-    SPCDNS/output.c
+    third_party/SPCDNS/codec.c
+    third_party/SPCDNS/mappings.c
+    third_party/SPCDNS/output.c
 )
 
 # ── Shared tunnel sources ─────────────────────────────────────────────────────
