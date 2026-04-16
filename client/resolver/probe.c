@@ -192,7 +192,56 @@ static void on_probe_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf, const
                     rpool_set_state(&g_pool, ridx, RSV_DEAD);
                 }
             } else if (p->test_type == PROBE_TEST_MTU_UP || p->test_type == PROBE_TEST_MTU_DOWN) {
-                bool success = (rc == RCODE_OKAY || rc == RCODE_NAME_ERROR || rc == RCODE_SERVER_FAILURE);
+                bool success = false;
+                if (nread >= 12) {
+                    uint8_t *resp = (uint8_t *)buf->base;
+                    uint8_t rcode = resp[3] & 0x0F;
+                    if (rcode == RCODE_OKAY || rcode == RCODE_NAME_ERROR || rcode == RCODE_SERVER_FAILURE) {
+                        success = true;
+                        
+                        /* For Upload MTU, manually parse OPT record to find resolver's true acceptable payload limit
+                         * (we must bypass dns_decode as it fails on the oversized QNAMEs we sent) */
+                        if (p->test_type == PROBE_TEST_MTU_UP && nread > 12) {
+                            size_t offset = 12;
+                            while (offset < (size_t)nread) {
+                                uint8_t len = resp[offset];
+                                if (len == 0) { offset++; break; }
+                                if ((len & 0xC0) == 0xC0) {
+                                    if (offset + 2 > (size_t)nread) break;
+                                    offset = ((len & 0x3F) << 8) | resp[offset + 1];
+                                    break;
+                                }
+                                if (offset + 1 + len > (size_t)nread) break;
+                                offset += 1 + len;
+                            }
+                            offset += 5; /* Skip null + QTYPE + QCLASS */
+                            if (offset < (size_t)nread) {
+                                while (offset + 11 <= (size_t)nread) {
+                                    uint8_t name = resp[offset];
+                                    uint16_t rtype = (resp[offset + 1] << 8) | resp[offset + 2];
+                                    if ((name & 0xC0) == 0xC0) {
+                                        if (offset + 13 > (size_t)nread) break;
+                                        offset = ((name & 0x3F) << 8) | resp[offset + 1];
+                                        if (offset >= (size_t)nread) break;
+                                        continue;
+                                    }
+                                    if (name == 0 && rtype == 41) { /* OPT */
+                                        uint16_t resolver_payload = (resp[offset + 3] << 8) | resp[offset + 4];
+                                        if (resolver_payload > 0 && p->test_res) {
+                                            if (p->mtu_test_val <= (int)resolver_payload) {
+                                                p->test_res->up_mtu_search.optimal = p->mtu_test_val;
+                                            }
+                                        }
+                                        break;
+                                    }
+                                    uint16_t rdlen = (resp[offset + 9] << 8) | resp[offset + 10];
+                                    if (offset + 11 + rdlen > (size_t)nread) break;
+                                    offset += 11 + rdlen;
+                                }
+                            }
+                        }
+                    }
+                }
                 
                 /* For Download MTU, we MUST verify the response size is close to what we requested.
                  * Otherwise, a resolver might send an RCODE 0 but truncate the large TXT record. */
@@ -208,6 +257,11 @@ static void on_probe_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf, const
                 if (success) {
                     if (p->test_res) {
                         mark_mtu_tested(p->test_type == PROBE_TEST_MTU_UP ? &p->test_res->up_mtu_search : &p->test_res->down_mtu_search, p->mtu_test_val, true);
+                        if (p->test_type == PROBE_TEST_MTU_UP && p->test_res->up_mtu_search.optimal == 0) {
+                            p->test_res->up_mtu_search.optimal = p->mtu_test_val;
+                        } else if (p->test_type == PROBE_TEST_MTU_DOWN && p->test_res->down_mtu_search.optimal == 0) {
+                            p->test_res->down_mtu_search.optimal = p->mtu_test_val;
+                        }
                         int next_mtu = get_next_mtu_to_test(p->test_type == PROBE_TEST_MTU_UP ? &p->test_res->up_mtu_search : &p->test_res->down_mtu_search);
                         if (next_mtu > 0) {
                             fire_mtu_test_probe(p->resolver_idx, p->test_type, p->test_res, next_mtu);
@@ -297,54 +351,111 @@ int build_test_dns_query(uint8_t *outbuf, size_t *outlen, const char *domain, ui
     return 0;
 }
 
-int build_mtu_test_query(uint8_t *outbuf, size_t *outlen, const char *domain, uint16_t id, int mtu_size, probe_test_type_t test_type) {
-    char qname[1024] = {0};
-    int qlen = 0;
-    qlen += snprintf(qname, sizeof(qname), "mtu-req-%d.", mtu_size);
+int build_mtu_test_query(uint8_t *buf, size_t *outlen, const char *domain, uint16_t id, int target_mtu, probe_test_type_t test_type) {
+    size_t offset = 0;
+    size_t bufsize = *outlen;
+    bool is_upload = (test_type == PROBE_TEST_MTU_UP);
 
-    if (test_type == PROBE_TEST_MTU_UP) {
-        /* Fill to targeted size roughly, but DNS QNAMEs cannot exceed 253 characters */
-        int fill_needed = mtu_size - qlen - strlen(domain) - 2; 
-        if (fill_needed > 253 - qlen - (int)strlen(domain)) {
-            fill_needed = 253 - qlen - (int)strlen(domain);
-        }
+    /* DNS Header (12 bytes) */
+    buf[offset++] = (id >> 8) & 0xFF;
+    buf[offset++] = id & 0xFF;
+    buf[offset++] = 0x01;               /* Flags: RD = 1 */
+    buf[offset++] = 0x00;
+    buf[offset++] = 0x00;               /* QDCOUNT */
+    buf[offset++] = 0x01;
+    buf[offset++] = 0x00;               /* ANCOUNT */
+    buf[offset++] = 0x00;
+    buf[offset++] = 0x00;               /* NSCOUNT */
+    buf[offset++] = 0x00;
+    buf[offset++] = 0x00;               /* ARCOUNT */
+    buf[offset++] = 0x01;               /* 1 if EDNS */
 
-        while (fill_needed > 1) {
-            int chunk = fill_needed > 63 ? 63 : (fill_needed - 1);
-            for (int i=0; i<chunk; i++) {
-                if (qlen < (int)sizeof(qname) - 1) qname[qlen++] = 'm';
+    if (is_upload && target_mtu > 0) {
+        size_t domain_len = strlen(domain);
+        size_t base_qname_bytes = 1 + domain_len;
+        size_t overhead = 12 + 4 + 11 + base_qname_bytes;
+        size_t padding_needed = (target_mtu > (int)overhead) ? (target_mtu - (int)overhead) : 0;
+        
+        static const char b32_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+        while (padding_needed > 0) {
+            size_t label_len = (padding_needed > 63) ? 63 : padding_needed;
+            if (offset + 1 + label_len + 1 > bufsize - 64) break;
+            buf[offset++] = (uint8_t)label_len;
+            for (size_t i = 0; i < label_len; i++) {
+                buf[offset++] = b32_chars[rand() % 32];
             }
-            if (qlen < (int)sizeof(qname) - 1) qname[qlen++] = '.';
-            fill_needed -= (chunk + 1);
+            padding_needed -= label_len;
+        }
+        
+        const char *p = domain;
+        while (*p) {
+            const char *dot = strchr(p, '.');
+            if (!dot) dot = p + strlen(p);
+            size_t label_len = dot - p;
+            if (offset + label_len + 1 > bufsize - 64) break;
+            buf[offset++] = (uint8_t)label_len;
+            memcpy(buf + offset, p, label_len);
+            offset += label_len;
+            p = dot;
+            if (*p) p++;
+        }
+    } else if (!is_upload && target_mtu > 0) {
+        char prefix[32];
+        snprintf(prefix, sizeof(prefix), "mtu-req-%d", target_mtu);
+        
+        size_t prefix_len = strlen(prefix);
+        buf[offset++] = (uint8_t)prefix_len;
+        memcpy(buf + offset, prefix, prefix_len);
+        offset += prefix_len;
+        
+        const char *p = domain;
+        while (*p) {
+            const char *dot = strchr(p, '.');
+            if (!dot) dot = p + strlen(p);
+            size_t label_len = dot - p;
+            if (offset + label_len + 1 > bufsize - 64) break;
+            buf[offset++] = (uint8_t)label_len;
+            memcpy(buf + offset, p, label_len);
+            offset += label_len;
+            p = dot;
+            if (*p) p++;
+        }
+    } else {
+        const char *p = domain;
+        while (*p) {
+            const char *dot = strchr(p, '.');
+            if (!dot) dot = p + strlen(p);
+            size_t label_len = dot - p;
+            if (offset + label_len + 1 > bufsize - 64) break;
+            buf[offset++] = (uint8_t)label_len;
+            memcpy(buf + offset, p, label_len);
+            offset += label_len;
+            p = dot;
+            if (*p) p++;
         }
     }
+    
+    buf[offset++] = 0;
 
-    snprintf(qname + qlen, sizeof(qname) - qlen, "%s.", domain);
+    buf[offset++] = 0x00;  /* QTYPE: TXT (16) */
+    buf[offset++] = 0x10;
+    buf[offset++] = 0x00;  /* QCLASS: IN */
+    buf[offset++] = 0x01;
 
-    dns_question_t question = {0};
-    question.name = qname;
-    question.type = RR_TXT;
-    question.class = CLASS_IN;
+    buf[offset++] = 0x00;           
+    buf[offset++] = 0x00;           
+    buf[offset++] = 0x29;
+    uint16_t udp_size = (target_mtu > 0 && target_mtu < 1400) ? (uint16_t)target_mtu : 1232;
+    buf[offset++] = (udp_size >> 8) & 0xFF;
+    buf[offset++] = udp_size & 0xFF;
+    buf[offset++] = 0x00;           
+    buf[offset++] = 0x00;
+    buf[offset++] = 0x00;
+    buf[offset++] = 0x00;
+    buf[offset++] = 0x00;           
+    buf[offset++] = 0x00;
 
-    dns_query_t query = {0};
-    query.id = id;
-    query.query = true;
-    query.opcode = OP_QUERY;
-    query.rd = true;
-    query.qdcount = 1;
-    query.questions = &question;
-
-    dns_answer_t edns = {0};
-    edns.generic.name = (char*)".";
-    edns.generic.type = RR_OPT;
-    edns.generic.class = 4096; 
-    edns.generic.ttl = 0;
-    query.arcount = 1;
-    query.additional = &edns;
-
-    size_t sz = *outlen;
-    if (dns_encode((dns_packet_t*)outbuf, &sz, &query) != RCODE_OKAY) return -1;
-    *outlen = sz;
+    *outlen = offset;
     return 0;
 }
 
