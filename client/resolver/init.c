@@ -191,8 +191,13 @@ void resolver_init_phase(void) {
           g_cfg.min_upload_mtu,
           g_cfg.mtu_test_retries > 0 ? g_cfg.mtu_test_retries : 2, true, 0);
 
+      /* Use Phase 3 EDNS advertised payload as a starting upper bound for downstream MTU search */
+      int down_hint = results[i].downstream_mtu;
+      if (down_hint < g_cfg.min_download_mtu) down_hint = g_cfg.max_download_mtu;
+      if (down_hint > g_cfg.max_download_mtu) down_hint = g_cfg.max_download_mtu;
+
       init_mtu_binary_search(&results[i].down_mtu_search, 0,
-                             g_cfg.max_download_mtu, 30, g_cfg.min_download_mtu,
+                             down_hint, 30, g_cfg.min_download_mtu,
                              g_cfg.mtu_test_retries > 0 ? g_cfg.mtu_test_retries
                                                         : 2,
                              false, results[i].upstream_mtu);

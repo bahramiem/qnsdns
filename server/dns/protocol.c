@@ -310,9 +310,10 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
             for (int i = 0; i < requested_mtu && i < (int)sizeof(mtu_payload); i++)
                 mtu_payload[i] = (uint8_t)(rand() & 0xFF);
             uint8_t reply[5120]; size_t rlen = sizeof(reply);
+            /* For MTU tests, use a high MTU cap (4096) to allow large responses */
             if (build_txt_reply_with_seq(reply, &rlen, query_id, qname,
-                                         mtu_payload, requested_mtu,
-                                         512, 0, 0, false) == 0)
+                                         mtu_payload, (size_t)requested_mtu,
+                                         4096, 0, 0, false) == 0)
                 send_udp_reply(src, reply, rlen);
         }
         return;

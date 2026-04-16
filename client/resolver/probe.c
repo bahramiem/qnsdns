@@ -136,6 +136,9 @@ static void on_probe_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf, const
                 dns_query_t *resp = (dns_query_t*)decoded;
                 if (rc == RCODE_NAME_ERROR) {
                     if (p->test_res) p->test_res->nxdomain_correct = true;
+                } else if (rc == RCODE_OKAY && resp->ancount == 0) {
+                    /* Also accept NOERROR if there are zero answers (some resolvers do this) */
+                    if (p->test_res) p->test_res->nxdomain_correct = true;
                 } else if (rc == RCODE_OKAY && resp->ancount > 0) {
                     if (p->test_res) p->test_res->nxdomain_correct = false;
                     rpool_set_state(&g_pool, ridx, RSV_DEAD);
@@ -189,7 +192,20 @@ static void on_probe_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf, const
                     rpool_set_state(&g_pool, ridx, RSV_DEAD);
                 }
             } else if (p->test_type == PROBE_TEST_MTU_UP || p->test_type == PROBE_TEST_MTU_DOWN) {
-                if (rc == RCODE_OKAY || rc == RCODE_NAME_ERROR || rc == RCODE_SERVER_FAILURE) {
+                bool success = (rc == RCODE_OKAY || rc == RCODE_NAME_ERROR || rc == RCODE_SERVER_FAILURE);
+                
+                /* For Download MTU, we MUST verify the response size is close to what we requested.
+                 * Otherwise, a resolver might send an RCODE 0 but truncate the large TXT record. */
+                if (success && p->test_type == PROBE_TEST_MTU_DOWN) {
+                    /* Header overhead is roughly 100-200 bytes. 
+                     * If we requested X, we expect at least X bytes in nread. */
+                    if (nread < (ssize_t)p->mtu_test_val) {
+                        success = false;
+                        LOG_DEBUG("MTU DOWN test at %d failed size check (got %zd)\n", p->mtu_test_val, nread);
+                    }
+                }
+
+                if (success) {
                     if (p->test_res) {
                         mark_mtu_tested(p->test_type == PROBE_TEST_MTU_UP ? &p->test_res->up_mtu_search : &p->test_res->down_mtu_search, p->mtu_test_val, true);
                         int next_mtu = get_next_mtu_to_test(p->test_type == PROBE_TEST_MTU_UP ? &p->test_res->up_mtu_search : &p->test_res->down_mtu_search);
