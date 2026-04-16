@@ -99,10 +99,21 @@ static FILE *g_debug_log = NULL;
 /* ────────────────────────────────────────────── */
 static int log_level(void) { return g_cfg.log_level; }
 
-#define LOG_INFO(...)  do { if (log_level() >= 1) { fprintf(stdout, "[INFO]  " __VA_ARGS__); if (g_debug_log) fprintf(g_debug_log, "[INFO]  " __VA_ARGS__); tui_debug_log(&g_tui, 2, __VA_ARGS__); } } while(0)
-#define LOG_DEBUG(...) do { if (log_level() >= 2) { fprintf(stdout, "[DEBUG] " __VA_ARGS__); if (g_debug_log) fprintf(g_debug_log, "[DEBUG] " __VA_ARGS__); tui_debug_log(&g_tui, 3, __VA_ARGS__); } } while(0)
-#define LOG_WARN(...)  do { if (log_level() >= 1) { fprintf(stdout, "[WARN]  " __VA_ARGS__); if (g_debug_log) fprintf(g_debug_log, "[WARN]  " __VA_ARGS__); tui_debug_log(&g_tui, 1, __VA_ARGS__); } } while(0)
-#define LOG_ERR(...)   do { fprintf(stderr, "[ERROR] " __VA_ARGS__); if (g_debug_log) fprintf(g_debug_log, "[ERROR] " __VA_ARGS__); tui_debug_log(&g_tui, 0, __VA_ARGS__); } while(0)
+/* Always-on debug log helper (writes to file regardless of log_level) */
+#define DBGLOG(...) do { \
+    if (g_debug_log) { \
+        time_t _t = time(NULL); \
+        struct tm *_tm = localtime(&_t); \
+        fprintf(g_debug_log, "%02d:%02d:%02d ", _tm->tm_hour, _tm->tm_min, _tm->tm_sec); \
+        fprintf(g_debug_log, __VA_ARGS__); \
+        fflush(g_debug_log); \
+    } \
+} while(0)
+
+#define LOG_INFO(...)  do { if (log_level() >= 1) { if (g_debug_log) { fprintf(g_debug_log, "[INFO]  " __VA_ARGS__); fflush(g_debug_log); } tui_debug_log(&g_tui, 2, __VA_ARGS__); } } while(0)
+#define LOG_DEBUG(...) do { if (log_level() >= 2) { if (g_debug_log) { fprintf(g_debug_log, "[DEBUG] " __VA_ARGS__); fflush(g_debug_log); } tui_debug_log(&g_tui, 3, __VA_ARGS__); } } while(0)
+#define LOG_WARN(...)  do { if (log_level() >= 1) { if (g_debug_log) { fprintf(g_debug_log, "[WARN]  " __VA_ARGS__); fflush(g_debug_log); } tui_debug_log(&g_tui, 1, __VA_ARGS__); } } while(0)
+#define LOG_ERR(...)   do { if (g_debug_log) { fprintf(g_debug_log, "[ERROR] " __VA_ARGS__); fflush(g_debug_log); } tui_debug_log(&g_tui, 0, __VA_ARGS__); } while(0)
 
 static uint16_t rand_u16(void) {
     return (uint16_t)(rand() & 0xFFFF);
@@ -1991,9 +2002,15 @@ typedef struct socks5_client {
 
 static void on_socks5_close(uv_handle_t *h) {
     socks5_client_t *c = h->data;
-    if (c && c->session_idx >= 0) {
-        g_sessions[c->session_idx].closed = true;
-        g_stats.active_sessions--;
+    if (c && c->session_idx >= 0 && c->session_idx < DNSTUN_MAX_SESSIONS) {
+        session_t *s = &g_sessions[c->session_idx];
+        DBGLOG("[CLOSE] session_idx=%d session_id=%u target=%s:%u tx_next=%u\n",
+               c->session_idx, s->session_id,
+               s->target_host, s->target_port, s->tx_next);
+        s->closed    = true;
+        s->client_ptr = NULL;  /* Invalidate back-pointer so stale DNS callbacks don't use it */
+        if (g_stats.active_sessions > 0)
+            g_stats.active_sessions--;
     }
     free(c);
 }
@@ -2005,15 +2022,7 @@ static void on_socks5_write_done(uv_write_t *w, int status) {
 }
 
 static void socks5_send(socks5_client_t *c, const uint8_t *data, size_t len) {
-    /* DEBUG: Log data being sent to SOCKS5 client */
-    fprintf(stderr, "[DEBUG] socks5_send: sending %zu bytes to SOCKS5 client\n", len);
-    if (len > 0) {
-        fprintf(stderr, "[DEBUG] First 16 bytes: ");
-        for (size_t i = 0; i < len && i < 16; i++) {
-            fprintf(stderr, "%02x ", data[i]);
-        }
-        fprintf(stderr, "\n");
-    }
+    DBGLOG("[SOCKS5_SEND] %zu bytes\n", len);
 
     uv_write_t *w = malloc(sizeof(*w) + len);
     if (!w) return;
@@ -2269,16 +2278,22 @@ static size_t socks5_handle_data(socks5_client_t *c,
         if (session_idx < 0) {
             uint8_t err[10] = {0x05,0x05,0x00,0x01,0,0,0,0,0,0};
             socks5_send(c, err, 10);
+            DBGLOG("[ALLOC] No free session slots (DNSTUN_MAX_SESSIONS=%d)\n",
+                   DNSTUN_MAX_SESSIONS);
             return min_len;  /* Consumed but errored */
         }
 
         session_t *sess = &g_sessions[session_idx];
+        /* Free any buffers from a previous session that used this slot */
+        if (sess->send_buf) { free(sess->send_buf); }
+        if (sess->recv_buf) { free(sess->recv_buf); }
+        uint8_t prev_session_id = sess->session_id;  /* for logging */
         memset(sess, 0, sizeof(*sess));
-        sess->session_id = get_unused_session_id();
+        sess->session_id  = get_unused_session_id();
         sess->established = true;
         sess->closed      = false;
         sess->last_active = time(NULL);
-        
+
         /* Initialize downstream reorder buffer */
         reorder_buffer_init(&sess->reorder_buf);
 
@@ -2304,16 +2319,20 @@ static size_t socks5_handle_data(socks5_client_t *c,
         c->state = 2;
         sess->client_ptr = c;  /* Link session back to SOCKS5 client */
         sess->socks5_connected = false;  /* Don't ack until server confirms */
-        
+
         /* Update TUI stats */
         g_stats.socks5_total_conns++;
         snprintf(g_stats.socks5_last_target, sizeof(g_stats.socks5_last_target),
                  "%s:%d", sess->target_host, sess->target_port);
-        
+
         g_stats.active_sessions++;
 
-        LOG_INFO("SOCKS5 CONNECT %s:%d (session %d) - waiting for server ack\n",
-                 sess->target_host, sess->target_port, session_idx);
+        DBGLOG("[ALLOC] session_idx=%d session_id=%u (prev_id=%u) target=%s:%u\n",
+               session_idx, sess->session_id, prev_session_id,
+               sess->target_host, sess->target_port);
+
+        LOG_INFO("SOCKS5 CONNECT %s:%d (session_idx=%d session_id=%u) - waiting for server ack\n",
+                 sess->target_host, sess->target_port, session_idx, sess->session_id);
 
         /* Send MTU handshake to server before sending actual data */
         send_mtu_handshake(session_idx);
@@ -2525,10 +2544,9 @@ static void on_dns_recv(uv_udp_t *h,
     dns_query_ctx_t *q = h->data;
     int ridx = q->resolver_idx;
 
-    /* DEBUG: Log received data size and buffer capacity */
+    /* Log received data size to file only */
     if (nread > 0) {
-        fprintf(stderr, "[DEBUG] on_dns_recv: received %zd bytes (recvbuf size=%zu)\n",
-                nread, sizeof(q->recvbuf));
+        DBGLOG("[DNS_RECV] ridx=%d nread=%zd\n", ridx, nread);
     }
 
     if (nread > 0) {
@@ -2618,8 +2636,16 @@ static void on_dns_recv(uv_udp_t *h,
                                 if (decoded_len >= sizeof(server_response_header_t)) {
                                     server_response_header_t hdr;
                                     memcpy(&hdr, decoded, sizeof(hdr));
-                                    
-                                    if (hdr.session_id != s->session_id) continue;
+
+                                    DBGLOG("[RECV]  session_idx=%d session_id=%u resp_session_id=%u seq=%u flags=0x%02x len=%td\n",
+                                           sidx, s->session_id, hdr.session_id,
+                                           hdr.seq, hdr.flags, decoded_len);
+
+                                    if (hdr.session_id != s->session_id) {
+                                        DBGLOG("[DROP]  session_idx=%d: resp session_id=%u != local session_id=%u (stale/misrouted packet)\n",
+                                               sidx, hdr.session_id, s->session_id);
+                                        continue;
+                                    }
 
                                     has_seq = (hdr.flags & RESP_FLAG_HAS_SEQ) != 0;
                                     if (has_seq) {
@@ -2919,10 +2945,19 @@ static void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
     hdr.flags          = (g_cfg.encryption ? CHUNK_FLAG_ENCRYPTED : 0) | CHUNK_FLAG_COMPRESSED;
     if (paylen == 0) hdr.flags |= CHUNK_FLAG_POLL; /* poll flag */
     if (total_symbols > 0) hdr.flags |= CHUNK_FLAG_FEC; /* fec flag */
-    
-    /* Session ID in bits 4-7 of flags */
-    chunk_set_session_id(&hdr, (uint8_t)session_idx);
-    
+
+    /* BUG FIX: Use sess->session_id (the unique 8-bit ID) NOT session_idx (array index).
+     * The server echoes session_id back in server_response_header_t.session_id.
+     * on_dns_recv() checks: hdr.session_id != s->session_id and drops mismatches.
+     * Using session_idx caused the 2nd curl to always be dropped because
+     * session_idx=0 but session_id=1 (or any non-zero value). */
+    chunk_set_session_id(&hdr, sess->session_id);
+
+    DBGLOG("[SEND]  session_idx=%d session_id=%u seq=%u paylen=%zu poll=%s fec=%s\n",
+           session_idx, sess->session_id, seq, paylen,
+           (paylen == 0) ? "Y" : "N",
+           (total_symbols > 0) ? "Y" : "N");
+
     hdr.seq = seq;
     
     /* chunk_info: high nibble = chunk_total-1, low nibble = fec_k
