@@ -111,7 +111,7 @@ void on_poll_timer(uv_timer_t *t) {
 
             uint8_t **sym_ptrs = NULL;
             int sym_count      = 0;
-            codec_result_t fres = {0};
+            fec_encoded_t fenc = {0};
 
             /* Check if we can do 1-symbol FEC */
             int target_sym_size = avg_mtu;
@@ -121,32 +121,31 @@ void on_poll_timer(uv_timer_t *t) {
                 int k_val = (int)ceil((double)raw_len / target_sym_size);
                 int r_val = (int)ceil(k_val * 0.1);
                 if (r_val < 1) r_val = 1;
-                fres = codec_fec_encode(raw_buf, raw_len, k_val, r_val);
-                if (!fres.error && fres.data) {
-                    fec_encoded_t *fenc = (fec_encoded_t*)fres.data;
-                    k_source   = fenc->k_source;
-                    oti_common = fenc->oti_common;
-                    oti_scheme = fenc->oti_scheme;
-                    sym_count  = fenc->total_count;
-                    sym_ptrs   = fenc->symbols;
+                fenc = codec_fec_encode(raw_buf, raw_len, k_val, r_val);
+                if (fenc.symbols) {
+                    k_source   = fenc.k_source;
+                    oti_common = fenc.oti_common;
+                    oti_scheme = fenc.oti_scheme;
+                    sym_count  = fenc.total_count;
+                    sym_ptrs   = fenc.symbols;
                 }
             }
 
             if (sym_ptrs && sym_count > 0) {
                 /* Aggregation check */
                 int syms_per_packet = calc_symbols_per_packet(avg_mtu, 
-                                        ((fec_encoded_t*)fres.data)->symbol_len);
+                                        fenc.symbol_len);
                 if (syms_per_packet > 1 && sym_count > 1) {
                     /* Packed multi-symbol send logic... For now, single send */
                     for (int sym_idx = 0; sym_idx < sym_count; sym_idx++) {
                         fire_dns_chunk_symbol(i, s->tx_next++, sym_ptrs[sym_idx],
-                                              ((fec_encoded_t*)fres.data)->symbol_len,
+                                              fenc.symbol_len,
                                               sym_count, oti_common, oti_scheme);
                     }
                 } else {
                     for (int sym_idx = 0; sym_idx < sym_count; sym_idx++) {
                         fire_dns_chunk_symbol(i, s->tx_next++, sym_ptrs[sym_idx],
-                                              ((fec_encoded_t*)fres.data)->symbol_len,
+                                              fenc.symbol_len,
                                               sym_count, oti_common, oti_scheme);
                     }
                 }
@@ -157,11 +156,8 @@ void on_poll_timer(uv_timer_t *t) {
 
             /* Cleanup */
             if (sym_ptrs) {
-                fec_encoded_t *fenc = (fec_encoded_t*)fres.data;
-                for (int i=0; i<fenc->total_count; i++) free(fenc->symbols[i]);
-                free(fenc->symbols);
+                codec_fec_free(&fenc);
             }
-            if (fres.data) free(fres.data);
             if (eres.data) free(eres.data);
             if (zres.data) free(zres.data);
 

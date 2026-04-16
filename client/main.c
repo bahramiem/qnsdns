@@ -119,6 +119,13 @@ void resolvers_save(void) {
     fclose(f);
 }
 
+static int _rpool_find(resolver_pool_t *pool, const char *ip) {
+    for (int i = 0; i < pool->count; i++) {
+        if (strcmp(pool->resolvers[i].ip, ip) == 0) return i;
+    }
+    return -1;
+}
+
 void resolvers_load(void) {
     if (!g_resolvers_file[0]) return;
     FILE *f = fopen(g_resolvers_file, "r");
@@ -130,7 +137,7 @@ void resolvers_load(void) {
         if (!line[0]) continue;
         char *ip = strtok(line, ",");
         if (!ip) continue;
-        int idx = rpool_find(&g_pool, ip);
+        int idx = _rpool_find(&g_pool, ip);
         if (idx < 0) {
             idx = g_pool.count++;
             strncpy(g_pool.resolvers[idx].ip, ip, sizeof(g_pool.resolvers[idx].ip)-1);
