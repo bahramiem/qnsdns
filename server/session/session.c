@@ -134,14 +134,27 @@ void on_upstream_write(uv_write_t *w, int status) {
 
 void upstream_write_and_read(int session_idx, const uint8_t *data, size_t len) {
     srv_session_t *s = &g_sessions[session_idx];
-    if (!s->tcp_connected) return;
+    if (!s->tcp_connected) {
+        LOG_DEBUG("Session %d: upstream_write dropped, tcp not connected len=%zu\n", session_idx, len);
+        return;
+    }
 
     uv_write_t *w = malloc(sizeof(*w) + len);
-    if (!w) return;
+    if (!w) {
+        LOG_DEBUG("Session %d: upstream_write alloc failed len=%zu\n", session_idx, len);
+        return;
+    }
 
     uint8_t *copy = (uint8_t *)(w + 1);
     memcpy(copy, data, len);
     w->data = w;
+
+    uint8_t b0 = len > 0 ? data[0] : 0;
+    uint8_t b1 = len > 1 ? data[1] : 0;
+    uint8_t b2 = len > 2 ? data[2] : 0;
+    uint8_t b3 = len > 3 ? data[3] : 0;
+    LOG_DEBUG("Session %d: upstream_write len=%zu first=%02x %02x %02x %02x\n",
+              session_idx, len, b0, b1, b2, b3);
 
     uv_buf_t buf = uv_buf_init((char *)copy, (unsigned)len);
     uv_write(w, (uv_stream_t *)&s->upstream_tcp, &buf, 1, on_upstream_write);
@@ -329,7 +342,14 @@ void on_upstream_connect(uv_connect_t *req, int status) {
 
 void session_handle_data(int sidx, const uint8_t *data, size_t len) {
     srv_session_t *sess = &g_sessions[sidx];
+    uint8_t b0 = len > 0 ? data[0] : 0;
+    uint8_t b1 = len > 1 ? data[1] : 0;
+    uint8_t b2 = len > 2 ? data[2] : 0;
+    uint8_t b3 = len > 3 ? data[3] : 0;
+    LOG_DEBUG("Session %d: handle_data len=%zu tcp_connected=%d first=%02x %02x %02x %02x\n",
+              sidx, len, sess->tcp_connected ? 1 : 0, b0, b1, b2, b3);
     if (sess->tcp_connected) {
+        LOG_DEBUG("Session %d: forwarding %zu bytes to upstream socket\n", sidx, len);
         upstream_write_and_read(sidx, data, len);
         return;
     }
@@ -346,7 +366,9 @@ void session_handle_data(int sidx, const uint8_t *data, size_t len) {
                     break;
                 }
             }
-            
+
+            LOG_DEBUG("Session %d: SOCKS greeting detected nmethods=%u has_no_auth=%d\n",
+                      sidx, nmethods, has_no_auth ? 1 : 0);
             if (has_no_auth) {
                 /* Respond with no authentication */
                 session_send_status(sidx, 0x00);
@@ -383,6 +405,8 @@ void session_handle_data(int sidx, const uint8_t *data, size_t len) {
         }
 
         if (target_host[0] && target_port > 0) {
+            LOG_INFO("Session %d: SOCKS CONNECT request target=%s:%u atype=0x%02x len=%zu\n",
+                     sidx, target_host, target_port, atype, len);
             connect_req_t *cr = calloc(1, sizeof(*cr));
             if (!cr) return;
             cr->session_idx = sidx;

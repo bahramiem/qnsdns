@@ -596,8 +596,18 @@ skip_fec_processing:; /* empty for label */
     }
 
     /* 17. Forward non-FEC payload to session handler */
-    if (!is_poll && !is_sync && payload_len > 0)
+    if (!is_poll && !is_sync && payload_len > 0) {
+        uint8_t b0 = payload_len > 0 ? payload[0] : 0;
+        uint8_t b1 = payload_len > 1 ? payload[1] : 0;
+        uint8_t b2 = payload_len > 2 ? payload[2] : 0;
+        uint8_t b3 = payload_len > 3 ? payload[3] : 0;
+        LOG_DEBUG("Session %d: non-FEC forward len=%zu flags=0x%02x enc=%d comp=%d first=%02x %02x %02x %02x\n",
+                  sidx, payload_len, hdr.flags,
+                  (hdr.flags & CHUNK_FLAG_ENCRYPTED) ? 1 : 0,
+                  (hdr.flags & CHUNK_FLAG_COMPRESSED) ? 1 : 0,
+                  b0, b1, b2, b3);
         session_handle_data(sidx, payload, payload_len);
+    }
 
     /* 18. Build and send reply to client */
     uint8_t reply[4096]; size_t rlen = sizeof(reply);

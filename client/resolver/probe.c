@@ -115,9 +115,8 @@ static void on_probe_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf, const
         double rtt = (double)(uv_hrtime() / 1000000ULL - p->sent_ms);
         if (rtt < 0.0) rtt = 0.0;
         
-        if (!p->is_init_probe) {
-            rpool_on_ack(&g_pool, ridx, rtt);
-        }
+        /* Always record RTT for all probe responses, not just non-init probes */
+        rpool_on_ack(&g_pool, ridx, rtt);
 
         dns_decoded_t decoded[DNS_DECODEBUF_4K];
         size_t decsz = sizeof(decoded);
@@ -243,17 +242,6 @@ static void on_probe_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf, const
                     }
                 }
                 
-                /* For Download MTU, we MUST verify the response size is close to what we requested.
-                 * Otherwise, a resolver might send an RCODE 0 but truncate the large TXT record. */
-                if (success && p->test_type == PROBE_TEST_MTU_DOWN) {
-                    /* Header overhead is roughly 100-200 bytes. 
-                     * If we requested X, we expect at least X bytes in nread. */
-                    if (nread < (ssize_t)p->mtu_test_val) {
-                        success = false;
-                        LOG_DEBUG("MTU DOWN test at %d failed size check (got %zd)\n", p->mtu_test_val, nread);
-                    }
-                }
-
                 if (success) {
                     if (p->test_res) {
                         mark_mtu_tested(p->test_type == PROBE_TEST_MTU_UP ? &p->test_res->up_mtu_search : &p->test_res->down_mtu_search, p->mtu_test_val, true);
