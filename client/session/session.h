@@ -31,70 +31,7 @@
 extern "C" {
 #endif
 
-/* ── Reorder buffer configuration ── */
-#define RX_REORDER_WINDOW 512
-
-/**
- * @brief One slot in the downstream reorder buffer.
- */
-typedef struct {
-    bool     valid;        /**< True if this slot has been filled */
-    uint8_t *data;         /**< Heap-allocated payload */
-    size_t   len;          /**< Payload length */
-    uint16_t seq;          /**< DNS sequence number of this packet */
-    time_t   received_at;  /**< Timestamp for timeout/debug */
-} rx_buffer_slot_t;
-
-/**
- * @brief Downstream reorder buffer (per session).
- *
- * Maintains a sliding window of received server TXT records, ordered by
- * downstream sequence number. Slots are flushed in-order to the SOCKS5 client.
- */
-typedef struct {
-    rx_buffer_slot_t slots[RX_REORDER_WINDOW];
-    uint16_t         expected_seq;  /**< Next sequence number we expect to flush */
-} reorder_buffer_t;
-
-/* ── Buffer and session size limits ── */
-#define MAX_SESSION_BUFFER (4 * 1024 * 1024)  /* 4 MB per session */
-
-/**
- * @brief Per-connection tunnel session state (client side).
- */
-typedef struct session {
-    bool     established;      /**< True once SOCKS5 CONNECT is parsed */
-    bool     closed;           /**< True once the SOCKS5 TCP handle is gone */
-    bool     socks5_connected; /**< True once we've sent the SOCKS5 success reply */
-    bool     status_consumed;  /**< True once we've processed the server's ACK byte */
-    bool     first_seq_received; /**< True once we received seq=0 from server */
-
-    uint8_t  session_id;       /**< 8-bit tunnel session ID */
-
-    char     target_host[256]; /**< SOCKS5 CONNECT target hostname or IP */
-    uint16_t target_port;      /**< SOCKS5 CONNECT target port */
-
-    /** Upstream send buffer — data queued to send through DNS tunnel */
-    uint8_t *send_buf;
-    size_t   send_len;
-    size_t   send_cap;
-
-    /** Downstream receive buffer — data received from server, pending flush */
-    uint8_t *recv_buf;
-    size_t   recv_len;
-    size_t   recv_cap;
-
-    /** Downstream reorder buffer */
-    reorder_buffer_t reorder_buf;
-
-    /** Back-pointer to the socks5_client_t that owns this session */
-    void    *client_ptr;
-
-    /** Next upload sequence number */
-    uint16_t tx_next;
-
-    time_t   last_active;
-} session_t;
+#include "shared/types.h"
 
 /* ────────────────────────────────────────────── */
 /*  Reorder buffer API                            */

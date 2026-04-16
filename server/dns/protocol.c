@@ -116,7 +116,7 @@ int build_txt_reply_with_seq(uint8_t *outbuf, size_t *outlen,
     }
 
     /* Step 4: Base64-encode the full packet for TXT record */
-    char encoded[4096];
+    char encoded[8192];
     size_t encoded_len = encode_downstream_data(encoded, packet, packet_len);
     if (encoded_len >= sizeof(encoded)) encoded_len = sizeof(encoded) - 1;
     encoded[encoded_len] = '\0';

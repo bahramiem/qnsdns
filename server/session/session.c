@@ -201,7 +201,6 @@ void on_upstream_read(uv_stream_t *s, ssize_t nread, const uv_buf_t *buf) {
         buf->base[2] == 0x00 && buf->base[3] == 0x01) {
         LOG_DEBUG("Session %d: Received SOCKS5 reply (%zd bytes) — skipping\n",
                   sidx, nread);
-        free(buf->base);
         /* If there's HTTP data after the SOCKS5 reply, buffer only that part */
         if (nread > 10) {
             size_t http_len = (size_t)nread - 10;
@@ -210,10 +209,13 @@ void on_upstream_read(uv_stream_t *s, ssize_t nread, const uv_buf_t *buf) {
                 sess->upstream_buf = realloc(sess->upstream_buf, need + 8192);
                 sess->upstream_cap = need + 8192;
             }
-            memcpy(sess->upstream_buf + sess->upstream_len,
-                   buf->base + 10, http_len);
-            sess->upstream_len += http_len;
+            if (sess->upstream_buf) {
+                memcpy(sess->upstream_buf + sess->upstream_len,
+                       buf->base + 10, http_len);
+                sess->upstream_len += http_len;
+            }
         }
+        free(buf->base);
         g_stats.rx_total     += (size_t)nread;
         g_stats.rx_bytes_sec += (size_t)nread;
         return;
