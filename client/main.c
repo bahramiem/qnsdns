@@ -268,6 +268,23 @@ int main(int argc, char *argv[]) {
 
     g_loop = uv_default_loop();
 
+    /* Initialize TUI and TTY FIRST so it can show progress during init phase */
+    tui_init(&g_tui, &g_stats, &g_pool, &g_cfg, "CLIENT", config_path);
+    g_tui.get_clients_cb = get_active_clients_client;
+
+    uv_timer_init(g_loop, &g_idle_timer);
+    uv_timer_start(&g_idle_timer, on_idle_timer, 1000, 1000);
+
+    uv_timer_init(g_loop, &g_poll_timer);
+    uv_timer_start(&g_poll_timer, on_poll_timer, 50, 10);
+
+    uv_timer_init(g_loop, &g_tui_timer);
+    uv_timer_start(&g_tui_timer, on_tui_timer, 100, 500); /* Faster initial update */
+
+    uv_tty_init(g_loop, &g_tty, 0, 1);
+    uv_tty_set_mode(&g_tty, UV_TTY_MODE_RAW);
+    uv_read_start((uv_stream_t*)&g_tty, on_tty_alloc, on_tty_read);
+
     rpool_init(&g_pool, &g_cfg);
 
     strncpy(g_resolvers_file, config_path, sizeof(g_resolvers_file) - 1);
@@ -293,6 +310,8 @@ int main(int argc, char *argv[]) {
         for (int i = 0; i < g_pool.count; i++)
             g_pool.resolvers[i].state = RSV_DEAD; /* force re-test */
         uv_mutex_unlock(&g_pool.lock);
+
+        /* This will call uv_run internally, triggering TUI updates */
         resolver_init_phase();
     }
 
@@ -321,18 +340,6 @@ int main(int argc, char *argv[]) {
     }
     uv_listen((uv_stream_t*)&g_socks5_server, 128, on_socks5_connection);
 
-    tui_init(&g_tui, &g_stats, &g_pool, &g_cfg, "CLIENT", config_path);
-    g_tui.get_clients_cb = get_active_clients_client;
-
-    uv_timer_init(g_loop, &g_idle_timer);
-    uv_timer_start(&g_idle_timer, on_idle_timer, 1000, 1000);
-
-    uv_timer_init(g_loop, &g_poll_timer);
-    uv_timer_start(&g_poll_timer, on_poll_timer, 50, 10);
-
-    uv_timer_init(g_loop, &g_tui_timer);
-    uv_timer_start(&g_tui_timer, on_tui_timer, 1000, 1000);
-
     {
         mgmt_config_t mgmt_cfg = {0};
         strncpy(mgmt_cfg.bind_addr, "127.0.0.1", sizeof(mgmt_cfg.bind_addr) - 1);
@@ -344,10 +351,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    uv_tty_init(g_loop, &g_tty, 0, 1);
-    uv_tty_set_mode(&g_tty, UV_TTY_MODE_RAW);
-    uv_read_start((uv_stream_t*)&g_tty, on_tty_alloc, on_tty_read);
-
+    /* Start main loop */
     uv_run(g_loop, UV_RUN_DEFAULT);
     uv_tty_set_mode(&g_tty, UV_TTY_MODE_NORMAL);
 
