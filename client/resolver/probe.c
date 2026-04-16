@@ -125,13 +125,13 @@ static void on_probe_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf, const
 
         if (p->is_init_probe) {
             if (p->test_type == PROBE_TEST_LONGNAME) {
-                if (rc == RCODE_NAME_ERROR || rc == RCODE_OKAY || rc == RCODE_SERVER_FAILURE) {
-                    if (p->test_res) p->test_res->longname_supported = true;
-                    LOG_INFO("Resolver %s passed Long QNAME test (RCODE %d)\n", r->ip, rc);
-                } else {
-                    if (p->test_res) p->test_res->longname_supported = false;
-                    rpool_set_state(&g_pool, ridx, RSV_DEAD);
-                }
+                 if (rc == RCODE_NAME_ERROR || rc == RCODE_OKAY) {
+                     if (p->test_res) p->test_res->longname_supported = true;
+                     LOG_INFO("Resolver %s passed Long QNAME test (RCODE %d)\n", r->ip, rc);
+                 } else {
+                     if (p->test_res) p->test_res->longname_supported = false;
+                     rpool_set_state(&g_pool, ridx, RSV_DEAD);
+                 }
             } else if (p->test_type == PROBE_TEST_NXDOMAIN) {
                 dns_query_t *resp = (dns_query_t*)decoded;
                 if (rc == RCODE_NAME_ERROR) {
