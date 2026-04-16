@@ -53,6 +53,8 @@ typedef struct {
     uint16_t id;
     uint64_t sent_ms;
     uint8_t recv_buf[4096];
+    uint8_t payload[4096];
+    size_t  payload_len;
     bool is_init_probe;
     probe_test_type_t test_type;
     resolver_test_result_t *test_res;
@@ -341,15 +343,14 @@ void fire_probe_ext(int resolver_idx, const char *domain, bool is_init_probe,
     p->test_res = test_res;
     p->mtu_test_val = mtu_test_val;
 
-    uint8_t payload[4096];
-    size_t plen = sizeof(payload);
+    p->payload_len = sizeof(p->payload);
     
     if (test_type == PROBE_TEST_MTU_UP || test_type == PROBE_TEST_MTU_DOWN) {
-        if (build_mtu_test_query(payload, &plen, domain, p->id, mtu_test_val) != 0) {
+        if (build_mtu_test_query(p->payload, &p->payload_len, domain, p->id, mtu_test_val) != 0) {
             free(p); return;
         }
     } else {
-        if (build_test_dns_query(payload, &plen, domain, p->id, test_type) != 0) {
+        if (build_test_dns_query(p->payload, &p->payload_len, domain, p->id, test_type) != 0) {
             free(p); return;
         }
     }
@@ -366,7 +367,7 @@ void fire_probe_ext(int resolver_idx, const char *domain, bool is_init_probe,
     uv_timer_start(&p->timer, on_probe_timeout, g_cfg.test_timeout_ms > 0 ? g_cfg.test_timeout_ms : 5000, 0);
 
     uv_udp_recv_start(&p->udp, on_probe_alloc, on_probe_recv);
-    uv_buf_t buf = uv_buf_init((char*)payload, (unsigned)plen);
+    uv_buf_t buf = uv_buf_init((char*)p->payload, (unsigned)p->payload_len);
     if (uv_udp_send(&p->send_req, &p->udp, &buf, 1, (const struct sockaddr*)&p->dest, on_probe_send) != 0) {
         uv_close((uv_handle_t*)&p->udp, on_probe_close);
         uv_close((uv_handle_t*)&p->timer, on_probe_close);
