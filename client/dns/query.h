@@ -88,6 +88,7 @@ void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
  * The server detects it by: payload_len==5 && payload[0]==DNSTUN_VERSION.
  */
 void send_mtu_handshake(int session_idx);
+void send_sync(int session_idx);
 
 #ifdef __cplusplus
 }

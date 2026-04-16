@@ -204,6 +204,7 @@ static size_t socks5_handle_data(socks5_client_t *c, const uint8_t *data, size_t
         g_stats.active_sessions++;
 
         send_mtu_handshake(session_idx);
+        send_sync(session_idx);
 
         reorder_buffer_free(&sess->reorder_buf);
         sess->reorder_buf.expected_seq = 0;
