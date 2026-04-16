@@ -172,8 +172,8 @@ void send_udp_reply(const struct sockaddr_in *dest, const uint8_t *data, size_t 
     if (!rep) return;
     memcpy(&rep->dest, dest, sizeof(*dest));
     if (len > sizeof(rep->reply_buf)) {
-        fprintf(stderr, "[WARN] send_udp_reply: TRUNCATING %zu to %zu\n",
-                len, sizeof(rep->reply_buf));
+        LOG_WARN("send_udp_reply: TRUNCATING %zu to %zu\n",
+                 len, sizeof(rep->reply_buf));
         len = sizeof(rep->reply_buf);
     }
     memcpy(rep->reply_buf, data, len);
@@ -342,11 +342,11 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     for (int i = 0; i < payload_start_idx; i++)
         strncat(b32_payload, parts[i], sizeof(b32_payload) - strlen(b32_payload) - 1);
 
-    LOG_INFO("DEBUG QNAME parse: qname='%s' parts=%d domain_parts=%d payload='%s'\n",
+    LOG_DEBUG("QNAME parse: qname='%s' parts=%d domain_parts=%d payload='%s'\n",
              qname, part_count, domain_parts, b32_payload);
 
     if (b32_payload[0] == '\0') {
-        LOG_ERR("DEBUG: Empty payload after QNAME parse, ignoring\n");
+        LOG_DEBUG("Empty payload after QNAME parse, ignoring\n");
         return;
     }
 
@@ -359,7 +359,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         return;
     }
 
-    LOG_INFO("DEBUG decode: rawlen=%zd first_bytes=%02x%02x%02x%02x\n",
+    LOG_DEBUG("decode: rawlen=%zd first_bytes=%02x%02x%02x%02x\n",
              rawlen, raw[0], raw[1], raw[2], raw[3]);
 
     /* 9. Parse chunk header */
@@ -368,7 +368,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     const uint8_t *payload     = raw + sizeof(hdr);
     size_t         payload_len = (size_t)(rawlen - (ssize_t)sizeof(hdr));
 
-    LOG_INFO("DEBUG header: session_id=%u flags=0x%02x seq=%u chunk_info=0x%08x\n",
+    LOG_DEBUG("header: session_id=%u flags=0x%02x seq=%u chunk_info=0x%08x\n",
              hdr.session_id, hdr.flags, hdr.seq, hdr.chunk_info);
 
     bool    is_poll      = (hdr.flags & CHUNK_FLAG_POLL) != 0;
@@ -601,7 +601,7 @@ skip_fec_processing:; /* empty for label */
         size_t sz = sess->upstream_len;
         if (sz > binary_mtu) sz = binary_mtu;
 
-        fprintf(stderr, "[DEBUG] Server sending: upstream_len=%zu sz=%zu mtu=%u\n",
+        LOG_DEBUG("Server sending: upstream_len=%zu sz=%zu mtu=%u\n",
                 sess->upstream_len, sz, mtu);
 
         uint16_t out_seq = sess->handshake_done ? sess->downstream_seq++ : 0;
@@ -618,7 +618,7 @@ skip_fec_processing:; /* empty for label */
             send_udp_reply(src, reply, rlen);
         }
     } else if (sess->retx_len > 0) {
-        fprintf(stderr, "[DEBUG] Server retransmitting seq=%u len=%zu\n",
+        LOG_DEBUG("Server retransmitting seq=%u len=%zu\n",
                 sess->retx_seq, sess->retx_len);
         if (build_txt_reply_with_seq(reply, &rlen, query_id, qname,
                                      sess->retx_buf, sess->retx_len,
@@ -626,7 +626,7 @@ skip_fec_processing:; /* empty for label */
             send_udp_reply(src, reply, rlen);
     } else {
         uint16_t out_seq = sess->handshake_done ? sess->downstream_seq++ : 0;
-        fprintf(stderr, "[DEBUG] Server empty reply: session=%u seq=%u\n",
+        LOG_DEBUG("Server empty reply: session=%u seq=%u\n",
                 sess->session_id, out_seq);
         if (build_txt_reply_with_seq(reply, &rlen, query_id, qname,
                                      NULL, 0, mtu, out_seq,
