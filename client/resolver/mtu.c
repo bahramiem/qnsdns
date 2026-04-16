@@ -79,8 +79,9 @@ static bool is_mtu_tested(mtu_binary_search_t *search, int mtu) {
 int get_next_mtu_to_test(mtu_binary_search_t *search) {
     if (!search || !search->active) return -1;
     
-    /* If optimal already found and we've tested it */
-    if (search->optimal > 0 && search->test_size <= search->optimal) {
+    /* Only terminate if we've tested both boundaries AND the space between them is exhausted.
+     * Don't terminate just because we've found an optimal - we need to verify the upper bound. */
+    if (search->optimal > 0 && is_mtu_tested(search, search->high) {
         search->active = false;
         LOG_INFO("[%s MTU] Search complete, optimal MTU: %d\n", 
                  search->is_upload ? "Up" : "Down", search->optimal);
@@ -98,9 +99,12 @@ int get_next_mtu_to_test(mtu_binary_search_t *search) {
         return search->low;
     }
     
-    /* Binary search: test middle value */
+    /* Binary search: Find the boundary in [low, high]. 
+     * After finding optimal (success), we search upward: [optimal, high] to find max.
+     * When we've found an optimal value, we want to test values between optimal and high,
+     * not values below optimal. */
     int mid = (search->optimal > 0) ? 
-              ((search->optimal + search->low) / 2) : 
+              ((search->optimal + search->high + 1) / 2) : 
               ((search->high + search->low) / 2);
     
     /* Ensure we don't test the same value twice */
@@ -153,6 +157,8 @@ void mark_mtu_tested(mtu_binary_search_t *search, int mtu, bool success) {
             if (search->high > effective_max) search->high = effective_max;
             LOG_DEBUG("[%s MTU] Success at %d, extending upper bound to %d\n",
                      search->is_upload ? "Up" : "Down", mtu, search->high);
+            /* After extending bounds, reset test_size to force recomputation */
+            search->test_size = search->high;
         } else {
             LOG_DEBUG("[%s MTU] Success at %d, low->%d\n", 
                      search->is_upload ? "Up" : "Down", mtu, search->low);
