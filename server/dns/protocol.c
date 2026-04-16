@@ -261,6 +261,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     int  domain_parts   = 2;
     bool is_mtu_probe   = false;
     bool is_crypto_probe = false;
+    bool is_capability_probe = false;
 
     /* Try matching against configured domains */
     for (int d = 0; d < g_cfg.domain_count; d++) {
@@ -290,8 +291,15 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
 
     /* Check for special probe formats in first label */
     if (payload_start_idx >= 1 && parts[0] != NULL) {
-        if (strncmp(parts[0], "mtu-req-", 8) == 0)  is_mtu_probe    = true;
-        if (strncmp(parts[0], "CRYPTO_",  7) == 0)  is_crypto_probe = true;
+#ifdef _WIN32
+        if (_strnicmp(parts[0], "mtu-req-", 8) == 0) is_mtu_probe = true;
+        if (_strnicmp(parts[0], "CRYPTO_", 7)  == 0) is_crypto_probe = true;
+        if (_stricmp(parts[0], "probe")       == 0) is_capability_probe = true;
+#else
+        if (strncasecmp(parts[0], "mtu-req-", 8) == 0) is_mtu_probe = true;
+        if (strncasecmp(parts[0], "CRYPTO_", 7)  == 0) is_crypto_probe = true;
+        if (strcasecmp(parts[0], "probe")       == 0) is_capability_probe = true;
+#endif
     }
 
     /* 5. Handle MTU probe */
@@ -318,6 +326,17 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         return;
     }
 
+    /* 6b. Handle Capability probe (Phase 3) */
+    if (is_capability_probe) {
+        uint8_t reply[512]; size_t rlen = sizeof(reply);
+        const uint8_t resp[] = "OK";
+        /* session_id=0 for internal probes */
+        if (build_txt_reply_with_seq(reply, &rlen, query_id, qname,
+                                     resp, sizeof(resp)-1, 512, 0, 0, false) == 0)
+            send_udp_reply(src, reply, rlen);
+        return;
+    }
+
     /* 7. Reconstruct b32 payload (concatenate parts WITHOUT dots) */
     char b32_payload[512] = {0};
     for (int i = 0; i < payload_start_idx; i++)
@@ -336,7 +355,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     size_t  b32_len = strlen(b32_payload);
     ssize_t rawlen  = base32_decode(raw, b32_payload, b32_len);
     if (rawlen < (ssize_t)sizeof(chunk_header_t)) {
-        LOG_ERR("Base32 decode failed from %s: ret=%zd\n", src_ip, rawlen);
+        LOG_DEBUG("Base32 decode failed or too small (%zd bytes) from %s - payload='%s'\n", rawlen, src_ip, b32_payload);
         return;
     }
 
