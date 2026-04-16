@@ -83,7 +83,7 @@ void fire_probe_ext(int resolver_idx, const char *domain, bool is_init_probe,
  * @brief Build a fake DNS query used specifically to test MTU bounds.
  */
 int build_mtu_test_query(uint8_t *outbuf, size_t *outlen, const char *domain,
-                         uint16_t id, int mtu_size);
+                         uint16_t id, int mtu_size, probe_test_type_t test_type);
 
 #ifdef __cplusplus
 }

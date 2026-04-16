@@ -281,20 +281,28 @@ int build_test_dns_query(uint8_t *outbuf, size_t *outlen, const char *domain, ui
     return 0;
 }
 
-int build_mtu_test_query(uint8_t *outbuf, size_t *outlen, const char *domain, uint16_t id, int mtu_size) {
-    char qname[512] = {0};
+int build_mtu_test_query(uint8_t *outbuf, size_t *outlen, const char *domain, uint16_t id, int mtu_size, probe_test_type_t test_type) {
+    char qname[1024] = {0};
     int qlen = 0;
     qlen += snprintf(qname, sizeof(qname), "mtu-req-%d.", mtu_size);
-    /* Fill to targeted size roughly */
-    int fill_needed = mtu_size - qlen - strlen(domain) - 20;
-    while (fill_needed > 0) {
-        int chunk = fill_needed > 63 ? 63 : fill_needed;
-        for (int i=0; i<chunk; i++) {
-            qname[qlen++] = 'm';
+
+    if (test_type == PROBE_TEST_MTU_UP) {
+        /* Fill to targeted size roughly, but DNS QNAMEs cannot exceed 253 characters */
+        int fill_needed = mtu_size - qlen - strlen(domain) - 2; 
+        if (fill_needed > 253 - qlen - (int)strlen(domain)) {
+            fill_needed = 253 - qlen - (int)strlen(domain);
         }
-        qname[qlen++] = '.';
-        fill_needed -= chunk;
+
+        while (fill_needed > 1) {
+            int chunk = fill_needed > 63 ? 63 : (fill_needed - 1);
+            for (int i=0; i<chunk; i++) {
+                if (qlen < (int)sizeof(qname) - 1) qname[qlen++] = 'm';
+            }
+            if (qlen < (int)sizeof(qname) - 1) qname[qlen++] = '.';
+            fill_needed -= (chunk + 1);
+        }
     }
+
     snprintf(qname + qlen, sizeof(qname) - qlen, "%s.", domain);
 
     dns_question_t question = {0};
@@ -343,7 +351,7 @@ void fire_probe_ext(int resolver_idx, const char *domain, bool is_init_probe,
     p->payload_len = sizeof(p->payload);
     
     if (test_type == PROBE_TEST_MTU_UP || test_type == PROBE_TEST_MTU_DOWN) {
-        if (build_mtu_test_query(p->payload, &p->payload_len, domain, p->id, mtu_test_val) != 0) {
+        if (build_mtu_test_query(p->payload, &p->payload_len, domain, p->id, mtu_test_val, test_type) != 0) {
             free(p); return;
         }
     } else {
