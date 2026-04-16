@@ -44,6 +44,7 @@ static uv_tty_t    g_tty;
 static void on_signal(int sig) {
     (void)sig;
     fprintf(stderr, "\n[DNSTUN-TUI] Received signal, shutting down...\n");
+    uv_tty_reset_mode();
     renderer_shutdown();
     exit(0);
 }

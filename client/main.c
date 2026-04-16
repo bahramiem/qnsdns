@@ -349,6 +349,7 @@ int main(int argc, char *argv[]) {
     uv_read_start((uv_stream_t*)&g_tty, on_tty_alloc, on_tty_read);
 
     uv_run(g_loop, UV_RUN_DEFAULT);
+    uv_tty_set_mode(&g_tty, UV_TTY_MODE_NORMAL);
 
     tui_shutdown(&g_tui);
     if (g_cfg.swarm_save_disk) resolvers_save();

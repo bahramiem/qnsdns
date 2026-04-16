@@ -111,6 +111,11 @@ typedef struct tui_ctx {
     tui_proto_test_t  proto_test;       /* protocol loopback test state */
     tui_send_debug_cb send_debug_cb;    /* callback to send debug packet */
     tui_send_command_cb send_command_cb; /* callback to send tunnel control commands */
+    
+#ifdef _WIN32
+    unsigned int      orig_cp;          /* original console output codepage */
+    unsigned long     orig_mode;        /* original console mode */
+#endif
 } tui_ctx_t;
 
 /* ──────────────────────────────────────────────

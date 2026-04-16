@@ -817,13 +817,15 @@ void tui_init(tui_ctx_t *t, tui_stats_t *stats,
     g_log_ctx = t;
 
 #ifdef _WIN32
-    /* Set console to UTF-8 for box-drawing characters */
+    /* Save original state for restoration */
+    t->orig_cp = GetConsoleOutputCP();
     SetConsoleOutputCP(CP_UTF8);
     
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
     if (hOut != INVALID_HANDLE_VALUE) {
         DWORD dwMode = 0;
         if (GetConsoleMode(hOut, &dwMode)) {
+            t->orig_mode = dwMode;
             dwMode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
             SetConsoleMode(hOut, dwMode);
         }
@@ -981,6 +983,17 @@ void tui_shutdown(tui_ctx_t *t) {
     (void)t;
     printf(ANSI_SHOW_CUR);
     printf(ANSI_CLEAR);
+    fflush(stdout);
+
+#ifdef _WIN32
+    if (t->orig_cp) {
+        SetConsoleOutputCP(t->orig_cp);
+    }
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (hOut != INVALID_HANDLE_VALUE && t->orig_mode != 0) {
+        SetConsoleMode(hOut, t->orig_mode);
+    }
+#endif
 }
 
 /* ── Debug Log Functions ───────────────────────────────────────────────────*/
