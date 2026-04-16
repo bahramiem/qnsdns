@@ -64,12 +64,13 @@ void on_poll_timer(uv_timer_t *t) {
         if (s->send_len == 0) {
             uint64_t interval = (g_cfg.poll_interval_ms >= 50) ? (uint64_t)g_cfg.poll_interval_ms : 50;
             if (s->socks5_connected && (now_ms - last_poll[i] >= interval)) {
-                DBGLOG("[POLL] session %u seq %u\n", s->session_id, s->tx_next);
+                DBGLOG("[POLL] session %u seq %u (no data to send)\n", s->session_id, s->tx_next);
                 fire_dns_chunk_symbol(i, s->tx_next++, NULL, 0, 0, 0, 0);
                 last_poll[i] = now_ms;
             }
         } else {
             /* We have data to send */
+            DBGLOG("[POLL_DATA] session %u seq %u send_len=%zu\n", s->session_id, s->tx_next, s->send_len);
             int avg_mtu = 512;
             int act_cnt = 0, up_sum = 0;
             uv_mutex_lock(&g_pool.lock);
@@ -86,11 +87,16 @@ void on_poll_timer(uv_timer_t *t) {
             uint8_t *raw_buf   = s->send_buf;
             size_t   raw_len   = take;
 
+            DBGLOG("[POLL_DATA] taking %zu bytes from send_buf (total %zu)\n", take, s->send_len);
+
             /* Compress */
             codec_result_t zres = codec_compress(s->send_buf, take, 0);
             if (!zres.error && zres.data) {
                 raw_buf = zres.data;
                 raw_len = zres.len;
+                DBGLOG("[POLL_DATA] compressed %zu -> %zu\n", take, zres.len);
+            } else if (zres.error) {
+                DBGLOG("[POLL_DATA] compression failed\n");
             }
 
             /* Encrypt */
@@ -100,6 +106,9 @@ void on_poll_timer(uv_timer_t *t) {
                 if (!eres.error && eres.data) {
                     raw_buf = eres.data;
                     raw_len = eres.len;
+                    DBGLOG("[POLL_DATA] encrypted %zu -> %zu\n", take, eres.len);
+                } else if (eres.error) {
+                    DBGLOG("[POLL_DATA] encryption failed\n");
                 }
             }
 
@@ -127,6 +136,10 @@ void on_poll_timer(uv_timer_t *t) {
                     oti_scheme = fenc.oti_scheme;
                     sym_count  = fenc.total_count;
                     sym_ptrs   = fenc.symbols;
+                    DBGLOG("[POLL_DATA] FEC encoded: k=%d n=%d -> %d symbols\n", 
+                           fenc.k_source, fenc.total_count, fenc.total_count);
+                } else {
+                    DBGLOG("[POLL_DATA] FEC encoding failed\n");
                 }
             }
 
@@ -134,15 +147,18 @@ void on_poll_timer(uv_timer_t *t) {
                 /* Aggregation check */
                 int syms_per_packet = calc_symbols_per_packet(avg_mtu, 
                                         fenc.symbol_len);
+                DBGLOG("[POLL_DATA] FEC path: %d symbols, %d per packet\n", sym_count, syms_per_packet);
                 if (syms_per_packet > 1 && sym_count > 1) {
                     /* Packed multi-symbol send logic... For now, single send */
                     for (int sym_idx = 0; sym_idx < sym_count; sym_idx++) {
+                        DBGLOG("[POLL_DATA] sending symbol %d/%d\n", sym_idx+1, sym_count);
                         fire_dns_chunk_symbol(i, s->tx_next++, sym_ptrs[sym_idx],
                                               fenc.symbol_len,
                                               sym_count, oti_common, oti_scheme);
                     }
                 } else {
                     for (int sym_idx = 0; sym_idx < sym_count; sym_idx++) {
+                        DBGLOG("[POLL_DATA] sending symbol %d/%d\n", sym_idx+1, sym_count);
                         fire_dns_chunk_symbol(i, s->tx_next++, sym_ptrs[sym_idx],
                                               fenc.symbol_len,
                                               sym_count, oti_common, oti_scheme);
@@ -150,6 +166,7 @@ void on_poll_timer(uv_timer_t *t) {
                 }
             } else {
                 /* Non-FEC or encode failed */
+                DBGLOG("[POLL_DATA] sending raw data (%zu bytes)\n", raw_len);
                 fire_dns_chunk_symbol(i, s->tx_next++, raw_buf, raw_len, 0, 0, 0);
             }
 
@@ -163,6 +180,7 @@ void on_poll_timer(uv_timer_t *t) {
             /* Shift send buffer */
             memmove(s->send_buf, s->send_buf + take, s->send_len - take);
             s->send_len -= take;
+            DBGLOG("[POLL_DATA] sent %zu bytes, remaining %zu\n", take, s->send_len);
 
             last_poll[i] = uv_hrtime() / 1000000ULL;
         }

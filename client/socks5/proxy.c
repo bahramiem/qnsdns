@@ -274,6 +274,8 @@ static void on_socks5_read(uv_stream_t *s, ssize_t nread, const uv_buf_t *buf) {
     socks5_client_t *c = s->data;
 
     if (nread < 0) {
+        DBGLOG("[SOCKS5_READ] error nread=%zd state=%d session_idx=%d\n",
+               nread, c ? c->state : -1, c ? c->session_idx : -1);
         if (!uv_is_closing((uv_handle_t*)s))
             uv_close((uv_handle_t*)s, on_socks5_close);
         return;
@@ -287,13 +289,21 @@ static void on_socks5_read(uv_stream_t *s, ssize_t nread, const uv_buf_t *buf) {
 
     size_t incoming = (size_t)nread;
     if (c->buf_len + incoming > sizeof(c->buf)) {
+        DBGLOG("[SOCKS5_READ] buffer overflow incoming=%zd buf_len=%zu -> resetting\n",
+               incoming, c->buf_len);
         c->buf_len = 0;
     } else {
+        DBGLOG("[SOCKS5_READ] incoming=%zd buf_len before=%zu after=%zu",
+               incoming, c->buf_len, c->buf_len + incoming);
         c->buf_len += incoming;
     }
 
+    DBGLOG("[SOCKS5_READ] processing buf_len=%zu state=%d session_idx=%d\n",
+           c->buf_len, c ? c->state : -1, c ? c->session_idx : -1);
     while (c->buf_len > 0) {
         size_t consumed = socks5_handle_data(c, c->buf, c->buf_len);
+        DBGLOG("[SOCKS5_HANDLE_DATA] consumed=%zu buf_len before=%zu after=%zu\n",
+               consumed, c->buf_len, c->buf_len - consumed);
         if (consumed == 0) break;
         if (consumed < c->buf_len) {
             memmove(c->buf, c->buf + consumed, c->buf_len - consumed);
