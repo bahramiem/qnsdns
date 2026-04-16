@@ -519,8 +519,8 @@ static void render_resolvers_view(tui_ctx_t *t, int x, int y, int width, int hei
         resolver_pool_t *pool = t->pool;
         
         /* Header */
-        printf("\033[%d;%dH" ANSI_BOLD "%-16s %-9s %5s %6s %5s %4s %5s %4s" ANSI_RESET,
-               y + 2, x + 2, "IP", "State", "cwnd", "RTTms", "QPS", "MTU", "Loss%", "FEC");
+        printf("\033[%d;%dH" ANSI_BOLD "%-16s %-8s %4s %5s %4s %4s %4s %5s %3s" ANSI_RESET,
+               y + 2, x + 2, "IP", "State", "cwnd", "RTT", "QPS", "UP", "DN", "Loss%", "FEC");
         
         /* List resolvers */
         int shown = 0;
@@ -535,14 +535,14 @@ static void render_resolvers_view(tui_ctx_t *t, int x, int y, int width, int hei
             if (r->state == RSV_PENALTY) state_color = ANSI_YELLOW;
             if (r->state == RSV_DEAD || r->state == RSV_ZOMBIE) state_color = ANSI_RED;
             
-            printf("\033[%d;%dH" ANSI_DIM "%-16s" ANSI_RESET " %s%-9s" ANSI_RESET " %5.0f %6.1f %5.0f %4d %5.1f %4u",
+            printf("\033[%d;%dH" ANSI_DIM "%-16s" ANSI_RESET " %s%-8s" ANSI_RESET " %4.0f %5.1f %4.0f %4d %4d %5.1f %3u",
                    row, x + 2, r->ip, state_color,
                    r->state == RSV_ACTIVE ? "ACTIVE" :
                    r->state == RSV_PENALTY ? "PENALTY" :
                    r->state == RSV_DEAD ? "DEAD" :
                    r->state == RSV_ZOMBIE ? "ZOMBIE" :
                    r->state == RSV_TESTING ? "TESTING" : "UNKNOWN",
-                   r->cwnd, r->rtt_ms, r->max_qps, r->downstream_mtu,
+                   r->cwnd, r->rtt_ms, r->max_qps, r->upstream_mtu, r->downstream_mtu,
                    r->loss_rate * 100.0, r->fec_k);
             shown++;
         }
