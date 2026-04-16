@@ -187,14 +187,15 @@ void resolver_init_phase(void) {
 
       init_mtu_binary_search(
           &results[i].up_mtu_search, 0,
-          g_cfg.max_upload_mtu > 0 ? g_cfg.max_upload_mtu : 512, 30,
+          g_cfg.max_upload_mtu > 0 ? g_cfg.max_upload_mtu : 1500, 30,
           g_cfg.min_upload_mtu,
           g_cfg.mtu_test_retries > 0 ? g_cfg.mtu_test_retries : 2, true, 0);
 
-      /* Use Phase 3 EDNS advertised payload as a starting upper bound for downstream MTU search */
+      /* Use Phase 3 EDNS advertised payload as a starting upper bound for downstream MTU search.
+       * If Phase 3 failed or reported very low, use max_download_mtu (default 1200+). */
       int down_hint = results[i].downstream_mtu;
-      if (down_hint < g_cfg.min_download_mtu) down_hint = g_cfg.max_download_mtu;
-      if (down_hint > g_cfg.max_download_mtu) down_hint = g_cfg.max_download_mtu;
+      if (down_hint < 512) down_hint = g_cfg.max_download_mtu > 0 ? g_cfg.max_download_mtu : 1500;
+      if (down_hint > 4096) down_hint = 4096;
 
       init_mtu_binary_search(&results[i].down_mtu_search, 0,
                              down_hint, 30, g_cfg.min_download_mtu,
@@ -223,8 +224,8 @@ void resolver_init_phase(void) {
   if (phase4_count > 0) {
     LOG_INFO("Started %d MTU binary search tests\n", phase4_count);
     int mtu_wait_ms = (g_cfg.mtu_test_timeout_ms > 0)
-                          ? g_cfg.mtu_test_timeout_ms * 10
-                          : 10000;
+                          ? g_cfg.mtu_test_timeout_ms * 20
+                          : 20000;
     run_event_loop_ms(mtu_wait_ms);
   }
   LOG_INFO("Phase 4 complete: MTU binary search testing finished\n");
