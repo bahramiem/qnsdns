@@ -195,7 +195,8 @@ static void on_probe_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf, const
                 if (nread >= 12) {
                     uint8_t *resp = (uint8_t *)buf->base;
                     uint8_t rcode = resp[3] & 0x0F;
-                    if (rcode == RCODE_OKAY || rcode == RCODE_NAME_ERROR || rcode == RCODE_SERVER_FAILURE) {
+                    /* Only accept NOERROR (0) or NXDOMAIN (3) as success - SERVFAIL (2) means query was rejected */
+                if (rcode == RCODE_OKAY || rcode == RCODE_NAME_ERROR) {
                         success = true;
                         
                         /* For Upload MTU, manually parse OPT record to find resolver's true acceptable payload limit

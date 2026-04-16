@@ -597,16 +597,56 @@ skip_fec_processing:; /* empty for label */
 
     /* 17. Forward non-FEC payload to session handler */
     if (!is_poll && !is_sync && payload_len > 0) {
-        uint8_t b0 = payload_len > 0 ? payload[0] : 0;
-        uint8_t b1 = payload_len > 1 ? payload[1] : 0;
-        uint8_t b2 = payload_len > 2 ? payload[2] : 0;
-        uint8_t b3 = payload_len > 3 ? payload[3] : 0;
+        const uint8_t *decode_ptr = payload;
+        size_t decode_len = payload_len;
+
+        /* Decrypt if needed */
+        if (is_encrypted) {
+            codec_result_t dcret = codec_decrypt(payload, payload_len, g_cfg.psk);
+            if (dcret.error || !dcret.data) {
+                LOG_ERR("Session %d: decrypt failed for non-FEC packet\n", sidx);
+                /* Still try to send empty reply to keep connection alive */
+                goto send_reply;
+            }
+            decode_ptr = dcret.data;
+            decode_len = dcret.len;
+        }
+
+        /* Decompress if needed */
+        if (hdr.flags & CHUNK_FLAG_COMPRESSED) {
+            codec_result_t zret = codec_decompress(decode_ptr, decode_len, 0);
+            if (zret.error || !zret.data) {
+                LOG_ERR("Session %d: decompress failed for non-FEC packet\n", sidx);
+                if (is_encrypted && dcret.data) codec_free_result(&dcret);
+                goto send_reply;
+            }
+            /* Strip 4-byte anti-cache nonce */
+            const uint8_t *p = zret.data;
+            size_t l = zret.len;
+            if (l >= 4) { p += 4; l -= 4; } else { l = 0; }
+            decode_ptr = p;
+            decode_len = l;
+            if (is_encrypted) codec_free_result(&dcret);
+            /* Keep zret buffer allocated, session_handle_data doesn't retain it */
+        } else {
+            /* Not compressed: strip nonce only if encrypted was applied (already handled above) */
+            /* In non-FEC non-compressed path, there's no 4-byte nonce added */
+        }
+
+        uint8_t b0 = decode_len > 0 ? decode_ptr[0] : 0;
+        uint8_t b1 = decode_len > 1 ? decode_ptr[1] : 0;
+        uint8_t b2 = decode_len > 2 ? decode_ptr[2] : 0;
+        uint8_t b3 = decode_len > 3 ? decode_ptr[3] : 0;
         LOG_DEBUG("Session %d: non-FEC forward len=%zu flags=0x%02x enc=%d comp=%d first=%02x %02x %02x %02x\n",
-                  sidx, payload_len, hdr.flags,
+                  sidx, decode_len, hdr.flags,
                   (hdr.flags & CHUNK_FLAG_ENCRYPTED) ? 1 : 0,
                   (hdr.flags & CHUNK_FLAG_COMPRESSED) ? 1 : 0,
                   b0, b1, b2, b3);
-        session_handle_data(sidx, payload, payload_len);
+        session_handle_data(sidx, decode_ptr, decode_len);
+
+        if (hdr.flags & CHUNK_FLAG_COMPRESSED) {
+            codec_free_result(&zret);
+        }
     }
 
     /* 18. Build and send reply to client */
