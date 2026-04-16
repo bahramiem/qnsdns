@@ -257,11 +257,6 @@ static void on_probe_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf, const
                 if (success) {
                     if (p->test_res) {
                         mark_mtu_tested(p->test_type == PROBE_TEST_MTU_UP ? &p->test_res->up_mtu_search : &p->test_res->down_mtu_search, p->mtu_test_val, true);
-                        if (p->test_type == PROBE_TEST_MTU_UP && p->test_res->up_mtu_search.optimal == 0) {
-                            p->test_res->up_mtu_search.optimal = p->mtu_test_val;
-                        } else if (p->test_type == PROBE_TEST_MTU_DOWN && p->test_res->down_mtu_search.optimal == 0) {
-                            p->test_res->down_mtu_search.optimal = p->mtu_test_val;
-                        }
                         int next_mtu = get_next_mtu_to_test(p->test_type == PROBE_TEST_MTU_UP ? &p->test_res->up_mtu_search : &p->test_res->down_mtu_search);
                         if (next_mtu > 0) {
                             fire_mtu_test_probe(p->resolver_idx, p->test_type, p->test_res, next_mtu);

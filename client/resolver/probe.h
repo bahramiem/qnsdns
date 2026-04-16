@@ -37,13 +37,15 @@ typedef struct mtu_binary_search {
     bool     active;
     int      low;
     int      high;
-    int      current_test;
+    int      test_size;
     int      optimal;
     int      retries;
     int      max_retries;
     bool     is_upload;
     uint64_t last_test_ms;
     int      dependent_mtu;
+    int*     tested_cache;
+    int      cache_size;
 } mtu_binary_search_t;
 
 /**
