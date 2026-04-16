@@ -334,6 +334,32 @@ void session_handle_data(int sidx, const uint8_t *data, size_t len) {
         return;
     }
 
+    /* Handle SOCKS5 greeting when not connected */
+    if (len >= 3 && data[0] == 0x05) {
+        uint8_t nmethods = data[1];
+        if (len >= 2 + nmethods) {
+            /* Check if client offered no authentication (0x00) */
+            bool has_no_auth = false;
+            for (uint8_t i = 0; i < nmethods; i++) {
+                if (data[2 + i] == 0x00) {
+                    has_no_auth = true;
+                    break;
+                }
+            }
+            
+            if (has_no_auth) {
+                /* Respond with no authentication */
+                session_send_status(sidx, 0x00);
+                return;
+            } else {
+                /* No acceptable methods */
+                session_send_status(sidx, 0xFF);
+                /* TODO: Close connection after sending response */
+                return;
+            }
+        }
+    }
+
     /* Not connected: parse as SOCKS5 CONNECT */
     if (len >= 10 && data[0] == 0x05 && data[1] == 0x01) {
         char     target_host[256] = {0};
