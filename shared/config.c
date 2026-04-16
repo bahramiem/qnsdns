@@ -1,4 +1,5 @@
 #include "config.h"
+#include "tui.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -234,7 +235,7 @@ int config_set_key(dnstun_config_t *cfg,
 int config_load(dnstun_config_t *cfg, const char *path) {
     FILE *f = fopen(path, "r");
     if (!f) {
-        fprintf(stderr, "[config] cannot open '%s'\n", path);
+        LOG_ERR("Cannot open config file '%s'\n", path);
         return -1;
     }
 
@@ -254,7 +255,7 @@ int config_load(dnstun_config_t *cfg, const char *path) {
         if (l[0] == '[') {
             char *end = strchr(l, ']');
             if (!end) {
-                fprintf(stderr, "[config] line %d: malformed section\n", lineno);
+                LOG_ERR("Config line %d: malformed section header\n", lineno);
                 errors++;
                 continue;
             }
@@ -279,9 +280,9 @@ int config_load(dnstun_config_t *cfg, const char *path) {
 
         if (config_set_key(cfg, section, key, value) != 0) {
             errors++;
-            if (cfg->log_level >= 2)
-                fprintf(stderr, "[config] unknown key [%s] %s at line %d\n",
-                        section, key, lineno);
+            if (cfg->log_level >= 1)
+                LOG_WARN("Unknown config key [%s] %s at line %d\n",
+                         section, key, lineno);
         }
     }
 

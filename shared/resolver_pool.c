@@ -1,4 +1,5 @@
 #include "resolver_pool.h"
+#include "tui.h"
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
@@ -109,10 +110,10 @@ int rpool_next(resolver_pool_t *pool) {
         pool->rr_cursor = pool->rr_cursor % pool->active_count;
         result = pool->active[pool->rr_cursor];
         pool->rr_cursor = (pool->rr_cursor + 1) % pool->active_count;
-        fprintf(stderr, "[DEBUG] rpool_next: selected resolver %d (%s), active_count=%d\n",
+        LOG_DEBUG("rpool_next: selected resolver %d (%s), active_count=%d\n",
                 result, pool->resolvers[result].ip, pool->active_count);
     } else {
-        fprintf(stderr, "[ERROR] rpool_next: NO ACTIVE RESOLVERS! total=%d, dead=%d\n",
+        LOG_ERR("rpool_next: NO ACTIVE RESOLVERS! total=%d, dead=%d\n",
                 pool->count, pool->dead_count);
     }
     uv_mutex_unlock(&pool->lock);

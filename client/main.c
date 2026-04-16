@@ -229,10 +229,7 @@ int main(int argc, char *argv[]) {
 
     config_defaults(&g_cfg, false);
     if (config_load(&g_cfg, config_path) != 0) {
-        fprintf(stderr,
-                "Warning: could not load '%s', using defaults.\n"
-                "Create client.ini to configure the client.\n\n",
-                config_path);
+        LOG_WARN("Could not load '%s', using defaults. Create client.ini to configure.\n", config_path);
     }
     dnstun_log_open("qnsdns_client.log");
     LOG_INFO("=== Client started ===\n");
@@ -249,11 +246,11 @@ int main(int argc, char *argv[]) {
             if (domain_buf[0]) {
                 config_set_key(&g_cfg, "domains", "list", domain_buf);
                 if (config_save_domains(config_path, &g_cfg) == 0)
-                    printf("  Saved to %s\n\n", config_path);
+                    LOG_INFO("Saved domains to %s\n", config_path);
             }
         }
         if (g_cfg.domain_count == 0) {
-            fprintf(stderr, "[ERROR] No domain configured. Exiting.\n");
+            LOG_ERR("No domain configured. Exiting.\n");
             return 1;
         }
     }
@@ -335,7 +332,7 @@ int main(int argc, char *argv[]) {
     uv_ip4_addr(bind_ip, bind_port, &socks5_addr);
     uv_tcp_init(g_loop, &g_socks5_server);
     if (uv_tcp_bind(&g_socks5_server, (const struct sockaddr*)&socks5_addr, 0) != 0) {
-        fprintf(stderr, "[ERROR] Cannot bind port %d\n", bind_port);
+        LOG_ERR("Cannot bind SOCKS5 port %d\n", bind_port);
         return 1;
     }
     uv_listen((uv_stream_t*)&g_socks5_server, 128, on_socks5_connection);

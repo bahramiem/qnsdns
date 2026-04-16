@@ -1050,9 +1050,19 @@ void dnstun_log(int level, const char *fmt, ...) {
         fflush(g_log_file);
     }
 
-    /* Feed into TUI debug panel */
+    /* Feed into TUI debug panel if active, else stderr */
     if (g_log_ctx) {
         tui_debug_log(g_log_ctx, level, "%s", buf);
+    } else {
+        time_t now = time(NULL);
+        struct tm *tm_info = localtime(&now);
+        char ts[24];
+        strftime(ts, sizeof(ts), "%H:%M:%S", tm_info);
+        const char *lvl = (level == 0) ? "ERR" :
+                          (level == 1) ? "WRN" :
+                          (level == 2) ? "INF" : "DBG";
+        fprintf(stderr, "[%s] %s %s", ts, lvl, buf);
+        fflush(stderr);
     }
 }
 

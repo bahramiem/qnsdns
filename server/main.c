@@ -153,10 +153,7 @@ int main(int argc, char *argv[]) {
     /* ── Load config ── */
     config_defaults(&g_cfg, true);
     if (config_load(&g_cfg, config_path) != 0) {
-        fprintf(stderr,
-                "Warning: could not load '%s', using defaults.\n"
-                "Create server.ini to configure the server.\n\n",
-                config_path);
+        LOG_WARN("Could not load '%s', using defaults. Create server.ini to configure.\n", config_path);
     }
 
     /* ── Open debug log ── */
@@ -179,7 +176,7 @@ int main(int argc, char *argv[]) {
             }
         }
         if (g_cfg.domain_count == 0)
-            fprintf(stderr, "[WARN] No domain configured.\n");
+            LOG_WARN("No domain configured.\n");
     }
 
     /* ── libuv thread pool ── */
@@ -224,8 +221,7 @@ int main(int argc, char *argv[]) {
     uv_udp_init(g_loop, &g_udp_server);
     r = uv_udp_bind(&g_udp_server, (const struct sockaddr *)&srv_addr, UV_UDP_REUSEADDR);
     if (r != 0) {
-        fprintf(stderr, "[ERROR] Cannot bind UDP %s:%d — %s\n",
-                bind_ip, bind_port, uv_strerror(r));
+        LOG_ERR("Cannot bind UDP %s:%d — %s\n", bind_ip, bind_port, uv_strerror(r));
         return 1;
     }
     uv_udp_recv_start(&g_udp_server, on_server_alloc, on_server_recv);
@@ -254,13 +250,13 @@ int main(int argc, char *argv[]) {
         g_mgmt = mgmt_server_create(g_loop, &mgmt_cfg);
         if (g_mgmt) {
             mgmt_server_start(g_mgmt);
-            fprintf(stdout, "[INFO]   Management : 127.0.0.1:9090\n");
+            LOG_INFO("Management : 127.0.0.1:9090\n");
         }
     }
 
-    fprintf(stdout, "[INFO]  dnstun-server listening on %s:%d\n", bind_ip, bind_port);
-    fprintf(stdout, "[INFO]    Workers  : %d\n", g_cfg.workers);
-    fprintf(stdout, "[INFO]    Swarm    : %d known resolvers\n", g_swarm_count);
+    LOG_INFO("dnstun-server listening on %s:%d\n", bind_ip, bind_port);
+    LOG_INFO("Workers  : %d\n", g_cfg.workers);
+    LOG_INFO("Swarm    : %d known resolvers\n", g_swarm_count);
 
     /* ── Bind STDIN for TUI ── */
     static uv_tty_t g_tty;
@@ -278,7 +274,7 @@ int main(int argc, char *argv[]) {
     codec_pool_shutdown();
 
     if (g_tui.restart) {
-        fprintf(stdout, "[INFO]  Restarting process...\n");
+        LOG_INFO("Restarting process...\n");
 #ifdef _WIN32
         _execvp(argv[0], argv);
 #else

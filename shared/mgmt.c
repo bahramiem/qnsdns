@@ -265,7 +265,7 @@ static mgmt_response_frame_t *build_response(uint32_t command_id, uint32_t statu
 static void on_write_complete(uv_write_t *req, int status) {
     mgmt_client_t *client = (mgmt_client_t*)req->data;
     if (status < 0) {
-        fprintf(stderr, "[MGMT] Write error: %s\n", uv_strerror(status));
+        LOG_ERR("MGMT Write error: %s\n", uv_strerror(status));
         client_close(client);
         return;
     }
@@ -279,7 +279,7 @@ static void on_write_complete(uv_write_t *req, int status) {
 
 static int queue_write(mgmt_client_t *client, const void *data, size_t len) {
     if (client->write_pending) {
-        fprintf(stderr, "[MGMT] Client already has pending write\n");
+        LOG_ERR("MGMT Client already has pending write\n");
         return -1;
     }
     
@@ -364,13 +364,13 @@ static void process_read_buffer(mgmt_client_t *client) {
         
         /* Validate */
         if (magic != MGMT_MAGIC) {
-            fprintf(stderr, "[MGMT] Invalid magic: 0x%08x\n", magic);
+            LOG_ERR("MGMT Invalid magic: 0x%08x\n", magic);
             client_close(client);
             return;
         }
         
         if (version > MGMT_PROTOCOL_VERSION) {
-            fprintf(stderr, "[MGMT] Unsupported protocol version: %d\n", version);
+            LOG_ERR("MGMT Unsupported protocol version: %d\n", version);
             client_close(client);
             return;
         }
@@ -384,7 +384,7 @@ static void process_read_buffer(mgmt_client_t *client) {
         /* Process frame */
         switch (frame_type) {
             case MGMT_FRAME_HELLO:
-                fprintf(stderr, "[MGMT] Client connected: %s:%d\n", 
+                LOG_INFO("MGMT Client connected: %s:%d\n", 
                         client->ip, client->port);
                 if (client->server->config.callbacks.on_connect) {
                     client->server->config.callbacks.on_connect(client, 
@@ -397,7 +397,7 @@ static void process_read_buffer(mgmt_client_t *client) {
                 break;
                 
             case MGMT_FRAME_GOODBYE:
-                fprintf(stderr, "[MGMT] Client disconnected: %s:%d\n", 
+                LOG_INFO("MGMT Client disconnected: %s:%d\n", 
                         client->ip, client->port);
                 client_close(client);
                 return;
@@ -412,7 +412,7 @@ static void process_read_buffer(mgmt_client_t *client) {
                 break;
                 
             default:
-                fprintf(stderr, "[MGMT] Unknown frame type: %d\n", frame_type);
+                LOG_WARN("MGMT Unknown frame type: %d\n", frame_type);
                 break;
         }
         
@@ -433,7 +433,7 @@ static void on_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf) {
     
     if (nread < 0) {
         if (nread != UV_EOF) {
-            fprintf(stderr, "[MGMT] Read error: %s\n", uv_strerror(nread));
+            LOG_ERR("MGMT Read error: %s\n", uv_strerror(nread));
         }
         client_close(client);
         return;
@@ -464,14 +464,14 @@ static void on_telemetry_timer(uv_timer_t *timer) {
 
 static void on_client_connect(uv_stream_t *server_handle, int status) {
     if (status < 0) {
-        fprintf(stderr, "[MGMT] Accept error: %s\n", uv_strerror(status));
+        LOG_ERR("MGMT Accept error: %s\n", uv_strerror(status));
         return;
     }
     
     mgmt_server_t *server = (mgmt_server_t*)server_handle->data;
     
     if (server->client_count >= server->config.max_clients) {
-        fprintf(stderr, "[MGMT] Max clients reached, rejecting connection\n");
+        LOG_WARN("MGMT Max clients reached, rejecting connection\n");
         return;
     }
     
@@ -539,7 +539,7 @@ int mgmt_server_start(mgmt_server_t *server) {
     
     if (server->using_unix_socket) {
 #ifdef _WIN32
-        fprintf(stderr, "[MGMT] Unix sockets not supported on Windows\n");
+        LOG_ERR("MGMT Unix sockets not supported on Windows\n");
         return -1;
 #else
         /* Remove existing socket file */
@@ -573,14 +573,14 @@ int mgmt_server_start(mgmt_server_t *server) {
         
         ret = uv_tcp_bind(&server->listener.tcp, (const struct sockaddr*)&addr, 0);
         if (ret != 0) {
-            fprintf(stderr, "[MGMT] Bind error: %s\n", uv_strerror(ret));
+            LOG_ERR("MGMT Bind error: %s\n", uv_strerror(ret));
             return ret;
         }
         
         ret = uv_listen((uv_stream_t*)&server->listener.tcp, 
                         server->config.max_clients, on_client_connect);
         if (ret != 0) {
-            fprintf(stderr, "[MGMT] Listen error: %s\n", uv_strerror(ret));
+            LOG_ERR("MGMT Listen error: %s\n", uv_strerror(ret));
             return ret;
         }
     }
@@ -591,7 +591,7 @@ int mgmt_server_start(mgmt_server_t *server) {
                    server->config.telemetry_interval_ms);
     
     server->running = 1;
-    fprintf(stderr, "[MGMT] Server started on %s:%d\n",
+    LOG_INFO("MGMT Server started on %s:%d\n",
             server->config.bind_addr, server->config.port);
     
     return 0;

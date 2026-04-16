@@ -1,6 +1,8 @@
 #include "codec.h"
+#include "tui.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 
 /* Headers for external libraries */
 #include <zstd.h>
@@ -397,13 +399,13 @@ codec_result_t codec_fec_decode_oti(fec_encoded_t *encoded) {
     codec_result_t res = {0};
     struct RFC6330_v1 *api = get_rq_api();
     if (!api) { 
-        fprintf(stderr, "DEBUG FEC OTI: get_rq_api() returned NULL\n");
+        LOG_DEBUG("FEC OTI: get_rq_api() returned NULL\n");
         res.error = true; 
         return res; 
     }
 
     if (!encoded->has_oti) {
-        fprintf(stderr, "DEBUG FEC OTI: no OTI available\n");
+        LOG_DEBUG("FEC OTI: no OTI available\n");
         res.error = true;
         return res;
     }
@@ -439,22 +441,22 @@ codec_result_t codec_fec_decode_oti(fec_encoded_t *encoded) {
     uint16_t T = (uint16_t)(host_oti_common & 0xFFFFULL);   /* lower 16 bits = T */
     uint64_t F = host_oti_common >> 24;                      /* upper 40 bits = F */
 
-    fprintf(stderr, "DEBUG FEC OTI: oti_common=0x%016llx oti_scheme=0x%08x total_count=%d symbol_len=%zu k_source=%d\n",
+    LOG_DEBUG("FEC OTI: oti_common=0x%016llx oti_scheme=0x%08x total_count=%d symbol_len=%zu k_source=%d\n",
             (unsigned long long)encoded->oti_common,
             (unsigned int)encoded->oti_scheme,
             encoded->total_count,
             (size_t)encoded->symbol_len,
             encoded->k_source);
-    fprintf(stderr, "DEBUG FEC OTI: host_oti=0x%016llx => T=%u F=%llu\n",
+    LOG_DEBUG("FEC OTI: host_oti=0x%016llx => T=%u F=%llu\n",
             (unsigned long long)host_oti_common, T, (unsigned long long)F);
 
     /* Fallback: use received payload size if T from OTI is implausible */
     if (T == 0 || T > 1500) {
         T = (uint16_t)encoded->symbol_len;
-        fprintf(stderr, "DEBUG FEC OTI: OTI T implausible, using symbol_len T=%u\n", T);
+        LOG_DEBUG("FEC OTI: OTI T implausible, using symbol_len T=%u\n", T);
     }
     if (T == 0) {
-        fprintf(stderr, "DEBUG FEC OTI: T=0, cannot decode\n");
+        LOG_DEBUG("FEC OTI: T=0, cannot decode\n");
         res.error = true;
         return res;
     }
@@ -462,24 +464,24 @@ codec_result_t codec_fec_decode_oti(fec_encoded_t *encoded) {
     /* Pass the original big-endian OTI directly — Decoder() calls b_to_h() internally */
     struct RFC6330_ptr *dec = api->Decoder(RQ_DEC_8, encoded->oti_common, encoded->oti_scheme);
     if (!dec) {
-        fprintf(stderr, "DEBUG FEC OTI: Decoder() returned NULL, trying Decoder_raw\n");
+        LOG_DEBUG("FEC OTI: Decoder() returned NULL, trying Decoder_raw\n");
         /* Fallback: explicit parameters when OTI-based decoder fails */
         if (encoded->k_source <= 0) {
-            fprintf(stderr, "DEBUG FEC OTI: k_source not set, cannot use Decoder_raw\n");
+            LOG_DEBUG("FEC OTI: k_source not set, cannot use Decoder_raw\n");
             res.error = true;
             return res;
         }
         uint64_t raw_size = (uint64_t)T * (uint64_t)encoded->k_source;
         dec = api->Decoder_raw(RQ_DEC_8, raw_size, T, 1, 1, 1);
         if (!dec) {
-            fprintf(stderr, "DEBUG FEC OTI: Decoder_raw() also returned NULL\n");
+            LOG_DEBUG("FEC OTI: Decoder_raw() also returned NULL\n");
             res.error = true;
             return res;
         }
-        fprintf(stderr, "DEBUG FEC OTI: Decoder_raw created size=%llu T=%u\n",
+        LOG_DEBUG("FEC OTI: Decoder_raw created size=%llu T=%u\n",
                 (unsigned long long)raw_size, T);
     } else {
-        fprintf(stderr, "DEBUG FEC OTI: Decoder created (F=%llu T=%u)\n",
+        LOG_DEBUG("FEC OTI: Decoder created (F=%llu T=%u)\n",
                 (unsigned long long)F, T);
     }
 
@@ -511,7 +513,7 @@ codec_result_t codec_fec_decode_oti(fec_encoded_t *encoded) {
 
     void *out = res.data;
     struct RFC6330_Dec_Result dres = api->decode_aligned(dec, &out, (uint64_t)max_size, 0);
-    fprintf(stderr, "DEBUG FEC OTI: decode_aligned written=%llu\n",
+    LOG_DEBUG("FEC OTI: decode_aligned written=%llu\n",
             (unsigned long long)dres.written);
     if (dres.written == 0 || dres.written > max_size) {
         buffer_pool_release(res.data, max_size);
