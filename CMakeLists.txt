@@ -139,9 +139,9 @@ endif()
 
 # ── Shared SPCDNS codec sources ───────────────────────────────────────────────
 set(SPCDNS_SOURCES
-    third_party/SPCDNS/codec.c
-    third_party/SPCDNS/mappings.c
-    third_party/SPCDNS/output.c
+    SPCDNS/codec.c
+    SPCDNS/mappings.c
+    SPCDNS/output.c
 )
 
 # ── Shared tunnel sources ─────────────────────────────────────────────────────
@@ -152,12 +152,6 @@ set(SHARED_SOURCES
     shared/tui.c
     shared/codec.c
     shared/mgmt.c
-    shared/dns_tunnel.c
-    shared/socks5_proxy.c
-    shared/session_mgr.c
-    shared/ai_optimizer.c
-    shared/ultra_codec.c
-    shared/parallel_resolver.c
 )
 
 # ── Core Settings ─────────────────────────────────────────────────────────────
@@ -165,8 +159,6 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # ── Options ───────────────────────────────────────────────────────────────────
 option(BUILD_SERVER "Build the tunnel server" ON)
-option(BUILD_REDESIGNED "Build the redesigned architecture versions" ON)
-option(BUILD_ULTRA_EFFICIENT "Build ultra-efficient DNS tunnel (experimental)" OFF)
 
 # ── Client ────────────────────────────────────────────────────────────────────
 add_executable(dnstun-client
@@ -201,82 +193,6 @@ if(BUILD_SERVER)
     
     if(WIN32)
         target_link_libraries(dnstun-server ws2_32 iphlpapi userenv)
-    endif()
-endif()
-
-# ── Redesigned Architecture Versions ──────────────────────────────────────────
-if(BUILD_REDESIGNED)
-    # Redesigned Client (Tunnel Endpoint)
-    add_executable(dnstun-client-redesigned
-        client/main_redesigned.c
-        client/target_connector.c
-        ${SPCDNS_SOURCES}
-        ${SHARED_SOURCES}
-    )
-    target_include_directories(dnstun-client-redesigned PRIVATE . shared client SPCDNS ${EXTRA_INCLUDES})
-    target_link_libraries(dnstun-client-redesigned
-        ${UV_LIBRARIES} ${ZSTD_LIBRARIES} ${SODIUM_LIBRARIES}
-        ${RAPTORQ_LIBRARIES} ${PLATFORM_LINK_LIBS}
-    )
-    set_target_properties(dnstun-client-redesigned PROPERTIES LINKER_LANGUAGE CXX)
-
-    if(WIN32)
-        target_link_libraries(dnstun-client-redesigned ws2_32 iphlpapi userenv)
-    endif()
-
-    # Redesigned Server (SOCKS5 Proxy)
-    add_executable(dnstun-server-redesigned
-        server/main_redesigned.c
-        server/socks5_handler.c
-        ${SPCDNS_SOURCES}
-        ${SHARED_SOURCES}
-    )
-    target_include_directories(dnstun-server-redesigned PRIVATE . shared server SPCDNS ${EXTRA_INCLUDES})
-    target_link_libraries(dnstun-server-redesigned
-        ${UV_LIBRARIES} ${ZSTD_LIBRARIES} ${SODIUM_LIBRARIES}
-        ${RAPTORQ_LIBRARIES} ${PLATFORM_LINK_LIBS}
-    )
-    set_target_properties(dnstun-server-redesigned PROPERTIES LINKER_LANGUAGE CXX)
-
-    if(WIN32)
-        target_link_libraries(dnstun-server-redesigned ws2_32 iphlpapi userenv)
-    endif()
-endif()
-
-# ── Ultra-Efficient DNS Tunnel ───────────────────────────────────────────────
-if(BUILD_ULTRA_EFFICIENT)
-    # Ultra-Efficient Client (Experimental high-performance tunnel)
-    add_executable(dnstun-ultra-client
-        client/main.c  # TODO: Adapt main.c for ultra-efficient mode
-        ${SPCDNS_SOURCES}
-        ${SHARED_SOURCES}
-    )
-    target_include_directories(dnstun-ultra-client PRIVATE . shared client SPCDNS ${EXTRA_INCLUDES})
-    target_link_libraries(dnstun-ultra-client
-        ${UV_LIBRARIES} ${ZSTD_LIBRARIES} ${SODIUM_LIBRARIES}
-        ${RAPTORQ_LIBRARIES} ${PLATFORM_LINK_LIBS}
-    )
-    set_target_properties(dnstun-ultra-client PROPERTIES LINKER_LANGUAGE CXX)
-
-    if(WIN32)
-        target_link_libraries(dnstun-ultra-client ws2_32 iphlpapi userenv)
-    endif()
-
-    # Ultra-Efficient Server (Experimental high-performance tunnel)
-    add_executable(dnstun-ultra-server
-        server/main.c  # TODO: Adapt main.c for ultra-efficient mode
-        ${SPCDNS_SOURCES}
-        ${SHARED_SOURCES}
-    )
-    target_include_directories(dnstun-ultra-server PRIVATE . shared server SPCDNS ${EXTRA_INCLUDES})
-    target_link_libraries(dnstun-ultra-server
-        ${UV_LIBRARIES} ${ZSTD_LIBRARIES} ${SODIUM_LIBRARIES}
-        ${RAPTORQ_LIBRARIES} ${PLATFORM_LINK_LIBS}
-    )
-    set_target_properties(dnstun-ultra-server PROPERTIES LINKER_LANGUAGE CXX)
-
-    if(WIN32)
-        target_link_libraries(dnstun-ultra-server ws2_32 iphlpapi userenv)
     endif()
 endif()
 

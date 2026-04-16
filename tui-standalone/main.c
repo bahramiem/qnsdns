@@ -20,7 +20,7 @@
 #include <string.h>
 #include <signal.h>
 
-#include "third_party/uv.h"
+#include "uv.h"
 #include "mgmt_client.h"
 #include "renderer.h"
 

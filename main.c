@@ -3,8 +3,8 @@
 #include <string.h>
 
 #include "uv.h"
-#include "third_party/SPCDNS/dns.h"
-#include "third_party/SPCDNS/output.h"
+#include "SPCDNS/dns.h"
+#include "SPCDNS/output.h"
 
 #include <stdlib.h>
 

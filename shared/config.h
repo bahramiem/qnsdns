@@ -90,17 +90,6 @@ typedef struct dnstun_config {
     bool     ota_enabled;
     int      ota_check_interval_sec;
 
-    /* [ai] - AI-driven optimizations */
-    bool     ai_enabled;
-    int      ai_model_type;         /* 0=neural, 1=decision_tree, 2=rl, 3=statistical */
-    char     ai_model_path[512];
-    int      ai_optimization_interval_ms;
-    double   ai_learning_rate;
-    bool     ai_enable_training;
-    char     ai_training_data_path[512];
-    int      ai_max_training_samples;
-    double   ai_resolver_selection_weight; /* Balance AI vs traditional metrics */
-
 } dnstun_config_t;
 
 /* ──────────────────────────────────────────────

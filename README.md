@@ -107,46 +107,5 @@ curl -x socks5h://127.0.0.1:1080 http://example.com
 
 ---
 
-## ⚡ Ultra-Efficient DNS Tunnel (Experimental)
-
-**WARNING: This is an experimental feature currently under development. It may not be fully stable or compatible with all environments.**
-
-The ultra-efficient DNS tunnel represents a complete redesign for maximum performance and minimal overhead:
-
-### Key Improvements
-- **Ultra-Compact Headers**: 2-byte header vs 20+ bytes (90% reduction)
-- **Binary Encoding**: Direct binary in DNS queries (no base32 overhead)
-- **Massive Parallelism**: Queries across 100-1000 resolvers simultaneously
-- **Intelligent Load Balancing**: AI-driven resolver selection and optimization
-- **Advanced Compression**: Multi-level compression with deduplication
-
-### Performance Targets
-- **10-20x throughput** increase over current implementation
-- **<7% protocol overhead** vs current 30-50%
-- **5-10x latency reduction** through parallel queries
-- **1000+ concurrent resolvers** for extreme redundancy
-
-### Building Ultra-Efficient Version
-```bash
-mkdir build && cd build
-cmake .. -DBUILD_ULTRA_EFFICIENT=ON -DCMAKE_BUILD_TYPE=Release
-make dnstun-ultra-client dnstun-ultra-server
-```
-
-### Configuration
-The ultra-efficient tunnel uses enhanced configuration options:
-```ini
-[ultra]
-enable_compression = true
-enable_deduplication = true
-resolver_pool_size = 500
-parallel_queries_per_packet = 3
-adaptive_mtu = true
-```
-
-**Note**: The ultra-efficient tunnel is not backward compatible with standard DNS tunnel configurations. Use only for testing and development.
-
----
-
 ### Security Note
 If you want to prevent unauthorized users from using your Server, define a custom string in the `[encryption]` -> `psk` section of both your `client.ini` and `server.ini`. Any clients not providing this Pre-Shared Key will be silently dropped.
