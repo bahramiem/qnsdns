@@ -196,6 +196,7 @@ static void on_probe_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf, const
                     uint8_t *resp = (uint8_t *)buf->base;
                     uint8_t rcode = resp[3] & 0x0F;
                     /* Only accept NOERROR (0) or NXDOMAIN (3) as success - SERVFAIL (2) means query was rejected */
+                    LOG_DEBUG("[MTU] Got response: size=%d, RCODE=%d, test_mtu=%d\n", (int)nread, rcode, p->mtu_test_val);
                 if (rcode == RCODE_OKAY || rcode == RCODE_NAME_ERROR) {
                         success = true;
                         
@@ -356,7 +357,7 @@ int build_mtu_test_query(uint8_t *buf, size_t *outlen, const char *domain, uint1
 
     if (is_upload && target_mtu > 0) {
         size_t domain_len = strlen(domain);
-        size_t base_qname_bytes = 1 + domain_len;
+        size_t base_qname_bytes = 1 + domain_len + 2;  /* +2 for separator label */
         size_t overhead = 12 + 4 + 11 + base_qname_bytes;
         size_t padding_needed = (target_mtu > (int)overhead) ? (target_mtu - (int)overhead) : 0;
         
@@ -370,6 +371,10 @@ int build_mtu_test_query(uint8_t *buf, size_t *outlen, const char *domain, uint1
             }
             padding_needed -= label_len;
         }
+        
+        /* Add separator between padding labels and domain (old code added 0x2e as separator) */
+        buf[offset++] = 0x01;  /* Single-character label */
+        buf[offset++] = 'x';    /* Separator label "x" */
         
         const char *p = domain;
         while (*p) {
