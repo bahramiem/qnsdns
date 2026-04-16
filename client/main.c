@@ -149,7 +149,9 @@ void resolvers_load(void) {
         char *feck = strtok(NULL, ",");
         char *loss = strtok(NULL, ",");
         if (umtu) g_pool.resolvers[idx].upstream_mtu   = (uint16_t)atoi(umtu);
+        else      g_pool.resolvers[idx].upstream_mtu   = 220;
         if (dmtu) g_pool.resolvers[idx].downstream_mtu = (uint16_t)atoi(dmtu);
+        else      g_pool.resolvers[idx].downstream_mtu = 512;
         if (enc)  g_pool.resolvers[idx].enc            = atoi(enc);
         if (feck) g_pool.resolvers[idx].fec_k          = (uint8_t)atoi(feck);
         if (loss) g_pool.resolvers[idx].loss_rate      = (float)atof(loss);
@@ -291,9 +293,13 @@ int main(int argc, char *argv[]) {
 
     if (g_cfg.swarm_save_disk) resolvers_load();
 
-    if (g_pool.count == 0) {
+    /* Always run resolver init phase to test & score resolvers.
+     * If resolvers were loaded from disk they still need to be validated
+     * and have their MTU / EDNS capabilities confirmed. */
+    {
         uv_mutex_lock(&g_pool.lock);
-        for(int i=0; i<g_pool.count; i++) g_pool.resolvers[i].state = RSV_DEAD;
+        for (int i = 0; i < g_pool.count; i++)
+            g_pool.resolvers[i].state = RSV_DEAD; /* force re-test */
         uv_mutex_unlock(&g_pool.lock);
         resolver_init_phase();
     }
