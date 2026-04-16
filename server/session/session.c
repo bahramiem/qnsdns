@@ -38,6 +38,7 @@
 #include "shared/types.h"
 #include "shared/config.h"
 #include "server/session/session.h"
+#include "shared/tui.h"
 
 /* ── Global session table (exported via extern in session.h) ── */
 srv_session_t g_sessions[SRV_MAX_SESSIONS];

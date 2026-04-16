@@ -59,6 +59,7 @@
 
 #include "client/session/session.h"
 #include "client/dns/query.h"
+#include "shared/tui.h"
 #include "client/socks5/proxy.h"
 #include "client/resolver/probe.h"
 #include "client/resolver/init.h"
@@ -129,7 +130,7 @@ void resolvers_load(void) {
         if (!line[0]) continue;
         char *ip = strtok(line, ",");
         if (!ip) continue;
-        int idx = _rpool_find(&g_pool, ip);
+        int idx = rpool_find(&g_pool, ip);
         if (idx < 0) {
             idx = g_pool.count++;
             strncpy(g_pool.resolvers[idx].ip, ip, sizeof(g_pool.resolvers[idx].ip)-1);
@@ -281,9 +282,9 @@ int main(int argc, char *argv[]) {
         strcpy(g_resolvers_file, "client_resolvers.txt");
     }
 
-    if (g_cfg.resolver_save_disk) resolvers_load();
+    if (g_cfg.swarm_save_disk) resolvers_load();
 
-    if (g_cfg.re_probe_on_start || g_pool.count == 0) {
+    if (g_pool.count == 0) {
         uv_mutex_lock(&g_pool.lock);
         for(int i=0; i<g_pool.count; i++) g_pool.resolvers[i].state = RSV_DEAD;
         uv_mutex_unlock(&g_pool.lock);
@@ -295,8 +296,8 @@ int main(int argc, char *argv[]) {
         g_sessions[i].closed = true;
     }
 
-    if (g_cfg.client_bind[0]) {
-        strncpy(tmp, g_cfg.client_bind, sizeof(tmp)-1);
+    if (g_cfg.socks5_bind[0]) {
+        strncpy(tmp, g_cfg.socks5_bind, sizeof(tmp)-1);
         tmp[sizeof(tmp)-1] = '\0';
         colon = strrchr(tmp, ':');
         if (colon) {
@@ -345,7 +346,7 @@ int main(int argc, char *argv[]) {
     uv_run(g_loop, UV_RUN_DEFAULT);
 
     tui_shutdown(&g_tui);
-    if (g_cfg.resolver_save_disk) resolvers_save();
+    if (g_cfg.swarm_save_disk) resolvers_save();
     rpool_destroy(&g_pool);
     codec_pool_shutdown();
 

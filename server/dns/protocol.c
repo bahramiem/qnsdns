@@ -53,6 +53,7 @@
 #include "server/session/session.h"
 #include "server/swarm/swarm.h"
 #include "server/dns/protocol.h"
+#include "shared/tui.h"
 
 /* ── Externals from main.c ── */
 extern uv_loop_t       *g_loop;

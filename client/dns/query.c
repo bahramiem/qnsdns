@@ -45,6 +45,7 @@
 
 #include "client/session/session.h"
 #include "client/dns/query.h"
+#include "shared/tui.h"
 
 /* ── Externals from client/main.c ── */
 extern uv_loop_t       *g_loop;

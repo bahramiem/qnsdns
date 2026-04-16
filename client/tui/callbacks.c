@@ -63,7 +63,7 @@ void on_poll_timer(uv_timer_t *t) {
         if (s->closed || !s->established) continue;
 
         if (s->send_len == 0) {
-            uint64_t interval = (g_cfg.poll_interval >= 50) ? (uint64_t)g_cfg.poll_interval : 50;
+            uint64_t interval = (g_cfg.poll_interval_ms >= 50) ? (uint64_t)g_cfg.poll_interval_ms : 50;
             if (s->socks5_connected && (now_ms - last_poll[i] >= interval)) {
                 DBGLOG("[POLL] session %u seq %u\n", s->session_id, s->tx_next);
                 fire_dns_chunk_symbol(i, s->tx_next++, NULL, 0, 0, 0, 0);
@@ -117,9 +117,11 @@ void on_poll_timer(uv_timer_t *t) {
             int target_sym_size = avg_mtu;
             if (target_sym_size > DNSTUN_CHUNK_PAYLOAD) target_sym_size = DNSTUN_CHUNK_PAYLOAD;
 
-            if (g_cfg.fec >= 2 || raw_len > (size_t)target_sym_size) {
-                float l_rate = 0.05f;
-                fres = codec_fec_encode(raw_buf, raw_len, l_rate, g_cfg.fec, target_sym_size);
+            if (raw_len > (size_t)target_sym_size) {
+                int k_val = (int)ceil((double)raw_len / target_sym_size);
+                int r_val = (int)ceil(k_val * 0.1);
+                if (r_val < 1) r_val = 1;
+                fres = codec_fec_encode(raw_buf, raw_len, k_val, r_val);
                 if (!fres.error && fres.data) {
                     fec_encoded_t *fenc = (fec_encoded_t*)fres.data;
                     k_source   = fenc->k_source;
@@ -182,7 +184,7 @@ void on_idle_timer(uv_timer_t *t) {
 
     for (int i = 0; i < g_pool.count; i++) {
         resolver_t *r = &g_pool.resolvers[i];
-        if (r->state == RSV_ACTIVE && now - r->last_used > 60) {
+        if (r->state == RSV_ACTIVE && now - r->last_probe > 60) {
             r->fail_count = 0;
         }
     }
@@ -190,7 +192,7 @@ void on_idle_timer(uv_timer_t *t) {
     static int save_tick = 0;
     if (++save_tick >= 10) {
         save_tick = 0;
-        if (g_cfg.resolver_save_disk) resolvers_save();
+        if (g_cfg.swarm_save_disk) resolvers_save();
     }
 
     g_stats.tx_bytes_sec = 0;

@@ -26,6 +26,7 @@
 
 #include "client/resolver/probe.h"
 #include "client/resolver/mtu.h"
+#include "shared/tui.h"
 
 extern uv_loop_t       *g_loop;
 extern dnstun_config_t  g_cfg;
@@ -73,16 +74,16 @@ static void on_probe_timeout(uv_timer_t *t) {
             resolver_t *r = &g_pool.resolvers[p->resolver_idx];
             if (p->test_type == PROBE_TEST_LONGNAME) {
                 if (p->test_res) p->test_res->longname_supported = false;
-                rpool_set_dead(&g_pool, p->resolver_idx, "Long QNAME test timeout");
+                rpool_set_state(&g_pool, p->resolver_idx, RSV_DEAD);
             } else if (p->test_type == PROBE_TEST_NXDOMAIN) {
                 if (p->test_res) p->test_res->nxdomain_correct = false;
-                rpool_set_dead(&g_pool, p->resolver_idx, "NXDOMAIN test timeout");
+                rpool_set_state(&g_pool, p->resolver_idx, RSV_DEAD);
             } else if (p->test_type == PROBE_TEST_EDNS_TXT) {
                 if (p->test_res) {
                     p->test_res->edns_supported = false;
                     p->test_res->txt_supported = false;
                 }
-                rpool_set_dead(&g_pool, p->resolver_idx, "EDNS+TXT test timeout");
+                rpool_set_state(&g_pool, p->resolver_idx, RSV_DEAD);
             } else if (p->test_type == PROBE_TEST_MTU_UP || p->test_type == PROBE_TEST_MTU_DOWN) {
                 if (p->test_res) mark_mtu_tested(p->test_type == PROBE_TEST_MTU_UP ? &p->test_res->up_mtu_search : &p->test_res->down_mtu_search, p->mtu_test_val, false);
                 int next_mtu = get_next_mtu_to_test(p->test_type == PROBE_TEST_MTU_UP ? &p->test_res->up_mtu_search : &p->test_res->down_mtu_search);
@@ -124,27 +125,27 @@ static void on_probe_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf, const
 
         if (p->is_init_probe) {
             if (p->test_type == PROBE_TEST_LONGNAME) {
-                if (rc == RCODE_NXDOMAIN || rc == RCODE_OKAY || rc == RCODE_SERVFAIL) {
+                if (rc == RCODE_NAME_ERROR || rc == RCODE_OKAY || rc == RCODE_SERVER_FAILURE) {
                     if (p->test_res) p->test_res->longname_supported = true;
                     LOG_INFO("Resolver %s passed Long QNAME test (RCODE %d)\n", r->ip, rc);
                 } else {
                     if (p->test_res) p->test_res->longname_supported = false;
-                    rpool_set_dead(&g_pool, ridx, "Unsupported RCODE for long QNAME");
+                    rpool_set_state(&g_pool, ridx, RSV_DEAD);
                 }
             } else if (p->test_type == PROBE_TEST_NXDOMAIN) {
                 dns_query_t *resp = (dns_query_t*)decoded;
-                if (rc == RCODE_NXDOMAIN) {
+                if (rc == RCODE_NAME_ERROR) {
                     if (p->test_res) p->test_res->nxdomain_correct = true;
                 } else if (rc == RCODE_OKAY && resp->ancount > 0) {
                     if (p->test_res) p->test_res->nxdomain_correct = false;
-                    rpool_set_dead(&g_pool, ridx, "Fake NXDOMAIN (Hijack detected)");
+                    rpool_set_state(&g_pool, ridx, RSV_DEAD);
                     LOG_WARN("Resolver %s hijacks NXDOMAIN!\n", r->ip);
                 } else {
                     if (p->test_res) p->test_res->nxdomain_correct = false;
-                    rpool_set_dead(&g_pool, ridx, "Failed NXDOMAIN behavior test");
+                    rpool_set_state(&g_pool, ridx, RSV_DEAD);
                 }
             } else if (p->test_type == PROBE_TEST_EDNS_TXT) {
-                if (rc == RCODE_OKAY || rc == RCODE_NXDOMAIN) {
+                if (rc == RCODE_OKAY || rc == RCODE_NAME_ERROR) {
                     dns_query_t *resp = (dns_query_t*)decoded;
                     bool edns_ok = false;
                     bool txt_ok = false;
@@ -152,9 +153,9 @@ static void on_probe_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf, const
                         for (int i=0; i<resp->arcount; i++) {
                             if (resp->additional[i].generic.type == RR_OPT) {
                                 edns_ok = true;
-                                if (resp->additional[i].opt.udp_payload_size > 0) {
+                                if (resp->additional[i].opt.udp_payload > 0) {
                                     if (p->test_res) {
-                                        p->test_res->downstream_mtu = resp->additional[i].opt.udp_payload_size;
+                                        p->test_res->downstream_mtu = resp->additional[i].opt.udp_payload;
                                     }
                                 }
                                 break;
@@ -167,7 +168,7 @@ static void on_probe_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf, const
                                 txt_ok = true; break;
                             }
                         }
-                    } else if (resp->authorities && resp->nscount > 0) {
+                    } else if (resp->nameservers && resp->nscount > 0) {
                         txt_ok = true; 
                     } else {
                         txt_ok = true; 
@@ -178,17 +179,17 @@ static void on_probe_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf, const
                         p->test_res->upstream_mtu = 512;
                     }
                     if (!edns_ok && !txt_ok) {
-                        rpool_set_dead(&g_pool, ridx, "EDNS and TXT failed");
+                        rpool_set_state(&g_pool, ridx, RSV_DEAD);
                     }
                 } else {
                     if (p->test_res) {
                         p->test_res->edns_supported = false;
                         p->test_res->txt_supported = false;
                     }
-                    rpool_set_dead(&g_pool, ridx, "EDNS+TXT test RCODE error");
+                    rpool_set_state(&g_pool, ridx, RSV_DEAD);
                 }
             } else if (p->test_type == PROBE_TEST_MTU_UP || p->test_type == PROBE_TEST_MTU_DOWN) {
-                if (rc == RCODE_OKAY || rc == RCODE_NXDOMAIN || rc == RCODE_SERVFAIL) {
+                if (rc == RCODE_OKAY || rc == RCODE_NAME_ERROR || rc == RCODE_SERVER_FAILURE) {
                     if (p->test_res) {
                         mark_mtu_tested(p->test_type == PROBE_TEST_MTU_UP ? &p->test_res->up_mtu_search : &p->test_res->down_mtu_search, p->mtu_test_val, true);
                         int next_mtu = get_next_mtu_to_test(p->test_type == PROBE_TEST_MTU_UP ? &p->test_res->up_mtu_search : &p->test_res->down_mtu_search);

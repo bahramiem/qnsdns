@@ -24,6 +24,7 @@
 #include "client/resolver/probe.h"
 #include "client/resolver/mtu.h"
 #include "client/resolver/init.h"
+#include "shared/tui.h"
 
 extern uv_loop_t       *g_loop;
 extern dnstun_config_t  g_cfg;

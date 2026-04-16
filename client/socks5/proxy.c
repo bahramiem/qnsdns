@@ -25,6 +25,7 @@
 #include "client/session/session.h"
 #include "client/dns/query.h"
 #include "client/socks5/proxy.h"
+#include "shared/tui.h"
 
 /* ── Externals from client/main.c ── */
 extern uv_loop_t       *g_loop;
@@ -41,11 +42,8 @@ extern int log_level(void);
 
 /* Helper */
 static uint8_t get_unused_session_id(void) {
-    if (g_cfg.session_id_method == 1) {
-        return (uint8_t)(rand() % 256);
-    } else {
-        static uint8_t next_id = 1;
-        uint8_t start = next_id;
+    static uint8_t next_id = 1;
+    uint8_t start = next_id;
         do {
             uint8_t cand = next_id++;
             if (cand == 0) cand = next_id++;
@@ -56,10 +54,9 @@ static uint8_t get_unused_session_id(void) {
                     in_use = true; break;
                 }
             }
-            if (!in_use) return cand;
-        } while (next_id != start);
-        return (uint8_t)(rand() % 255 + 1);
-    }
+        if (!in_use) return cand;
+    } while (next_id != start);
+    return (uint8_t)(rand() % 255 + 1);
 }
 
 /* ────────────────────────────────────────────── */
