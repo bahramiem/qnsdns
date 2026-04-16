@@ -80,8 +80,8 @@ int get_next_mtu_to_test(mtu_binary_search_t *search) {
     if (!search || !search->active) return -1;
     
     /* Only terminate if we've tested both boundaries AND the space between them is exhausted.
-     * Don't terminate just because we've found an optimal - we need to verify the upper bound. */
-    if (search->optimal > 0 && is_mtu_tested(search, search->high) {
+      * Don't terminate just because we've found an optimal - we need to verify the upper bound. */
+    if (search->optimal > 0 && is_mtu_tested(search, search->high)) {
         search->active = false;
         LOG_INFO("[%s MTU] Search complete, optimal MTU: %d\n", 
                  search->is_upload ? "Up" : "Down", search->optimal);
