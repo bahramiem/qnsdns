@@ -1,0 +1,138 @@
+/**
+ * @file client/resolver/mtu.c
+ * @brief MTU Binary Search Implementation
+ *
+ * Extracted from client/main.c lines 1278-1470.
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+
+#include "shared/config.h"
+
+#include "client/resolver/mtu.h"
+#include "client/resolver/probe.h"
+
+extern dnstun_config_t g_cfg;
+extern int log_level(void);
+
+#define LOG_INFO(...)  do { if (g_cfg.log_level >= 1) { } } while(0)
+#define LOG_DEBUG(...) do { if (g_cfg.log_level >= 2) { } } while(0)
+
+/* ────────────────────────────────────────────── */
+/*  MTU Binary Search Operations                  */
+/* ────────────────────────────────────────────── */
+
+void init_mtu_binary_search(mtu_binary_search_t *search, int current, int max_mtu, 
+                           int window, int min_mtu, int max_retries, 
+                           bool is_upload, int dependent_mtu) {
+    if (!search) return;
+    
+    search->active = true;
+    /* Default max MTU if not specified */
+    int effective_max = max_mtu > 0 ? max_mtu : (is_upload ? 512 : 4096);
+    /* Lower bound starts at current or min_mtu */
+    search->low = current > min_mtu ? current : min_mtu;
+    /* Upper bound starts at min(current + window, max_mtu) */
+    search->high = current > 0 ? current + window : effective_max;
+    if (search->high > effective_max) search->high = effective_max;
+    
+    search->current_test = (search->low + search->high) / 2;
+    search->optimal = current > 0 ? current : 0;
+    search->retries = 0;
+    search->max_retries = max_retries > 0 ? max_retries : 2;
+    search->is_upload = is_upload;
+    search->last_test_ms = 0;
+    search->dependent_mtu = dependent_mtu;
+    
+    LOG_INFO("[%s MTU] Starting binary search: low=%d, high=%d, target max=%d\n", 
+             is_upload ? "Up" : "Down", search->low, search->high, effective_max);
+}
+
+void free_mtu_binary_search(mtu_binary_search_t *search) {
+    if (search) {
+        search->active = false;
+    }
+}
+
+int get_next_mtu_to_test(mtu_binary_search_t *search) {
+    if (!search || !search->active) return -1;
+    
+    /* If low and high have converged, search is done */
+    if (search->low >= search->high) {
+        search->active = false;
+        search->optimal = search->low;
+        LOG_INFO("[%s MTU] Search complete, optimal MTU: %d\n", 
+                 search->is_upload ? "Up" : "Down", search->optimal);
+        return -1;
+    }
+    
+    /* Calculate next midpoint */
+    search->current_test = search->low + (search->high - search->low) / 2;
+    
+    /* If midpoint is same as low or high due to integer division round-off,
+       force to the other bound to ensure progress */
+    if (search->current_test == search->low) {
+        search->current_test = search->high;
+    }
+    
+    return search->current_test;
+}
+
+void mark_mtu_tested(mtu_binary_search_t *search, int mtu, bool success) {
+    if (!search || !search->active) return;
+    
+    if (success) {
+        /* MTU works, shift lower bound up */
+        search->low = mtu;
+        /* If we succeeded, we can keep the optimal value updated */
+        if (mtu > search->optimal) {
+            search->optimal = mtu;
+        }
+        /* Double the window upwards to find real upper bound if we're hitting high limit */
+        int effective_max = search->is_upload ? 
+                           (g_cfg.max_upload_mtu > 0 ? g_cfg.max_upload_mtu : 512) : 
+                           (g_cfg.max_download_mtu > 0 ? g_cfg.max_download_mtu : 4096);
+                           
+        if (search->high <= mtu && mtu < effective_max) {
+            search->high = mtu + 60; /* Extend search space */
+            if (search->high > effective_max) search->high = effective_max;
+            LOG_DEBUG("[%s MTU] Success at %d, extending upper bound to %d\n",
+                     search->is_upload ? "Up" : "Down", mtu, search->high);
+        } else {
+            LOG_DEBUG("[%s MTU] Success at %d, low->%d\n", 
+                     search->is_upload ? "Up" : "Down", mtu, search->low);
+        }
+        /* Reset retries on success */
+        search->retries = 0;
+    } else {
+        /* MTU failed, check retries */
+        search->retries++;
+        if (search->retries >= search->max_retries) {
+            /* Definitely failed, shift upper bound down */
+            search->high = mtu - 1;
+            search->retries = 0; /* Reset for next test */
+            LOG_DEBUG("[%s MTU] Failed at %d, high->%d\n", 
+                     search->is_upload ? "Up" : "Down", mtu, search->high);
+        } else {
+            /* Will retry this MTU */
+            LOG_DEBUG("[%s MTU] Failed at %d, retry %d/%d\n", 
+                     search->is_upload ? "Up" : "Down", mtu, search->retries, search->max_retries);
+        }
+    }
+}
+
+void fire_mtu_test_probe(int resolver_idx, probe_test_type_t test_type, 
+                         resolver_test_result_t *res, int mtu_size) {
+    int flux_idx = g_cfg.domain_count > 0 ? (rand() % g_cfg.domain_count) : 0;
+    const char *domain = g_cfg.domain_count > 0 ? g_cfg.domains[flux_idx] : "tun.example.com";
+    
+    if (res && test_type == PROBE_TEST_MTU_UP) {
+        res->up_mtu_search.last_test_ms = uv_hrtime() / 1000000;
+    } else if (res && test_type == PROBE_TEST_MTU_DOWN) {
+        res->down_mtu_search.last_test_ms = uv_hrtime() / 1000000;
+    }
+    
+    fire_probe_ext(resolver_idx, domain, true, test_type, res, mtu_size);
+}

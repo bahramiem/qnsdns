@@ -138,10 +138,11 @@ else()
 endif()
 
 # ── Shared SPCDNS codec sources ───────────────────────────────────────────────
+# ── Shared SPCDNS codec sources ───────────────────────────────────────────────
 set(SPCDNS_SOURCES
-    SPCDNS/codec.c
-    SPCDNS/mappings.c
-    SPCDNS/output.c
+    third_party/spcdns/codec.c
+    third_party/spcdns/mappings.c
+    third_party/spcdns/output.c
 )
 
 # ── Shared tunnel sources ─────────────────────────────────────────────────────
@@ -161,12 +162,25 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 option(BUILD_SERVER "Build the tunnel server" ON)
 
 # ── Client ────────────────────────────────────────────────────────────────────
-add_executable(dnstun-client
+set(CLIENT_SOURCES
     client/main.c
+    client/session/session.c
+    client/socks5/proxy.c
+    client/resolver/probe.c
+    client/resolver/mtu.c
+    client/resolver/init.c
+    client/aggregation/packet.c
+    client/debug/packet.c
+    client/tui/callbacks.c
+    client/dns/query.c
+)
+
+add_executable(dnstun-client
+    ${CLIENT_SOURCES}
     ${SPCDNS_SOURCES}
     ${SHARED_SOURCES}
 )
-target_include_directories(dnstun-client PRIVATE . shared SPCDNS ${EXTRA_INCLUDES})
+target_include_directories(dnstun-client PRIVATE . shared third_party/spcdns ${EXTRA_INCLUDES})
 target_link_libraries(dnstun-client
     ${UV_LIBRARIES} ${ZSTD_LIBRARIES} ${SODIUM_LIBRARIES}
     ${RAPTORQ_LIBRARIES} ${PLATFORM_LINK_LIBS}
@@ -179,12 +193,20 @@ endif()
 
 # ── Server ────────────────────────────────────────────────────────────────────
 if(BUILD_SERVER)
-    add_executable(dnstun-server
+    set(SERVER_SOURCES
         server/main.c
+        server/session/session.c
+        server/swarm/swarm.c
+        server/dns/protocol.c
+        server/tui/callbacks.c
+    )
+
+    add_executable(dnstun-server
+        ${SERVER_SOURCES}
         ${SPCDNS_SOURCES}
         ${SHARED_SOURCES}
     )
-    target_include_directories(dnstun-server PRIVATE . shared SPCDNS ${EXTRA_INCLUDES})
+    target_include_directories(dnstun-server PRIVATE . shared third_party/spcdns ${EXTRA_INCLUDES})
     target_link_libraries(dnstun-server
         ${UV_LIBRARIES} ${ZSTD_LIBRARIES} ${SODIUM_LIBRARIES}
         ${RAPTORQ_LIBRARIES} ${PLATFORM_LINK_LIBS}
