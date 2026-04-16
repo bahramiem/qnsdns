@@ -26,11 +26,7 @@
 
 #include "client/session/session.h"
 
-/* Logging — provided by main.c (uses g_tui, g_cfg) */
-extern int          log_level(void);
-
-#define LOG_DEBUG(...) do { if (log_level() >= 2) { } } while(0)
-#define LOG_ERR(...)   do { } while(0)
+#include "shared/tui.h"
 
 /* ────────────────────────────────────────────── */
 /*  Reorder Buffer                                */

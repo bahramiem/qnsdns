@@ -113,6 +113,28 @@ typedef struct tui_ctx {
     tui_send_command_cb send_command_cb; /* callback to send tunnel control commands */
 } tui_ctx_t;
 
+/* ──────────────────────────────────────────────
+   Global logging — routes to TUI panel + disk log file.
+   All modules should use these instead of fprintf(stdout/stderr).
+────────────────────────────────────────────── */
+#define DNSTUN_LOG_ERR  0
+#define DNSTUN_LOG_WARN 1
+#define DNSTUN_LOG_INFO 2
+#define DNSTUN_LOG_DBG  3
+
+/* Open (or re-open) the disk log file. Call once from main() after config. */
+void dnstun_log_open(const char *path);
+
+/* Log a message: goes to TUI debug panel AND disk log file. */
+void dnstun_log(int level, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+
+/* Convenience macros — these replace the per-file fprintf LOG_* macros */
+#define LOG_INFO(...)  dnstun_log(DNSTUN_LOG_INFO, __VA_ARGS__)
+#define LOG_WARN(...)  dnstun_log(DNSTUN_LOG_WARN, __VA_ARGS__)
+#define LOG_ERR(...)   dnstun_log(DNSTUN_LOG_ERR,  __VA_ARGS__)
+#define LOG_DEBUG(...) dnstun_log(DNSTUN_LOG_DBG,  __VA_ARGS__)
+#define DBGLOG(...)    LOG_DEBUG(__VA_ARGS__)
+
 /* Debug API */
 void tui_debug_init(tui_ctx_t *t);
 void tui_debug_log(tui_ctx_t *t, int level, const char *fmt, ...);

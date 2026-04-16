@@ -26,6 +26,7 @@
 #include "uv.h"
 
 #include "server/swarm/swarm.h"
+#include "shared/tui.h"
 
 /* ── Module-level state ── */
 char g_swarm_ips[SWARM_MAX][46];
@@ -34,9 +35,6 @@ char g_swarm_file[1024] = {0};
 
 /* Lock is defined extern in main.c and initialized there. */
 extern uv_mutex_t g_swarm_lock;
-
-/* Logging helper — routes to the same LOG_INFO used in main. */
-extern void srv_log_info(const char *fmt, ...);
 
 /* ── Implementation ── */
 
@@ -50,7 +48,7 @@ void swarm_record_ip(const char *ip) {
     }
     if (g_swarm_count < SWARM_MAX) {
         strncpy(g_swarm_ips[g_swarm_count++], ip, 45);
-        /* Log after unlock to avoid holding lock during IO */
+        LOG_INFO("Swarm: recorded new resolver IP %s (total=%d)\n", ip, g_swarm_count);
     }
     uv_mutex_unlock(&g_swarm_lock);
 }

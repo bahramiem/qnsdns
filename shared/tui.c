@@ -8,6 +8,10 @@
 #include <stdarg.h>
 #include <time.h>
 
+/* ── Global log context (set by tui_init, used by dnstun_log) ───────────────*/
+static tui_ctx_t *g_log_ctx  = NULL;
+static FILE      *g_log_file  = NULL;
+
 #ifdef _WIN32
 /* Include winsock2.h BEFORE any headers that might include windows.h */
 #define WIN32_LEAN_AND_MEAN
@@ -809,6 +813,9 @@ void tui_init(tui_ctx_t *t, tui_stats_t *stats,
     memset(&t->proto_test, 0, sizeof(t->proto_test));
     t->send_debug_cb = NULL;
 
+    /* Register as global log sink */
+    g_log_ctx = t;
+
 #ifdef _WIN32
     /* Set console to UTF-8 for box-drawing characters */
     SetConsoleOutputCP(CP_UTF8);
@@ -995,6 +1002,44 @@ void tui_debug_clear(tui_ctx_t *t) {
 void tui_debug_set_level(tui_ctx_t *t, int level) {
     if (level >= 0 && level <= 3) {
         t->debug.level = level;
+    }
+}
+
+/* ── Global log open ─────────────────────────────────────────────────────────*/
+void dnstun_log_open(const char *path) {
+    if (g_log_file) { fclose(g_log_file); g_log_file = NULL; }
+    if (!path || !path[0]) return;
+    g_log_file = fopen(path, "a");
+    if (!g_log_file) {
+        fprintf(stderr, "[WARN] Cannot open log file: %s\n", path);
+    }
+}
+
+/* ── Global log function — feeds TUI panel + disk ────────────────────────────*/
+void dnstun_log(int level, const char *fmt, ...) {
+    va_list ap;
+    char buf[TUI_DEBUG_LINE_SIZE];
+
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+
+    /* Write to disk log file */
+    if (g_log_file) {
+        time_t now = time(NULL);
+        struct tm *tm_info = localtime(&now);
+        char ts[24];
+        strftime(ts, sizeof(ts), "%H:%M:%S", tm_info);
+        const char *lvl = (level == 0) ? "ERR" :
+                          (level == 1) ? "WRN" :
+                          (level == 2) ? "INF" : "DBG";
+        fprintf(g_log_file, "[%s] %s %s", ts, lvl, buf);
+        fflush(g_log_file);
+    }
+
+    /* Feed into TUI debug panel */
+    if (g_log_ctx) {
+        tui_debug_log(g_log_ctx, level, "%s", buf);
     }
 }
 

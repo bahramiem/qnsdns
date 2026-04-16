@@ -49,9 +49,7 @@ extern dnstun_config_t g_cfg;
 extern tui_stats_t   g_stats;
 
 /* Internal logging — routes to shared log infrastructure from main.c */
-#define LOG_INFO(...)  do { if (g_cfg.log_level >= 1) { fprintf(stdout, "[INFO]  " __VA_ARGS__); } } while(0)
-#define LOG_DEBUG(...) do { if (g_cfg.log_level >= 2) { fprintf(stdout, "[DEBUG] " __VA_ARGS__); } } while(0)
-#define LOG_ERR(...)   do { fprintf(stderr, "[ERROR] " __VA_ARGS__); } while(0)
+
 
 /* ────────────────────────────────────────────── */
 /*  Session lookup / alloc                        */

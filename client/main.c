@@ -91,8 +91,6 @@ uv_tty_t   g_tty;
 /* SOCKS5 listener */
 uv_tcp_t g_socks5_server;
 
-static FILE *g_debug_log = NULL;
-
 int log_level(void) { return g_cfg.log_level; }
 
 /* ────────────────────────────────────────────── */
@@ -236,14 +234,8 @@ int main(int argc, char *argv[]) {
                 "Create client.ini to configure the client.\n\n",
                 config_path);
     }
-
-    g_debug_log = fopen("/tmp/qnsdns_client.log", "a");
-    if (g_debug_log) {
-        fprintf(g_debug_log, "\n=== Client started at ");
-        time_t now = time(NULL);
-        fprintf(g_debug_log, "%s", ctime(&now));
-        fflush(g_debug_log);
-    }
+    dnstun_log_open("qnsdns_client.log");
+    LOG_INFO("=== Client started ===\n");
 
     /* Prompt for domain if empty or default */
     if (g_cfg.domain_count == 0 ||

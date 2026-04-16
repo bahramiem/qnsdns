@@ -9,11 +9,9 @@
 #include <string.h>
 
 #include "shared/types.h"
+#include "shared/tui.h"
 #include "client/dns/query.h"
 #include "client/debug/packet.h"
-
-extern int log_level(void);
-#define LOG_INFO(...)  do { if (log_level() >= 1) { fprintf(stdout, "[INFO]  " __VA_ARGS__); } } while(0)
 
 /* ────────────────────────────────────────────── */
 /*  Debug Packets                                 */

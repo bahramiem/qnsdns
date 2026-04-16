@@ -16,8 +16,8 @@
 extern dnstun_config_t g_cfg;
 extern resolver_pool_t g_pool;
 
-extern int log_level(void);
-#define LOG_INFO(...)  do { if (g_cfg.log_level >= 1) { fprintf(stdout, "[INFO]  " __VA_ARGS__); } } while(0)
+#include "shared/tui.h"
+
 
 /* ────────────────────────────────────────────── */
 /*  Aggregation Helpers                           */

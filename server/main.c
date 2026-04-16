@@ -79,8 +79,7 @@ uv_timer_t g_idle_timer;
 /* Swarm mutex (used by swarm.c and shared via extern) */
 uv_mutex_t g_swarm_lock;
 
-/* Debug log (shared with submodules) */
-static FILE *g_debug_log = NULL;
+/* Debug log (shared with submodules) is managed by dnstun_log_open in shared/tui.c */
 
 /* ────────────────────────────────────────────── */
 /*  Entry point                                   */
@@ -161,13 +160,8 @@ int main(int argc, char *argv[]) {
     }
 
     /* ── Open debug log ── */
-    g_debug_log = fopen("/tmp/qnsdns_server.log", "a");
-    if (g_debug_log) {
-        fprintf(g_debug_log, "\n=== Server started at ");
-        time_t now = time(NULL);
-        fprintf(g_debug_log, "%s", ctime(&now));
-        fflush(g_debug_log);
-    }
+    dnstun_log_open("qnsdns_server.log");
+    LOG_INFO("=== Server started ===\n");
 
     /* ── First-run domain prompt ── */
     if (g_cfg.domain_count == 0 ||

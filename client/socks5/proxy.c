@@ -35,10 +35,8 @@ extern session_t        g_sessions[];
 
 /* Logging helpers */
 extern int log_level(void);
-#define LOG_INFO(...)  do { if (g_cfg.log_level >= 1) { } } while(0)
-#define LOG_DEBUG(...) do { if (g_cfg.log_level >= 2) { } } while(0)
-#define LOG_ERR(...)   do { } while(0)
-#define DBGLOG(...)    do { } while(0)
+
+
 
 /* Helper */
 static uint8_t get_unused_session_id(void) {

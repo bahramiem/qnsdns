@@ -34,10 +34,7 @@ extern resolver_pool_t  g_pool;
 static uint16_t rand_u16(void) { return (uint16_t)(rand() & 0xFFFF); }
 extern int log_level(void);
 
-#define LOG_INFO(...)  do { if (g_cfg.log_level >= 1) { fprintf(stdout, "[INFO]  " __VA_ARGS__); } } while(0)
-#define LOG_DEBUG(...) do { if (g_cfg.log_level >= 2) { } } while(0)
-#define LOG_WARN(...)  do { fprintf(stderr, "[WARN]  " __VA_ARGS__); } while(0)
-#define LOG_ERR(...)   do { fprintf(stderr, "[ERROR] " __VA_ARGS__); } while(0)
+
 
 /* ────────────────────────────────────────────── */
 /*  Probe Structs and Callbacks                   */

@@ -35,25 +35,7 @@ extern tui_stats_t g_stats;
 extern void log_aggregation_stats(void);
 
 extern int log_level(void);
-#define LOG_INFO(...)                                                          \
-  do {                                                                         \
-    if (g_cfg.log_level >= 1) {                                                \
-      fprintf(stdout, "[INFO]  " __VA_ARGS__);                                 \
-    }                                                                          \
-  } while (0)
-#define LOG_DEBUG(...)                                                         \
-  do {                                                                         \
-    if (g_cfg.log_level >= 2) {                                                \
-    }                                                                          \
-  } while (0)
-#define LOG_WARN(...)                                                          \
-  do {                                                                         \
-    fprintf(stderr, "[WARN]  " __VA_ARGS__);                                   \
-  } while (0)
-#define LOG_ERR(...)                                                           \
-  do {                                                                         \
-    fprintf(stderr, "[ERROR] " __VA_ARGS__);                                   \
-  } while (0)
+
 
 /* ────────────────────────────────────────────── */
 /*  CIDR Scan                                     */

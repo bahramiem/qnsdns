@@ -35,7 +35,7 @@ extern tui_stats_t      g_stats;
 extern uv_loop_t       *g_loop;
 extern mgmt_server_t   *g_mgmt;
 
-#define LOG_INFO(...)  do { if (g_cfg.log_level >= 1) { fprintf(stdout, "[INFO]  " __VA_ARGS__); } } while(0)
+
 
 /* ────────────────────────────────────────────── */
 /*  Idle / cleanup timer (1s)                     */

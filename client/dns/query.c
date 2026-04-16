@@ -62,11 +62,8 @@ void on_socks5_close(uv_handle_t *h);
 
 /* Logging helpers */
 static int log_level_fn(void);
-#define LOG_INFO(...)  do { if (log_level_fn() >= 1) { } } while(0)
-#define LOG_DEBUG(...) do { if (log_level_fn() >= 2) { } } while(0)
-#define LOG_WARN(...)  do { } while(0)
-#define LOG_ERR(...)   do { } while(0)
-#define DBGLOG(...)    do { } while(0)
+
+
 
 static int log_level_fn(void) { return g_cfg.log_level; }
 

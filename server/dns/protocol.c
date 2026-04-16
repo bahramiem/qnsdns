@@ -61,9 +61,7 @@ extern dnstun_config_t  g_cfg;
 extern tui_stats_t      g_stats;
 extern uv_udp_t         g_udp_server;
 
-#define LOG_INFO(...)  do { if (g_cfg.log_level >= 1) { fprintf(stdout, "[INFO]  " __VA_ARGS__); } } while(0)
-#define LOG_DEBUG(...) do { if (g_cfg.log_level >= 2) { fprintf(stdout, "[DEBUG] " __VA_ARGS__); } } while(0)
-#define LOG_ERR(...)   do { fprintf(stderr, "[ERROR] " __VA_ARGS__); } while(0)
+
 
 /* ────────────────────────────────────────────── */
 /*  Downstream Encoding Helper                    */

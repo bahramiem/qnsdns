@@ -15,10 +15,8 @@
 #include "client/resolver/probe.h"
 
 extern dnstun_config_t g_cfg;
-extern int log_level(void);
+#include "shared/tui.h"
 
-#define LOG_INFO(...)  do { if (g_cfg.log_level >= 1) { } } while(0)
-#define LOG_DEBUG(...) do { if (g_cfg.log_level >= 2) { } } while(0)
 
 /* ────────────────────────────────────────────── */
 /*  MTU Binary Search Operations                  */
