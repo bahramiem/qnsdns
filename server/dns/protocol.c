@@ -600,9 +600,13 @@ skip_fec_processing:; /* empty for label */
         const uint8_t *decode_ptr = payload;
         size_t decode_len = payload_len;
 
+        /* Variables for cleanup - initialized to empty */
+        codec_result_t dcret = {0};
+        codec_result_t zret = {0};
+
         /* Decrypt if needed */
         if (is_encrypted) {
-            codec_result_t dcret = codec_decrypt(payload, payload_len, g_cfg.psk);
+            dcret = codec_decrypt(payload, payload_len, g_cfg.psk);
             if (dcret.error || !dcret.data) {
                 LOG_ERR("Session %d: decrypt failed for non-FEC packet\n", sidx);
                 /* Still try to send empty reply to keep connection alive */
@@ -614,7 +618,7 @@ skip_fec_processing:; /* empty for label */
 
         /* Decompress if needed */
         if (hdr.flags & CHUNK_FLAG_COMPRESSED) {
-            codec_result_t zret = codec_decompress(decode_ptr, decode_len, 0);
+            zret = codec_decompress(decode_ptr, decode_len, 0);
             if (zret.error || !zret.data) {
                 LOG_ERR("Session %d: decompress failed for non-FEC packet\n", sidx);
                 if (is_encrypted && dcret.data) codec_free_result(&dcret);
@@ -647,9 +651,15 @@ skip_fec_processing:; /* empty for label */
         if (hdr.flags & CHUNK_FLAG_COMPRESSED) {
             codec_free_result(&zret);
         }
+
+        /* Cleanup decrypt result if we decrypted */
+        if (is_encrypted && dcret.data) {
+            codec_free_result(&dcret);
+        }
     }
 
     /* 18. Build and send reply to client */
+send_reply:
     uint8_t reply[4096]; size_t rlen = sizeof(reply);
     uint16_t mtu = sess->cl_downstream_mtu;
     if (mtu < 16 || mtu > 4096) mtu = 512;
