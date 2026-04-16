@@ -58,7 +58,8 @@ typedef struct srv_session {
     /** Last known client address (the DNS resolver that sent this packet) */
     struct sockaddr_in client_addr;
 
-    /* Client-reported capabilities (from capability_header_t) */
+    /* Client-reported capabilities (from capability_header_t or handshake_packet_t) */
+    uint16_t cl_upstream_mtu;
     uint16_t cl_downstream_mtu;
     uint8_t  cl_enc_format;
     uint8_t  cl_loss_pct;

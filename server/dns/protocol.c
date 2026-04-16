@@ -380,12 +380,14 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     uint8_t fec_k        = chunk_get_fec_k(hdr.chunk_info);
 
     /* 10. Parse capability header (non-FEC packets only) */
+    uint16_t client_upstream_mtu = 220; /* default */
     uint16_t client_downstream_mtu = g_cfg.downstream_mtu;
     bool     has_capability_header = false;
     if (chunk_total == 1 && payload_len >= sizeof(capability_header_t)) {
         capability_header_t cap;
         memcpy(&cap, payload, sizeof(cap));
         if (cap.version == DNSTUN_VERSION) {
+            client_upstream_mtu = cap.upstream_mtu;
             client_downstream_mtu = cap.downstream_mtu;
             payload     += sizeof(capability_header_t);
             payload_len -= sizeof(capability_header_t);
@@ -423,13 +425,18 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     srv_session_t *sess = &g_sessions[sidx];
     sess->last_active   = time(NULL);
     sess->client_addr   = *src;
-    sess->cl_downstream_mtu = client_downstream_mtu > 0 ? client_downstream_mtu : g_cfg.downstream_mtu;
+    if (has_capability_header) {
+        sess->cl_upstream_mtu = client_upstream_mtu;
+        sess->cl_downstream_mtu = client_downstream_mtu;
+    }
     sess->cl_fec_k      = fec_k;
 
     /* 14. Handle handshake MTU signalling */
     if (is_handshake) {
         handshake_packet_t hs;
         memcpy(&hs, payload, sizeof(hs));
+        if (hs.upstream_mtu >= 128 && hs.upstream_mtu <= 4096)
+            sess->cl_upstream_mtu = hs.upstream_mtu;
         if (hs.downstream_mtu >= 128 && hs.downstream_mtu <= 4096)
             sess->cl_downstream_mtu = hs.downstream_mtu;
         if (!sess->handshake_done) {
