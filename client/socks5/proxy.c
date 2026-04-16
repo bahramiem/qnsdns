@@ -82,7 +82,9 @@ static void on_socks5_write_done(uv_write_t *w, int status) {
 }
 
 void socks5_send(socks5_client_t *c, const uint8_t *data, size_t len) {
-    DBGLOG("[SOCKS5_SEND] %zu bytes\n", len);
+    uint8_t first = (len > 0) ? data[0] : 0;
+    DBGLOG("[SOCKS5_SEND] state=%d session_idx=%d len=%zu first=0x%02x\n",
+           c ? c->state : -1, c ? c->session_idx : -1, len, first);
     uv_write_t *w = malloc(sizeof(*w) + len);
     if (!w) return;
     uint8_t *copy = (uint8_t*)(w + 1);
@@ -92,10 +94,19 @@ void socks5_send(socks5_client_t *c, const uint8_t *data, size_t len) {
 }
 
 void socks5_flush_recv_buf(socks5_client_t *c) {
-    if (c->session_idx < 0 || c->session_idx >= DNSTUN_MAX_SESSIONS) return;
+    if (c->session_idx < 0 || c->session_idx >= DNSTUN_MAX_SESSIONS) {
+        LOG_DEBUG("[SOCKS5_FLUSH_SKIP] invalid session_idx=%d\n", c->session_idx);
+        return;
+    }
     session_t *s = &g_sessions[c->session_idx];
-    if (s->closed || s->recv_len == 0) return;
-    
+    if (s->closed || s->recv_len == 0) {
+        LOG_DEBUG("[SOCKS5_FLUSH_SKIP] sid=%u closed=%d recv_len=%zu\n",
+                  s->session_id, s->closed ? 1 : 0, s->recv_len);
+        return;
+    }
+
+    LOG_DEBUG("[SOCKS5_FLUSH] sid=%u state=%d recv_len=%zu\n",
+              s->session_id, c->state, s->recv_len);
     socks5_send(c, s->recv_buf, s->recv_len);
     s->recv_len = 0;
 }

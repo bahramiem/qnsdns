@@ -303,6 +303,9 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread,
                                 s->first_seq_received = true;
                             }
 
+                            LOG_DEBUG("[DOWNSTREAM_RX] sid=%u seq=%u has_seq=%d payload_len=%zu recv_len_before=%zu expected_seq=%u\n",
+                                      s->session_id, seq, has_seq ? 1 : 0, payload_len, s->recv_len,
+                                      s->reorder_buf.expected_seq);
                             reorder_buffer_insert(&s->reorder_buf, seq, payload_ptr, payload_len);
 
                             uint8_t flush_buf[16384];
@@ -346,6 +349,8 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread,
                                 }
 
                                 size_t data_len = flush_len - data_start;
+                                LOG_DEBUG("[DOWNSTREAM_FLUSH] sid=%u seq=%u flushed=%zu data_start=%zu data_len=%zu recv_len_before=%zu\n",
+                                          s->session_id, seq, flush_len, data_start, data_len, s->recv_len);
                                 if (data_len > 0) {
                                     size_t need = s->recv_len + data_len;
                                     if (need > s->recv_cap) {
@@ -361,11 +366,16 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread,
                                         g_stats.rx_bytes_sec += data_len;
                                     }
                                 }
-                                if (s->client_ptr)
+                                if (s->client_ptr) {
+                                    LOG_DEBUG("[SOCKS5_FLUSH_TRIGGER] sid=%u data_len=%zu recv_total=%zu\n",
+                                              s->session_id, data_len, s->recv_len);
                                     socks5_flush_recv_buf((socks5_client_t *)s->client_ptr);
+                                }
                             }
                         } else if (payload_len > 0) {
                             /* Non-sequenced fallback */
+                            LOG_DEBUG("[DOWNSTREAM_FALLBACK] sid=%u payload_len=%zu recv_len_before=%zu\n",
+                                      s->session_id, payload_len, s->recv_len);
                             size_t need = s->recv_len + payload_len;
                             if (need > s->recv_cap) {
                                 size_t new_cap = need + 4096;
@@ -379,8 +389,12 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread,
                                 g_stats.rx_total     += payload_len;
                                 g_stats.rx_bytes_sec += payload_len;
                             }
-                            if (s->client_ptr)
+                            if (s->client_ptr) {
+                                LOG_DEBUG("[SOCKS5_FLUSH_TRIGGER] sid=%u fallback_len=%zu recv_total=%zu\n",
+                                          s->session_id, payload_len, s->recv_len);
                                 socks5_flush_recv_buf((socks5_client_t *)s->client_ptr);
+                            }
+
                         }
                     }
                 }
