@@ -326,3 +326,71 @@ void on_upstream_connect(uv_connect_t *req, int status) {
     free(cr->payload);
     free(cr);
 }
+
+void session_handle_data(int sidx, const uint8_t *data, size_t len) {
+    srv_session_t *sess = &g_sessions[sidx];
+    if (sess->tcp_connected) {
+        upstream_write_and_read(sidx, data, len);
+        return;
+    }
+
+    /* Not connected: parse as SOCKS5 CONNECT */
+    if (len >= 10 && data[0] == 0x05 && data[1] == 0x01) {
+        char     target_host[256] = {0};
+        uint16_t target_port      = 0;
+        uint8_t  atype            = data[3];
+
+        if (atype == 0x01) {
+            snprintf(target_host, sizeof(target_host),
+                     "%d.%d.%d.%d", data[4], data[5], data[6], data[7]);
+            target_port = (uint16_t)((data[8] << 8) | data[9]);
+        } else if (atype == 0x03) {
+            uint8_t dlen = data[4];
+            if ((size_t)(5 + dlen + 2) <= len && dlen < 255) {
+                memcpy(target_host, data + 5, dlen);
+                target_host[dlen] = '\0';
+                target_port = (uint16_t)((data[5 + dlen] << 8) | data[6 + dlen]);
+            }
+        } else if (atype == 0x04 && len >= 22) {
+            inet_ntop(AF_INET6, data + 4, target_host, sizeof(target_host));
+            target_port = (uint16_t)((data[20] << 8) | data[21]);
+        }
+
+        if (target_host[0] && target_port > 0) {
+            connect_req_t *cr = calloc(1, sizeof(*cr));
+            if (!cr) return;
+            cr->session_idx = sidx;
+            strncpy(cr->target_host, target_host, sizeof(cr->target_host) - 1);
+            cr->target_port = target_port;
+
+            size_t hdr_sz = (atype == 0x01) ? 10 :
+                            (atype == 0x03) ? (size_t)(7 + data[4]) :
+                            (atype == 0x04) ? 22 : len;
+            if (len > hdr_sz) {
+                cr->payload_len = len - hdr_sz;
+                cr->payload = malloc(cr->payload_len);
+                if (cr->payload) memcpy(cr->payload, data + hdr_sz, cr->payload_len);
+            }
+
+            uv_tcp_init(g_loop, &sess->upstream_tcp);
+            uv_tcp_nodelay(&sess->upstream_tcp, 1);
+
+            struct addrinfo hints = {0};
+            hints.ai_socktype = SOCK_STREAM;
+            hints.ai_family   = (atype == 0x04) ? AF_INET6 :
+                                (atype == 0x01) ? AF_INET  : AF_UNSPEC;
+            char port_str[6];
+            snprintf(port_str, sizeof(port_str), "%d", target_port);
+            uv_getaddrinfo_t *resolver_req = malloc(sizeof(*resolver_req));
+            if (resolver_req) {
+                resolver_req->data = cr;
+                if (uv_getaddrinfo(g_loop, resolver_req, on_upstream_resolve,
+                                   target_host, port_str, &hints) != 0) {
+                    free(resolver_req); free(cr->payload); free(cr);
+                }
+            } else {
+                free(cr->payload); free(cr);
+            }
+        }
+    }
+}

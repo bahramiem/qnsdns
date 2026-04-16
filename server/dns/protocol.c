@@ -233,11 +233,11 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
 
     /* 3. Handle non-TXT queries (e.g. Cloudflare QNAME minimization A probes) */
     if (qtype != RR_TXT) {
-        LOG_DEBUG("Non-TXT query (qtype=%u) from %s for %s - sending NOERROR empty\n",
+        LOG_DEBUG("Non-TXT query (qtype=%u) from %s for %s - sending NXDOMAIN\n",
                   qtype, src_ip, qname);
         uint8_t noerr[512];
         noerr[0] = query_id >> 8; noerr[1] = query_id & 0xFF;
-        noerr[2] = 0x84; noerr[3] = 0x00;
+        noerr[2] = 0x81; noerr[3] = 0x03; /* RD=1, RCODE=3 (NXDOMAIN) */
         noerr[4] = 0x00; noerr[5] = 0x01;
         noerr[6] = 0x00; noerr[7] = 0x00;
         noerr[8] = 0x00; noerr[9] = 0x00;
@@ -416,8 +416,8 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     if (sidx < 0) {
         sidx = session_alloc_by_id(session_id);
         if (sidx < 0) { LOG_ERR("Session table full\n"); return; }
-        LOG_INFO("New session: idx=%d sid=%u poll=%d sync=%d paylen=%zu\n",
-                 sidx, session_id, is_poll, is_sync, payload_len);
+        LOG_INFO("New session: idx=%d sid=%u poll=%d sync=%d hs=%d paylen=%zu\n",
+                 sidx, session_id, is_poll, is_sync, is_handshake, payload_len);
     }
 
     srv_session_t *sess = &g_sessions[sidx];
@@ -432,8 +432,12 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         memcpy(&hs, payload, sizeof(hs));
         if (hs.downstream_mtu >= 128 && hs.downstream_mtu <= 4096)
             sess->cl_downstream_mtu = hs.downstream_mtu;
-        sess->downstream_seq  = 0;
-        sess->handshake_done  = true;
+        if (!sess->handshake_done) {
+            LOG_INFO("Session %d: Handshake complete (CL_MTU Up:%u Down:%u)\n",
+                     sidx, sess->cl_upstream_mtu, sess->cl_downstream_mtu);
+            sess->handshake_done = true;
+        }
+        /* Proceed to end-of-function to send DNS reply (ACK) */
         sess->status_sent     = false;
         sess->retx_len        = 0;
         sess->retx_seq        = 0;
@@ -530,71 +534,8 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                         goto skip_fec_processing;
                     }
 
-                    /* Route to upstream or SOCKS5 CONNECT parse */
-                    if (!sess->tcp_connected) {
-                        /* Parse SOCKS5 CONNECT request */
-                        if (l >= 10 && p[0] == 0x05 && p[1] == 0x01) {
-                            char     target_host[256] = {0};
-                            uint16_t target_port      = 0;
-                            uint8_t  atype            = p[3];
-
-                            if (atype == 0x01) {
-                                snprintf(target_host, sizeof(target_host),
-                                         "%d.%d.%d.%d", p[4], p[5], p[6], p[7]);
-                                target_port = (uint16_t)((p[8] << 8) | p[9]);
-                            } else if (atype == 0x03) {
-                                uint8_t dlen = p[4];
-                                if ((size_t)(5 + dlen + 2) <= l && dlen < 255) {
-                                    memcpy(target_host, p + 5, dlen);
-                                    target_host[dlen] = '\0';
-                                    target_port = (uint16_t)((p[5 + dlen] << 8) | p[6 + dlen]);
-                                }
-                            } else if (atype == 0x04 && l >= 22) {
-                                inet_ntop(AF_INET6, p + 4, target_host, sizeof(target_host));
-                                target_port = (uint16_t)((p[20] << 8) | p[21]);
-                            }
-
-                            if (target_host[0] && target_port > 0) {
-                                connect_req_t *cr = calloc(1, sizeof(*cr));
-                                cr->session_idx = sidx;
-                                strncpy(cr->target_host, target_host, sizeof(cr->target_host) - 1);
-                                cr->target_port = target_port;
-
-                                size_t hdr_sz = (atype == 0x01) ? 10 :
-                                                (atype == 0x03) ? (size_t)(7 + p[4]) :
-                                                (atype == 0x04) ? 22 : l;
-                                if (l > hdr_sz) {
-                                    cr->payload_len = l - hdr_sz;
-                                    cr->payload = malloc(cr->payload_len);
-                                    memcpy(cr->payload, p + hdr_sz, cr->payload_len);
-                                }
-
-                                if (sess->tcp_connected) {
-                                    free(cr->payload); free(cr);
-                                    goto reset_burst;
-                                }
-
-                                uv_tcp_init(g_loop, &sess->upstream_tcp);
-                                uv_tcp_nodelay(&sess->upstream_tcp, 1);
-
-                                /* Start async connect via DNS resolution */
-                                struct addrinfo hints = {0};
-                                hints.ai_socktype = SOCK_STREAM;
-                                hints.ai_family   = (atype == 0x04) ? AF_INET6 :
-                                                    (atype == 0x01) ? AF_INET  : AF_UNSPEC;
-                                char port_str[6];
-                                snprintf(port_str, sizeof(port_str), "%d", target_port);
-                                uv_getaddrinfo_t *resolver_req = malloc(sizeof(*resolver_req));
-                                resolver_req->data = cr;
-                                if (uv_getaddrinfo(g_loop, resolver_req, on_upstream_resolve,
-                                                   target_host, port_str, &hints) != 0) {
-                                    free(resolver_req); free(cr);
-                                }
-                            }
-                        }
-                    } else {
-                        upstream_write_and_read(sidx, p, l);
-                    }
+                    /* Route to session data handler (handles connect or upstream write) */
+                    session_handle_data(sidx, p, l);
                     codec_free_result(&zdec);
                 } else {
                     codec_free_result(&zdec);
@@ -637,9 +578,9 @@ skip_fec_processing:; /* empty for label */
         return;
     }
 
-    /* 17. Forward non-FEC payload to upstream */
-    if (!is_poll && payload_len > 0 && sess->tcp_connected)
-        upstream_write_and_read(sidx, payload, payload_len);
+    /* 17. Forward non-FEC payload to session handler */
+    if (!is_poll && !is_sync && payload_len > 0)
+        session_handle_data(sidx, payload, payload_len);
 
     /* 18. Build and send reply to client */
     uint8_t reply[4096]; size_t rlen = sizeof(reply);

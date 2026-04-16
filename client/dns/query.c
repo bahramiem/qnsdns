@@ -490,25 +490,6 @@ void send_mtu_handshake(int session_idx) {
     fire_dns_chunk_symbol(session_idx, 0, hs_payload, sizeof(hs_payload), 0, 0, 0);
 }
 
-void send_sync(int session_idx) {
-    session_t *sess = &g_sessions[session_idx];
-    size_t host_len = strlen(sess->target_host);
-    uint8_t payload[256];
-    
-    if (host_len > 240) host_len = 240; /* Bounds check */
-    
-    memcpy(payload, "SYNC", 4);
-    payload[4] = (uint8_t)(host_len & 0xFF);
-    memcpy(payload + 5, sess->target_host, host_len);
-    payload[5 + host_len] = (uint8_t)((sess->target_port >> 8) & 0xFF);
-    payload[6 + host_len] = (uint8_t)(sess->target_port & 0xFF);
-    
-    LOG_INFO("Session %d: Sending SYNC to %s:%d\n", 
-             session_idx, sess->target_host, sess->target_port);
-             
-    fire_dns_chunk_symbol(session_idx, 0, payload, 7 + host_len, 0, 0, 0);
-}
-
 /* ────────────────────────────────────────────── */
 /*  Fire One DNS Query Chunk                      */
 /* ────────────────────────────────────────────── */

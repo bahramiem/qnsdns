@@ -133,6 +133,14 @@ void session_close(int idx);
  */
 void session_send_status(int sidx, uint8_t status);
 
+/**
+ * @brief Handle incoming data from the client.
+ *
+ * If the session is not yet connected, parses the data as a SOCKS5 connect
+ * request. Otherwise, writes the data to the upstream TCP socket.
+ */
+void session_handle_data(int sidx, const uint8_t *data, size_t len);
+
 /* ── Upstream TCP helpers ─────────────────────────────── */
 
 /**
