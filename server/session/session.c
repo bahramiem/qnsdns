@@ -534,7 +534,7 @@ void session_handle_data(int sidx, const uint8_t *data, size_t len, uint16_t seq
     LOG_DEBUG("Session %d: handle_data seq=%u num=%d (expected=%u) len=%zu\n", 
               sidx, seq, num_seqs, sess->rx_next, len);
 
-    if (sess->waiting_for_first_data) {
+    if (sess->waiting_for_first_data && len > 0) {
         if (seq != sess->rx_next) {
             LOG_INFO("Session %d: Flash syncing rx_next %u -> %u (initial burst)\n", 
                      sidx, sess->rx_next, seq);

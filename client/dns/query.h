@@ -65,7 +65,7 @@ int build_dns_query(uint8_t *outbuf, size_t *outlen,
 /**
  * @brief Fire a multi-symbol DNS query carrying one or more FEC symbols.
  */
-void fire_dns_multi_symbols(int session_idx, uint16_t seq,
+int fire_dns_multi_symbols(int session_idx, uint16_t seq,
                             const uint8_t **payloads, size_t paylen,
                             int num_symbols, int total_symbols_in_burst,
                             int first_esi, bool is_compressed);

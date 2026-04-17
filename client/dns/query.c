@@ -551,12 +551,12 @@ void send_mtu_handshake(int session_idx) {
 /*  Fire Multi-Symbol DNS Query                   */
 /* ────────────────────────────────────────────── */
 
-void fire_dns_multi_symbols(int session_idx, uint16_t seq,
+int fire_dns_multi_symbols(int session_idx, uint16_t seq,
                             const uint8_t **payloads, size_t paylen,
                             int num_symbols, int total_symbols_in_burst,
                             int first_esi, bool is_compressed) {
   if (session_idx < 0 || session_idx >= DNSTUN_MAX_SESSIONS)
-    return;
+    return 0;
   session_t *sess = &g_sessions[session_idx];
 
   /* ── FEC SYNC CHECK ──
@@ -569,7 +569,7 @@ void fire_dns_multi_symbols(int session_idx, uint16_t seq,
       LOG_DEBUG("[UPSTREAM] Session %u: FEC data postponed, waiting for "
                 "HANDSHAKE echo sync...\n",
                 sess->session_id);
-      return;
+      return 0;
     }
   }
   if (num_symbols <= 0)
@@ -735,4 +735,5 @@ void fire_dns_multi_symbols(int session_idx, uint16_t seq,
               sess->session_id, seq, num_symbols, first_esi,
               first_esi + num_symbols - 1);
   }
+  return 1;
 }
