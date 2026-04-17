@@ -262,6 +262,8 @@ static size_t socks5_handle_data(socks5_client_t *c, const uint8_t *data, size_t
         }
         memcpy(sess->send_buf + sess->send_len, data, len);
         sess->send_len += len;
+        LOG_DEBUG("[SOCKS5_BUF] sid=%u state=2 added=%zu total=%zu\n",
+                  sess->session_id, len, sess->send_len);
         g_stats.tx_total += len;
         g_stats.tx_bytes_sec += len;
         return len;

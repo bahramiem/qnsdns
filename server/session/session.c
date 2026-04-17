@@ -342,105 +342,113 @@ void on_upstream_connect(uv_connect_t *req, int status) {
 
 void session_handle_data(int sidx, const uint8_t *data, size_t len) {
     srv_session_t *sess = &g_sessions[sidx];
-    uint8_t b0 = len > 0 ? data[0] : 0;
-    uint8_t b1 = len > 1 ? data[1] : 0;
-    uint8_t b2 = len > 2 ? data[2] : 0;
-    uint8_t b3 = len > 3 ? data[3] : 0;
-    LOG_DEBUG("Session %d: handle_data len=%zu tcp_connected=%d first=%02x %02x %02x %02x\n",
-              sidx, len, sess->tcp_connected ? 1 : 0, b0, b1, b2, b3);
-    if (sess->tcp_connected) {
-        LOG_DEBUG("Session %d: forwarding %zu bytes to upstream socket\n", sidx, len);
-        upstream_write_and_read(sidx, data, len);
-        return;
-    }
+    size_t consumed = 0;
 
-    /* Handle SOCKS5 greeting when not connected */
-    if (len >= 3 && data[0] == 0x05) {
-        uint8_t nmethods = data[1];
-        if (len >= 2 + nmethods) {
-            /* Check if client offered no authentication (0x00) */
-            bool has_no_auth = false;
-            for (uint8_t i = 0; i < nmethods; i++) {
-                if (data[2 + i] == 0x00) {
-                    has_no_auth = true;
-                    break;
+    while (consumed < len) {
+        const uint8_t *p = data + consumed;
+        size_t l = len - consumed;
+
+        uint8_t b0 = l > 0 ? p[0] : 0;
+        uint8_t b1 = l > 1 ? p[1] : 0;
+        uint8_t b2 = l > 2 ? p[2] : 0;
+        uint8_t b3 = l > 3 ? p[3] : 0;
+
+        LOG_DEBUG("Session %d: handle_data at offset %zu, l=%zu tcp_connected=%d first=%02x %02x %02x %02x\n",
+                  sidx, consumed, l, sess->tcp_connected ? 1 : 0, b0, b1, b2, b3);
+
+        if (sess->tcp_connected) {
+            LOG_DEBUG("Session %d: forwarding remaining %zu bytes to upstream socket\n", sidx, l);
+            upstream_write_and_read(sidx, p, l);
+            return;
+        }
+
+        /* Handle SOCKS5 greeting when not connected */
+        if (l >= 3 && p[0] == 0x05) {
+            /* Basic SOCKS5 greeting (ver 5, nmethods, methods...) */
+            uint8_t nmethods = p[1];
+            if (l >= (size_t)(2 + nmethods)) {
+                bool has_no_auth = false;
+                for (uint8_t i = 0; i < nmethods; i++) {
+                    if (p[2 + i] == 0x00) { has_no_auth = true; break; }
+                }
+
+                LOG_DEBUG("Session %d: SOCKS greeting detected nmethods=%u has_no_auth=%d\n",
+                          sidx, nmethods, has_no_auth ? 1 : 0);
+                if (has_no_auth) {
+                    session_send_status(sidx, 0x00);
+                    consumed += 2 + nmethods;
+                    continue; /* Look for more messages */
+                } else {
+                    session_send_status(sidx, 0xFF);
+                    return;
                 }
             }
-
-            LOG_DEBUG("Session %d: SOCKS greeting detected nmethods=%u has_no_auth=%d\n",
-                      sidx, nmethods, has_no_auth ? 1 : 0);
-            if (has_no_auth) {
-                /* Respond with no authentication */
-                session_send_status(sidx, 0x00);
-                return;
-            } else {
-                /* No acceptable methods */
-                session_send_status(sidx, 0xFF);
-                /* TODO: Close connection after sending response */
-                return;
-            }
-        }
-    }
-
-    /* Not connected: parse as SOCKS5 CONNECT */
-    if (len >= 10 && data[0] == 0x05 && data[1] == 0x01) {
-        char     target_host[256] = {0};
-        uint16_t target_port      = 0;
-        uint8_t  atype            = data[3];
-
-        if (atype == 0x01) {
-            snprintf(target_host, sizeof(target_host),
-                     "%d.%d.%d.%d", data[4], data[5], data[6], data[7]);
-            target_port = (uint16_t)((data[8] << 8) | data[9]);
-        } else if (atype == 0x03) {
-            uint8_t dlen = data[4];
-            if ((size_t)(5 + dlen + 2) <= len && dlen < 255) {
-                memcpy(target_host, data + 5, dlen);
-                target_host[dlen] = '\0';
-                target_port = (uint16_t)((data[5 + dlen] << 8) | data[6 + dlen]);
-            }
-        } else if (atype == 0x04 && len >= 22) {
-            inet_ntop(AF_INET6, data + 4, target_host, sizeof(target_host));
-            target_port = (uint16_t)((data[20] << 8) | data[21]);
         }
 
-        if (target_host[0] && target_port > 0) {
-            LOG_INFO("Session %d: SOCKS CONNECT request target=%s:%u atype=0x%02x len=%zu\n",
-                     sidx, target_host, target_port, atype, len);
-            connect_req_t *cr = calloc(1, sizeof(*cr));
-            if (!cr) return;
-            cr->session_idx = sidx;
-            strncpy(cr->target_host, target_host, sizeof(cr->target_host) - 1);
-            cr->target_port = target_port;
+        /* Handle SOCKS5 CONNECT when not connected */
+        if (l >= 10 && p[0] == 0x05 && p[1] == 0x01) {
+            char     target_host[256] = {0};
+            uint16_t target_port      = 0;
+            uint8_t  atype            = p[3];
 
-            size_t hdr_sz = (atype == 0x01) ? 10 :
-                            (atype == 0x03) ? (size_t)(7 + data[4]) :
-                            (atype == 0x04) ? 22 : len;
-            if (len > hdr_sz) {
-                cr->payload_len = len - hdr_sz;
-                cr->payload = malloc(cr->payload_len);
-                if (cr->payload) memcpy(cr->payload, data + hdr_sz, cr->payload_len);
-            }
-
-            uv_tcp_init(g_loop, &sess->upstream_tcp);
-            uv_tcp_nodelay(&sess->upstream_tcp, 1);
-
-            struct addrinfo hints = {0};
-            hints.ai_socktype = SOCK_STREAM;
-            hints.ai_family   = (atype == 0x04) ? AF_INET6 :
-                                (atype == 0x01) ? AF_INET  : AF_UNSPEC;
-            char port_str[6];
-            snprintf(port_str, sizeof(port_str), "%d", target_port);
-            uv_getaddrinfo_t *resolver_req = malloc(sizeof(*resolver_req));
-            if (resolver_req) {
-                resolver_req->data = cr;
-                if (uv_getaddrinfo(g_loop, resolver_req, on_upstream_resolve,
-                                   target_host, port_str, &hints) != 0) {
-                    free(resolver_req); free(cr->payload); free(cr);
+            if (atype == 0x01) {
+                snprintf(target_host, sizeof(target_host),
+                         "%d.%d.%d.%d", p[4], p[5], p[6], p[7]);
+                target_port = (uint16_t)((p[8] << 8) | p[9]);
+            } else if (atype == 0x03) {
+                uint8_t dlen = p[4];
+                if ((size_t)(5 + dlen + 2) <= l && dlen < 255) {
+                    memcpy(target_host, p + 5, dlen);
+                    target_host[dlen] = '\0';
+                    target_port = (uint16_t)((p[5 + dlen] << 8) | p[6 + dlen]);
                 }
-            } else {
-                free(cr->payload); free(cr);
+            } else if (atype == 0x04 && l >= 22) {
+                inet_ntop(AF_INET6, p + 4, target_host, sizeof(target_host));
+                target_port = (uint16_t)((p[20] << 8) | p[21]);
+            }
+
+            if (target_host[0] && target_port > 0) {
+                LOG_INFO("Session %d: SOCKS CONNECT request target=%s:%u atype=0x%02x len=%zu\n",
+                         sidx, target_host, target_port, atype, l);
+                connect_req_t *cr = calloc(1, sizeof(*cr));
+                if (!cr) return;
+                cr->session_idx = sidx;
+                strncpy(cr->target_host, target_host, sizeof(cr->target_host) - 1);
+                cr->target_port = target_port;
+
+                size_t hdr_sz = (atype == 0x01) ? 10 :
+                                (atype == 0x03) ? (size_t)(7 + p[4]) :
+                                (atype == 0x04) ? 22 : l;
+                if (l > hdr_sz) {
+                    cr->payload_len = l - hdr_sz;
+                    cr->payload = malloc(cr->payload_len);
+                    if (cr->payload) memcpy(cr->payload, p + hdr_sz, cr->payload_len);
+                }
+
+                uv_tcp_init(g_loop, &sess->upstream_tcp);
+                uv_tcp_nodelay(&sess->upstream_tcp, 1);
+
+                struct addrinfo hints = {0};
+                hints.ai_socktype = SOCK_STREAM;
+                hints.ai_family   = (atype == 0x04) ? AF_INET6 :
+                                    (atype == 0x01) ? AF_INET  : AF_UNSPEC;
+                char port_str[6];
+                snprintf(port_str, sizeof(port_str), "%d", target_port);
+                uv_getaddrinfo_t *resolver_req = malloc(sizeof(*resolver_req));
+                if (resolver_req) {
+                    resolver_req->data = cr;
+                    if (uv_getaddrinfo(g_loop, resolver_req, on_upstream_resolve,
+                                       target_host, port_str, &hints) != 0) {
+                        free(resolver_req); free(cr->payload); free(cr);
+                    }
+                } else {
+                    free(cr->payload); free(cr);
+                }
+                return; /* Async connect started, return and wait for on_upstream_connect */
             }
         }
+
+        /* If we reached here without consuming anything, break to avoid infinite loop */
+        break;
     }
 }

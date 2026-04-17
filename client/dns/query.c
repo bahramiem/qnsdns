@@ -538,9 +538,15 @@ void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
 
     /* Build chunk header */
     chunk_header_t hdr = {0};
-    hdr.flags = (g_cfg.encryption ? CHUNK_FLAG_ENCRYPTED : 0) | CHUNK_FLAG_COMPRESSED;
-    if (paylen   == 0) hdr.flags |= CHUNK_FLAG_POLL;
-    if (total_symbols > 0) hdr.flags |= CHUNK_FLAG_FEC;
+    if (paylen == 0) {
+        hdr.flags = CHUNK_FLAG_POLL;
+    } else if (total_symbols > 0) {
+        /* Data packet: compressed and encrypted by on_poll_timer */
+        hdr.flags = CHUNK_FLAG_COMPRESSED | (g_cfg.encryption ? CHUNK_FLAG_ENCRYPTED : 0) | CHUNK_FLAG_FEC;
+    } else {
+        /* Handshake/Capability packet: must be raw */
+        hdr.flags = 0;
+    }
     chunk_set_session_id(&hdr, sess->session_id);
     hdr.seq = seq;
 
@@ -551,6 +557,10 @@ void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
 
     hdr.oti_common = oti_common;
     hdr.oti_scheme = oti_scheme;
+
+    LOG_DEBUG("[DNS_FIRE] sid=%u seq=%u flags=0x%02x symbols=%d paylen=%zu comp=%d\n",
+              sess->session_id, seq, hdr.flags, total_symbols, paylen,
+              (hdr.flags & CHUNK_FLAG_COMPRESSED) ? 1 : 0);
 
     int didx     = rpool_flux_domain(&g_cfg);
     const char *domain = (g_cfg.domain_count > 0) ? g_cfg.domains[didx] : "tun.example.com";
