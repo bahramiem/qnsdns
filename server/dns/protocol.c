@@ -95,10 +95,12 @@ int build_txt_reply_multi(uint8_t *outbuf, size_t *outlen,
     if (num_frags) *num_frags = 0;
     if (bytes_consumed) *bytes_consumed = 0;
 
-    /* Step 1: Compute safe capacity with 90% safety margin */
-    size_t base_overhead = 12 + strlen(qname) + 6 + 11 + 20;
-    if (mtu < base_overhead + 32) mtu = base_overhead + 32;
-    size_t safe_packet_budget = (mtu - base_overhead) * 90 / 100;
+    /* Step 1: Compute safe capacity with 85% safety margin and 128-byte hardware padding */
+    size_t base_overhead = 12 + strlen(qname) + 6 + 11 + 20 + 32; /* +32 for safety */
+    if (mtu < base_overhead + 128) mtu = base_overhead + 128;
+    size_t safe_packet_budget = (mtu > base_overhead + 128) ? ((mtu - base_overhead - 128) * 85 / 100) : 64;
+    
+    LOG_DEBUG("[MTU] QName='%s' MTU=%u BaseOverhead=%zu Budget=%zu\n", qname, mtu, base_overhead, safe_packet_budget);
 
     /* Step 2: Split data into fragments (max 191 binary bytes each) */
     dns_answer_t ans[MAX_FRAGMENTS];
@@ -213,17 +215,6 @@ int build_txt_reply_with_seq(uint8_t *outbuf, size_t *outlen,
     size_t bc = 0;
     return build_txt_reply_multi(outbuf, outlen, query_id, qname, data, data_len,
                                  mtu, seq, session_id, has_seq, &nf, &bc);
-}
-
-/* Compatibility wrapper for single-fragment cases if needed (optional) */
-int build_txt_reply_with_seq(uint8_t *outbuf, size_t *outlen,
-                             uint16_t query_id, const char *qname,
-                             const uint8_t *data, size_t data_len,
-                             uint16_t mtu, uint16_t seq,
-                             uint8_t session_id, bool has_seq) {
-    int nf = 0;
-    return build_txt_reply_multi(outbuf, outlen, query_id, qname, data, data_len,
-                                 mtu, seq, session_id, has_seq, &nf);
 }
 
 /* ────────────────────────────────────────────── */
@@ -463,12 +454,18 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     uint16_t client_upstream_mtu = 220; /* default */
     uint16_t client_downstream_mtu = g_cfg.downstream_mtu;
     bool     has_capability_header = false;
+    uint16_t client_ack_seq   = 0;
+    bool     has_ack          = false;
     if (chunk_total == 1 && payload_len >= sizeof(capability_header_t)) {
         capability_header_t cap;
         memcpy(&cap, payload, sizeof(cap));
         if (cap.version == DNSTUN_VERSION) {
-            client_upstream_mtu = cap.upstream_mtu;
+            client_upstream_mtu   = cap.upstream_mtu;
             client_downstream_mtu = cap.downstream_mtu;
+            client_ack_seq         = cap.ack_seq;
+            has_ack               = true;
+            LOG_DEBUG("Session %u: CapHdr ack=%u up_mtu=%u dn_mtu=%u enc=%u\n",
+                      session_id, client_ack_seq, client_upstream_mtu, client_downstream_mtu, cap.encoding);
             payload     += sizeof(capability_header_t);
             payload_len -= sizeof(capability_header_t);
             has_capability_header = true;
@@ -741,10 +738,19 @@ send_reply:
     uint16_t mtu = sess->cl_downstream_mtu;
     if (mtu < 16 || mtu > 4096) mtu = 512;
 
-    if (sess->upstream_len > 0) {
+    uint16_t out_seq = sess->handshake_done ? sess->downstream_seq : 0;
+
+    /* Logic: 
+     * 1. If client is missing data (ack_seq < out_seq), check if we can retransmit.
+     * 2. If client is caught up (ack_seq == out_seq), check if we have NEW data to send.
+     * 3. Otherwise send empty ACK.
+     */
+    bool client_needs_retx = (has_ack && sess->handshake_done && client_ack_seq < out_seq);
+    bool can_send_new     = (sess->upstream_len > 0 && (!has_ack || client_ack_seq >= out_seq));
+
+    if (can_send_new) {
         int nfrags = 0;
         size_t sz = 0;
-        uint16_t out_seq = sess->handshake_done ? sess->downstream_seq : 0;
 
         if (build_txt_reply_multi(reply, &rlen, query_id, qname,
                                  sess->upstream_buf, sess->upstream_len,
@@ -774,30 +780,30 @@ send_reply:
             
             send_udp_reply(src, reply, rlen);
         }
-    } else if (sess->retx_len > 0) {
-        /* If client is behind or just asking for last, re-send the data from the retx slot. */
-        if (sess->retx_seq <= (uint16_t)(sess->downstream_seq - 1)) {
-            LOG_DEBUG("Server retransmitting burst: seq=%u..%u len=%zu count=%d\n",
-                    sess->retx_seq, sess->retx_seq + sess->retx_count - 1, sess->retx_len, sess->retx_count);
+    } else if (client_needs_retx && sess->retx_len > 0) {
+        /* Check if requested seq is within our last burst */
+        if (client_ack_seq >= sess->retx_seq && client_ack_seq < sess->retx_seq + sess->retx_count) {
+            LOG_DEBUG("Server retransmitting burst on request: ack_seq=%u matching retx_seq=%u..%u\n",
+                    client_ack_seq, sess->retx_seq, sess->retx_seq + sess->retx_count - 1);
             
             int nfrags = 0;
             if (build_txt_reply_multi(reply, &rlen, query_id, qname,
                                      sess->retx_buf, sess->retx_len,
                                      mtu, sess->retx_seq, sess->session_id, 
-                                     true, &nfrags) == 0) {
+                                     true, &nfrags, NULL) == 0) {
                 send_udp_reply(src, reply, rlen);
             }
         } else {
+            LOG_WARN("Server cannot retransmit: client asked for %u but we only have %u..%u\n",
+                     client_ack_seq, sess->retx_seq, sess->retx_seq + sess->retx_count - 1);
             goto send_empty;
         }
     } else {
 send_empty:;
-        uint16_t out_seq = sess->handshake_done ? sess->downstream_seq : 0;
         int nfrags = 0;
         if (build_txt_reply_multi(reply, &rlen, query_id, qname,
                                  NULL, 0, mtu, out_seq,
-                                 sess->session_id, sess->handshake_done, &nfrags) == 0) {
-            if (sess->handshake_done) sess->downstream_seq += nfrags;
+                                 sess->session_id, sess->handshake_done, &nfrags, NULL) == 0) {
             send_udp_reply(src, reply, rlen);
         }
     }

@@ -580,6 +580,7 @@ void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
         cap.downstream_mtu = r->downstream_mtu;
         cap.encoding      = (r->enc == ENC_BASE64) ? DNSTUN_ENC_BASE64 : DNSTUN_ENC_HEX;
         cap.loss_pct      = (uint8_t)(r->loss_rate * 100.0);
+        cap.ack_seq       = sess->reorder.expected_seq;
         size_t cap_len    = sizeof(capability_header_t);
         memcpy(payload_with_cap, &cap, cap_len);
         if (payload && paylen > 0) {

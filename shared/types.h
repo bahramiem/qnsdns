@@ -61,6 +61,7 @@ typedef struct {
     uint16_t downstream_mtu;  /* Client's downstream MTU for this resolver */
     uint8_t  encoding;        /* DNSTUN_ENC_BASE64 or DNSTUN_ENC_HEX */
     uint8_t  loss_pct;       /* Observed loss rate (0-100) */
+    uint16_t ack_seq;        /* The sequence number the client is expecting next (Downstream ACK) */
 } capability_header_t;
 #pragma pack(pop)
 
