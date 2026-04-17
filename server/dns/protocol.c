@@ -708,7 +708,9 @@ send_empty:;
                 sess->session_id, out_seq); */
         if (build_txt_reply_with_seq(reply, &rlen, query_id, qname,
                                      NULL, 0, mtu, out_seq,
-                                     sess->session_id, sess->handshake_done) == 0)
+                                     sess->session_id, sess->handshake_done) == 0) {
+            if (sess->handshake_done) sess->downstream_seq++;
             send_udp_reply(src, reply, rlen);
+        }
     }
 }
