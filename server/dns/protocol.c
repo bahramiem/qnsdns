@@ -687,7 +687,7 @@ send_reply:
             sess->upstream_len -= sz;
             send_udp_reply(src, reply, rlen);
         }
-    } else if (sess->retx_len > 0) {
+    } else if (sess->retx_len > 0 && sess->retx_seq == (uint16_t)(sess->downstream_seq - 1)) {
         LOG_DEBUG("Server retransmitting seq=%u len=%zu\n",
                 sess->retx_seq, sess->retx_len);
         if (build_txt_reply_with_seq(reply, &rlen, query_id, qname,

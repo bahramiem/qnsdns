@@ -54,14 +54,15 @@ void reorder_buffer_free(reorder_buffer_t *rb) {
 
 bool reorder_buffer_insert(reorder_buffer_t *rb, uint16_t seq,
                             const uint8_t *data, size_t len) {
-    int offset = (int)(seq - rb->expected_seq);
-    if (offset < 0) offset += 65536; /* Handle 16-bit wrap-around */
+    int16_t diff = (int16_t)(seq - rb->expected_seq);
+    int offset = (int)diff;
 
-    if (offset < 0 || offset >= RX_REORDER_WINDOW) {
-        if (offset < 0) {
-            /* Too old — drop */
-            return false;
-        }
+    if (diff < 0) {
+        /* Too old (already flushed or before window) — drop */
+        return false;
+    }
+
+    if (diff >= RX_REORDER_WINDOW) {
         /* Too far ahead — discard stale window and jump */
         reorder_buffer_free(rb);
         rb->expected_seq = seq;
