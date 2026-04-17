@@ -289,6 +289,11 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
           if (sidx >= 0 && sidx < DNSTUN_MAX_SESSIONS &&
               !g_sessions[sidx].closed) {
             session_t *s = &g_sessions[sidx];
+            const uint8_t *payload_ptr = raw_decoded;
+            size_t payload_len = (size_t)decoded_len;
+            bool has_seq = false;
+            uint16_t seq = 0;
+
             /* Parse response header (6 bytes) */
             if (decoded_len >= (ptrdiff_t)sizeof(server_response_header_t)) {
               server_response_header_t resp_hdr;

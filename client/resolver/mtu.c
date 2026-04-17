@@ -131,7 +131,7 @@ void mark_mtu_tested(mtu_binary_search_t *search, int mtu, bool success) {
             search->high = mtu + 60; /* Extend search space */
             if (search->high > effective_max) search->high = effective_max;
             search->test_size = search->high;
-        } else {
+        }
         /* Reset retries on success */
         search->retries = 0;
     } else {
