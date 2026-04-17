@@ -670,7 +670,14 @@ reset_burst:
             sess->burst_oti_common    = 0;
             sess->burst_oti_scheme    = 0;
         }
-skip_fec_processing:; /* empty for label */
+        /* 
+         * CRITICAL: A FEC fragment must NOT proceed to the standalone non-FEC handler.
+         * Early-exit to the reply phase to ACK the symbol.
+         */
+        goto send_reply;
+
+skip_fec_processing:
+        goto send_reply;
     } else if (is_poll) {
         /* empty poll — triggers downstream data push below */
     }
