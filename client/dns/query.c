@@ -278,22 +278,41 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
     q->resolver_idx = ridx; q->session_idx = session_idx; q->seq = seq;
     int didx = rpool_flux_domain(&g_cfg);
     const char *domain = (g_cfg.domain_count > 0) ? g_cfg.domains[didx] : "tun.example.com";
-    int to_pack = (num_symbols_total > 0) ? (((num_symbols_total - cur_esi) < 2) ? (num_symbols_total - cur_esi) : 2) : 0;
-    uint8_t pb[512]; size_t pl = 0; uint8_t fl = 0;
+    int to_pack = 1;
+    if (num_symbols_total > 1) {
+        /* Optimize: Pack as many symbols as MTU allows. 
+         * Overhead: ~30 chars base32 for header/ACK, plus domain labels. 
+         * To be safe, use (MTU - 64) available for symbols. */
+        int max_pack = (r->upstream_mtu > 64) ? (r->upstream_mtu - 64) / (paylen + 1) : 1;
+        if (max_pack < 1) max_pack = 1;
+        if (max_pack > 20) max_pack = 20; /* DNS label limit safely within 255 chars */
+        to_pack = (num_symbols_total - cur_esi < max_pack) ? (num_symbols_total - cur_esi) : max_pack;
+    } else if (num_symbols_total == 0) {
+        to_pack = 0;
+    }
+
+    uint8_t pb[1024]; size_t pl = 0; uint8_t fl = 0;
     if (num_symbols_total == 0) {
         capability_header_t cap = {0}; cap.version=DNSTUN_VERSION; cap.upstream_mtu=r->upstream_mtu; cap.downstream_mtu=r->downstream_mtu; cap.encoding=DNSTUN_ENC_BASE64; cap.ack_seq=sess->reorder_buf.expected_seq;
         memcpy(pb, &cap, sizeof(cap)); pl = sizeof(cap); fl = CHUNK_FLAG_POLL;
+        LOG_DEBUG("[UPSTREAM] Sending POLL for sid=%u (ack=%u)\n", session_idx, cap.ack_seq);
+    } else if (num_symbols_total == 1 && cur_esi == 0) {
+        /* Handshake: No ACK prepend, matching handshake_packet_t layout on server */
+        memcpy(pb, payloads[0], paylen); pl = paylen; fl = CHUNK_FLAG_HANDSHAKE;
+        LOG_DEBUG("[UPSTREAM] Sending HANDSHAKE for sid=%u (len=%zu)\n", session_idx, pl);
     } else {
         uint16_t ack = sess->reorder_buf.expected_seq; pb[pl++]=(uint8_t)(ack>>8); pb[pl++]=(uint8_t)ack;
         if (num_symbols_total > 1) fl = (is_compressed?CHUNK_FLAG_COMPRESSED:0)|(g_cfg.encryption?CHUNK_FLAG_ENCRYPTED:0)|CHUNK_FLAG_FEC;
         for (int i=0; i<to_pack; i++) { if (num_symbols_total>1) pb[pl++]=(uint8_t)(cur_esi+i); memcpy(pb+pl, payloads[cur_esi+i], paylen); pl += paylen; }
+        LOG_DEBUG("[UPSTREAM] Sending DATA for sid=%u seq=%u pack=%d esi=%d/%d\n", session_idx, seq, to_pack, cur_esi, num_symbols_total);
     }
+    
     query_header_t qh = {0};
     qh.sid = (uint8_t)session_idx;
     qh.flags = fl | CHUNK_FLAG_IS_TUNNEL;
     qh.seq = seq;
 
-    uint8_t tp[1024]; size_t tl=0; memcpy(tp, &qh, sizeof(qh)); tl+=sizeof(qh); memcpy(tp+tl, pb, pl); tl+=pl;
+    uint8_t tp[1400]; size_t tl=0; memcpy(tp, &qh, sizeof(qh)); tl+=sizeof(qh); memcpy(tp+tl, pb, pl); tl+=pl;
     size_t bl = base32_encode((char *)q->sendbuf, tp, tl);
     inline_dotify((char *)q->sendbuf, sizeof(q->sendbuf), bl);
     char qn[512]; snprintf(qn, sizeof(qn), "%s.%s", (char *)q->sendbuf, domain);

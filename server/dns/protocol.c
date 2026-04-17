@@ -421,6 +421,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     uint16_t client_ack_seq   = 0;
     bool     has_ack          = false;
     bool     has_capability_header = false;
+    bool     is_handshake = (q_flags & CHUNK_FLAG_HANDSHAKE) != 0;
 
     if (is_poll) {
         /* POLL/SYNC: Expect full 9-byte capability header */
@@ -437,7 +438,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                 payload_len -= sizeof(capability_header_t);
             }
         }
-    } else if ((q_flags & ~CHUNK_FLAG_IS_TUNNEL) == 0 && payload_len == 13 && payload[0] == DNSTUN_VERSION) {
+    } else if (is_handshake) {
         /* Handshake: No extra metadata prepended, payload IS the handshake struct */
     } else if (payload_len >= 2) {
         /* DATA/FEC: Expect 2-byte compact ACK */
@@ -448,7 +449,6 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     }
 
     if (payload_len >= 4 && memcmp(payload, "SYNC", 4) == 0) is_sync = true;
-    bool is_handshake = ((q_flags & ~CHUNK_FLAG_IS_TUNNEL) == 0 && payload_len == 13 && payload[0] == DNSTUN_VERSION);
 
     int sidx = session_find_by_id(session_id);
     if (sidx < 0) {

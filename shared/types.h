@@ -245,6 +245,7 @@ typedef struct {
 #define CHUNK_FLAG_COMPRESSED  0x02
 #define CHUNK_FLAG_FEC        0x04
 #define CHUNK_FLAG_POLL       0x08
+#define CHUNK_FLAG_HANDSHAKE  0x10  /* New Handshake flag */
 #define CHUNK_FLAG_IS_TUNNEL  0x80  /* Mandatory bit for all tunnel packets */
 
 /* Flag bit masks for server_response_header_t */
