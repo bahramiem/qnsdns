@@ -1082,7 +1082,7 @@ void tui_debug_set_level(tui_ctx_t *t, int level) {
 void dnstun_log_open(const char *path) {
     if (g_log_file) { fclose(g_log_file); g_log_file = NULL; }
     if (!path || !path[0]) return;
-    g_log_file = fopen(path, "a");
+    g_log_file = fopen(path, "w");
     if (!g_log_file) {
         fprintf(stderr, "[WARN] Cannot open log file: %s\n", path);
     }
