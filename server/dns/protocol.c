@@ -204,7 +204,7 @@ int build_txt_reply_multi(uint8_t *outbuf, size_t *outlen,
         return -1;
     }
     
-    LOG_DEBUG("[DNS_ENCODE] Multi-fragment reply sent: id=%u RRs=%d total_bytes=%zu\n", query_id, frag_count, sz);
+    /* LOG_DEBUG("[DNS_ENCODE] Multi-fragment reply sent: id=%u RRs=%d total_bytes=%zu\n", query_id, frag_count, sz); */
 
     *outlen = sz;
     return 0;
@@ -477,7 +477,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
             payload     += sizeof(capability_header_t);
             payload_len -= sizeof(capability_header_t);
             
-            LOG_DEBUG("Session %u: CapHdr stripped, ack=%u up_mtu=%u dn_mtu=%u\n",
+            LOG_DEBUG("Session %u: CapHdr stripped, ack=%u mtu=%u/%u\n",
                       session_id, client_ack_seq, client_upstream_mtu, client_downstream_mtu);
         }
     }
@@ -646,6 +646,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                     }
 
                     /* Route to session data handler (handles connect or upstream write) */
+                    LOG_DEBUG("Session %u: FEC decoded burst, len %zu\n", session_id, l);
                     session_handle_data(sidx, p, l);
                     codec_free_result(&zdec);
                 } else {

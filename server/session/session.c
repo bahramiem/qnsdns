@@ -203,6 +203,7 @@ void on_upstream_read(uv_stream_t *s, ssize_t nread, const uv_buf_t *buf) {
             }
             if (!uv_is_closing((uv_handle_t *)&sess->upstream_tcp))
                 uv_close((uv_handle_t *)&sess->upstream_tcp, NULL);
+            LOG_DEBUG("Session %d: Upstream socket closed by host\n", sidx);
             sess->tcp_connected = false;
         }
         return;
@@ -360,11 +361,11 @@ void session_handle_data(int sidx, const uint8_t *data, size_t len) {
         uint8_t b2 = l > 2 ? p[2] : 0;
         uint8_t b3 = l > 3 ? p[3] : 0;
 
-        LOG_DEBUG("Session %d: handle_data at offset %zu, l=%zu tcp_connected=%d first=%02x %02x %02x %02x\n",
-                  sidx, consumed, l, sess->tcp_connected ? 1 : 0, b0, b1, b2, b3);
+        LOG_DEBUG("Session %d: handle_data len %zu conn=%d %02x%02x%02x%02x\n",
+                  sidx, l, sess->tcp_connected ? 1 : 0, b0, b1, b2, b3);
 
         if (sess->tcp_connected) {
-            LOG_DEBUG("Session %d: forwarding remaining %zu bytes to upstream socket\n", sidx, l);
+            /* LOG_DEBUG("Session %d: forwarding %zu bytes to upstream\n", sidx, l); */
             upstream_write_and_read(sidx, p, l);
             return;
         }

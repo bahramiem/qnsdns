@@ -371,9 +371,8 @@ static void draw_log_panel(tui_ctx_t *t, int x, int y, int width, int height) {
         int log_idx = (start_idx + i) % TUI_DEBUG_LINES;
         int row = y + 1 + i;
 
-        /* Clear line first */
-        printf("\033[%d;%dH", row, x + 1);
-        for (int j = 0; j < width - 2; j++) putchar(' ');
+        /* Clear line first using ANSI code 'Clear to end of line' */
+        printf("\033[%d;%dH\033[K", row, x + 1);
 
         if (log_idx < t->debug.count) {
             render_log_line(t->debug.lines[log_idx], row, x + 2, width - 4);
@@ -1100,7 +1099,6 @@ void dnstun_log(int level, const char *fmt, ...) {
                           (level == 1) ? "WRN" :
                           (level == 2) ? "INF" : "DBG";
         fprintf(g_log_file, "[%s] %s %s", ts, lvl, buf);
-        fflush(g_log_file);
     }
 
     /* Feed into TUI debug panel if active, else stderr */
