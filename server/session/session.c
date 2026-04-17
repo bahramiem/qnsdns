@@ -349,6 +349,8 @@ void on_upstream_connect(uv_connect_t *req, int status) {
 }
 
 void session_handle_data(int sidx, const uint8_t *data, size_t len) {
+    if (!data || len == 0) return;
+    
     srv_session_t *sess = &g_sessions[sidx];
     size_t consumed = 0;
 

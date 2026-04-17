@@ -302,39 +302,23 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     uint16_t    query_id = qry->id;
     uint16_t    qtype    = qry->questions[0].type;
 
-    /* 3. Handle non-TXT queries (e.g. Cloudflare QNAME minimization A probes) */
-    if (qtype != RR_TXT) {
-        LOG_DEBUG("Non-TXT query (qtype=%u) from %s for %s - sending NXDOMAIN\n",
-                  qtype, src_ip, qname);
-        uint8_t noerr[512];
-        noerr[0] = query_id >> 8; noerr[1] = query_id & 0xFF;
-        noerr[2] = 0x81; noerr[3] = 0x03; /* RD=1, RCODE=3 (NXDOMAIN) */
-        noerr[4] = 0x00; noerr[5] = 0x01;
-        noerr[6] = 0x00; noerr[7] = 0x00;
-        noerr[8] = 0x00; noerr[9] = 0x00;
-        noerr[10] = 0x00; noerr[11] = 0x00;
-        size_t q_len = (size_t)nread > 12 ? (size_t)nread - 12 : 0;
-        if (q_len > sizeof(noerr) - 12) q_len = sizeof(noerr) - 12;
-        memcpy(noerr + 12, buf->base + 12, q_len);
-        send_udp_reply(src, noerr, 12 + q_len);
-        return;
-    }
-
-    /* 4. Parse QNAME — strip domain suffix to extract b32 payload */
+    /* 3. Extract labels from QNAME */
     char tmp[DNSTUN_MAX_QNAME_LEN + 1];
     strncpy(tmp, qname, sizeof(tmp) - 1);
+    tmp[DNSTUN_MAX_QNAME_LEN] = '\0';
 
     char *parts[16] = {0};
     int   part_count = 0;
     char *tok = strtok(tmp, ".");
     while (tok && part_count < 16) { parts[part_count++] = tok; tok = strtok(NULL, "."); }
 
-    int  domain_parts   = 2;
+    /* 4. Match configured domains */
+    int  domain_parts   = 0;
     bool is_mtu_probe   = false;
     bool is_crypto_probe = false;
     bool is_capability_probe = false;
+    bool is_mine        = false;
 
-    /* Try matching against configured domains */
     for (int d = 0; d < g_cfg.domain_count; d++) {
         const char *domain = g_cfg.domains[d];
         char domain_tmp[256];
@@ -353,14 +337,12 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                 if (strcasecmp(qpart, domain_labels[j]) != 0) { match = false; break; }
 #endif
             }
-            if (match) { domain_parts = dparts; break; }
+            if (match) { domain_parts = dparts; is_mine = true; break; }
         }
     }
 
-    if (domain_parts > part_count - 1) domain_parts = part_count - 1;
+    /* 5. Identify special probe labels */
     int payload_start_idx = part_count - domain_parts;
-
-    /* Check for special probe formats in first label */
     if (payload_start_idx >= 1 && parts[0] != NULL) {
 #ifdef _WIN32
         if (_strnicmp(parts[0], "mtu-req-", 8) == 0) is_mtu_probe = true;
@@ -371,6 +353,29 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         if (strncasecmp(parts[0], "CRYPTO_", 7)  == 0) is_crypto_probe = true;
         if (strcasecmp(parts[0], "probe")       == 0) is_capability_probe = true;
 #endif
+    }
+
+    /* 6. Handle non-TXT queries (Allow A/ANY for legitimate probes, reject others) */
+    if (qtype != RR_TXT && qtype != RR_ANY) {
+        bool allow_qtype = (is_mtu_probe || is_capability_probe || is_crypto_probe);
+        if (!allow_qtype) {
+            /* Silence logs for random internet background noise not targeting us */
+            if (is_mine) {
+                LOG_DEBUG("Non-TXT query (qtype=%u) for matches domain - sending NXDOMAIN\n", qtype);
+            }
+            uint8_t nx[512];
+            nx[0] = query_id >> 8; nx[1] = query_id & 0xFF;
+            nx[2] = 0x81; nx[3] = 0x03; /* RD=1, RCODE=3 (NXDOMAIN) */
+            nx[4] = 0x00; nx[5] = 0x01;
+            nx[6] = 0x00; nx[7] = 0x00;
+            nx[8] = 0x00; nx[9] = 0x00;
+            nx[10] = 0x00; nx[11] = 0x00;
+            size_t q_len = (size_t)nread > 12 ? (size_t)nread - 12 : 0;
+            if (q_len > sizeof(nx) - 12) q_len = sizeof(nx) - 12;
+            memcpy(nx + 12, buf->base + 12, q_len);
+            send_udp_reply(src, nx, 12 + q_len);
+            return;
+        }
     }
 
     /* 5. Handle MTU probe */
@@ -617,7 +622,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                 ? codec_fec_decode_oti(&fec)
                 : codec_fec_decode(&fec, sess->burst_symbol_len);
 
-            if (!fdec.error) {
+            if (!fdec.error && fdec.len > 0) {
                 const uint8_t *dec_in = fdec.data;
                 size_t         dec_len = fdec.len;
                 codec_result_t dret = {0};
@@ -629,7 +634,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                     else {
                         LOG_ERR("Decryption failed\n");
                         codec_free_result(&fdec);
-                        goto skip_fec_processing;
+                        goto reset_burst;
                     }
                 }
 
@@ -642,12 +647,13 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                     if (l >= 4) { p += 4; l -= 4; }
                     else {
                         codec_free_result(&zdec);
-                        goto skip_fec_processing;
+                        if (!dret.error && dret.data) codec_free_result(&dret);
+                        codec_free_result(&fdec);
+                        goto reset_burst;
                     }
 
-                    /* Route to session data handler (handles connect or upstream write) */
                     LOG_DEBUG("Session %u: FEC decoded burst, len %zu\n", session_id, l);
-                    session_handle_data(sidx, p, l);
+                    if (l > 0) session_handle_data(sidx, p, l);
                     codec_free_result(&zdec);
                 } else {
                     codec_free_result(&zdec);
@@ -655,10 +661,10 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                 if (!dret.error && dret.data) codec_free_result(&dret);
                 codec_free_result(&fdec);
                 goto reset_burst;
+            } else {
+                codec_free_result(&fdec);
+                goto reset_burst;
             }
-
-            codec_free_result(&fdec);
-            goto skip_fec_processing;
 
 reset_burst:
             for (int i = 0; i < sess->burst_count_needed; i++)
