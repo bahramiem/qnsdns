@@ -535,7 +535,7 @@ void send_mtu_handshake(int session_idx) {
     hs.loss_pct       = 0;
 
     const uint8_t *hs_ptr[1] = { (uint8_t*)&hs };
-    fire_dns_multi_symbols(session_idx, 0, hs_ptr, sizeof(hs), 1, 0, 0);
+    fire_dns_multi_symbols(session_idx, 0, hs_ptr, sizeof(hs), 1, 0, 0, false);
 }
 
 /* ────────────────────────────────────────────── */
