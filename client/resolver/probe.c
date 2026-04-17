@@ -340,6 +340,8 @@ int build_mtu_test_query(uint8_t *buf, size_t *outlen, const char *domain, uint1
     size_t offset = 0;
     size_t bufsize = *outlen;
     bool is_upload = (test_type == PROBE_TEST_MTU_UP);
+    const char *p;
+    size_t label_len;
 
     /* DNS Header (12 bytes) */
     buf[offset++] = (id >> 8) & 0xFF;
@@ -357,13 +359,28 @@ int build_mtu_test_query(uint8_t *buf, size_t *outlen, const char *domain, uint1
 
     if (is_upload && target_mtu > 0) {
         size_t domain_len = strlen(domain);
-        size_t base_qname_bytes = 1 + domain_len + 2;  /* +2 for separator label */
+        size_t label_count = 0;
+        p = domain;
+        while (*p) {
+            const char *dot = strchr(p, '.');
+            if (!dot) dot = p + strlen(p);
+            if (dot > p) label_count++;
+            if (!*dot) break;
+            p = dot + 1;
+        }
+        /* Base QNAME bytes: 2 (separator label: len=1, 'x') + encoded domain size + 1 (terminator).
+         * Encoded domain size = sum(label_lengths) + number_of_labels, i.e., domain_len + label_count.
+         * Thus: base = 2 + (domain_len + label_count) + 1 = domain_len + label_count + 3.
+         * Previous code incorrectly used: 1 + domain_len + 2 = domain_len + 3 (missing label_count).
+         * The missing label_count bytes caused systematic underestimation of upload MTU.
+         */
+        size_t base_qname_bytes = 2 + domain_len + label_count + 1;
         size_t overhead = 12 + 4 + 11 + base_qname_bytes;
         size_t padding_needed = (target_mtu > (int)overhead) ? (target_mtu - (int)overhead) : 0;
-        
+
         static const char b32_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
         while (padding_needed > 0) {
-            size_t label_len = (padding_needed > 63) ? 63 : padding_needed;
+            label_len = (padding_needed > 63) ? 63 : padding_needed;
             if (offset + 1 + label_len + 1 > bufsize - 64) break;
             buf[offset++] = (uint8_t)label_len;
             for (size_t i = 0; i < label_len; i++) {
@@ -371,16 +388,16 @@ int build_mtu_test_query(uint8_t *buf, size_t *outlen, const char *domain, uint1
             }
             padding_needed -= label_len;
         }
-        
+
         /* Add separator between padding labels and domain (old code added 0x2e as separator) */
         buf[offset++] = 0x01;  /* Single-character label */
         buf[offset++] = 'x';    /* Separator label "x" */
-        
-        const char *p = domain;
+
+        p = domain;
         while (*p) {
             const char *dot = strchr(p, '.');
             if (!dot) dot = p + strlen(p);
-            size_t label_len = dot - p;
+            label_len = dot - p;
             if (offset + label_len + 1 > bufsize - 64) break;
             buf[offset++] = (uint8_t)label_len;
             memcpy(buf + offset, p, label_len);
