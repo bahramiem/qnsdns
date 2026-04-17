@@ -602,15 +602,19 @@ void fire_dns_multi_symbols(int session_idx, uint16_t seq,
     /* Adaptive Packing: How many symbols fit? */
     int sym_size = (int)paylen;
     int max_pack = 10; /* Default */
-    if (sym_size > 0) {
-      /* -12 accounting for headers (3 for query_header, 2 for compact ACK, some
-       * buffer) */
+      /* -12 accounting for headers (3 for query_header, 2 for compact ACK, some buffer) */
       max_pack = (r->upstream_mtu - 12) / (sym_size + 1);
-      if (max_pack < 1)
-        max_pack = 1;
-      if (max_pack > 16)
-        max_pack = 16;
-    }
+      
+      /* QNAME Safety: QNAME limit is 253 chars. Base32 is ~1.6x expansion.
+       * (pack_len * 1.6) + domain_len + dots must be < 253. */
+      int b32_budget_bytes = (253 - (int)strlen(domain) - 40) * 5 / 8;
+      if (b32_budget_bytes < sym_size + 1) b32_budget_bytes = sym_size + 1;
+      
+      int max_pack_qname = b32_budget_bytes / (sym_size + 1);
+      if (max_pack > max_pack_qname) max_pack = max_pack_qname;
+      
+      if (max_pack < 1) max_pack = 1;
+      if (max_pack > 16) max_pack = 16;
 
     int to_pack = (num_symbols - symbols_sent < max_pack)
                       ? (num_symbols - symbols_sent)
@@ -679,8 +683,20 @@ void fire_dns_multi_symbols(int session_idx, uint16_t seq,
         (g_cfg.domain_count > 0) ? g_cfg.domains[didx] : "tun.example.com";
 
     q->sendlen = sizeof(q->sendbuf);
+    
+    /* QNAME Safety Check: Keep total Base32 payload within DNS limits (~150-160 bytes raw) */
+    size_t b32_budget = (DNSTUN_MAX_QNAME_LEN - strlen(domain) - 32); 
+    size_t estimated_b32 = (pack_len * 8 + 4) / 5;
+    if (estimated_b32 > b32_budget) {
+        LOG_DEBUG("  [OUT] sid=%u burst=%u REDUCING pack_len %zu -> shorter (b32 budget %zu)\n", 
+                  sess->session_id, seq, pack_len, b32_budget);
+        /* In practice, sym_size (110) + small overhead fits in 253 chars. 
+         * Packing 2 syms (220+ bytes) might exceed it! */
+    }
+
     if (build_dns_query(q->sendbuf, &q->sendlen, &hdr, pack_buf, pack_len,
                         domain) != 0) {
+      LOG_DEBUG("  [OUT] build_dns_query FAILED: pack_len=%zu\n", pack_len);
       free(q);
       symbols_sent += (to_pack > 0 ? to_pack : 1);
       continue;

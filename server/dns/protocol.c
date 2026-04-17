@@ -369,13 +369,18 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         return;
     }
 
-    char b32_payload[512] = {0};
+    char b32_payload[4096] = {0};
     for (int i = 0; i < payload_start_idx; i++)
         strncat(b32_payload, parts[i], sizeof(b32_payload) - strlen(b32_payload) - 1);
-    uint8_t raw[512];
+    uint8_t raw[4096];
     size_t  b32_len = strlen(b32_payload);
     ssize_t rawlen  = base32_decode(raw, b32_payload, b32_len);
-    if (rawlen < 3) return;
+
+    if (rawlen < 3) {
+        LOG_DEBUG("  [IN] sid=? rawlen=%zd (too short)\n", rawlen);
+        return;
+    }
+
     query_header_t *q_hdr = (query_header_t *)raw;
     uint8_t session_id = GET_SID(q_hdr->sess_flags);
     uint8_t q_flags     = GET_FLAGS(q_hdr->sess_flags);
@@ -383,6 +388,9 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     
     const uint8_t *payload     = raw + 3;
     size_t         payload_len = (size_t)(rawlen - 3);
+
+    LOG_DEBUG("  [IN] sid=%u flags=%02x seq=%u rawlen=%zd payload_len=%zu\n", 
+              session_id, q_flags, seq, rawlen, payload_len);
     
     
     bool    is_poll      = (q_flags & CHUNK_FLAG_POLL) != 0;
@@ -498,7 +506,11 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                 LOG_DEBUG("  [FEC] Error: cl_symbol_size is 0, cannot extract symbols. Dropping packet.\n");
                 break;
             }
-            if (cur_rem < (size_t)(1 + sess->cl_symbol_size)) break;
+            if (cur_rem < (size_t)(1 + sess->cl_symbol_size)) {
+                LOG_DEBUG("    [EXTR] ERROR: cur_rem=%zu too small for symbol (ESI+Size=%zu)\n", 
+                          cur_rem, (size_t)(1 + sess->cl_symbol_size));
+                break;
+            }
             sym_esi = *cur_ptr++;
             sym_data = cur_ptr;
             sym_len = sess->cl_symbol_size;
@@ -541,6 +553,8 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                 if (slot->symbols[sym_esi]) {
                     memcpy(slot->symbols[sym_esi], sym_data, sym_len);
                     slot->count_received++;
+                    LOG_DEBUG("  [FEC] id=%04x added esi=%u count=%d/%d\n", 
+                              burst_id, sym_esi, slot->count_received, (int)sess->cl_fec_k);
                 }
             }
 

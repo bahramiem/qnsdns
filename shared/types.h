@@ -405,7 +405,7 @@ typedef struct {
 /* ──────────────────────────────────────────────
    FEC Burst Reassembly State (Server only)
 ────────────────────────────────────────────── */
-#define SRV_MAX_FEC_SLOTS     16     /* Concurrent bursts per session */
+#define SRV_MAX_FEC_SLOTS     32     /* Concurrent bursts per session */
 #define FEC_BURST_TIMEOUT_SEC 10     /* Evict bursts older than 10s */
 
 typedef struct {
