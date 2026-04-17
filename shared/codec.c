@@ -303,285 +303,171 @@ codec_result_t codec_decrypt(const uint8_t *in, size_t inlen, const char *psk) {
     return res;
 }
 
-/* ── FEC (RaptorQ / RFC 6330) ────────────────────────────────────────────── */
+#include <RaptorQ/v1/wrapper/C_RAW_API.h>
 
-/* Thread-safe RaptorQ API initialization */
-static void get_rq_api_init(void) {
-    g_rq_api = (struct RFC6330_v1*) RFC6330_api(1);
+/* ── FEC (RaptorQ / RAW API) ────────────────────────────────────────────── */
+
+static struct RaptorQ_v1 *g_rq_raw_api = NULL;
+static uv_once_t g_rq_raw_api_init_once = UV_ONCE_INIT;
+
+/* Thread-safe RaptorQ RAW API initialization */
+static void get_rq_raw_api_init(void) {
+    g_rq_raw_api = (struct RaptorQ_v1*) RaptorQ_api(1);
 }
 
-static struct RFC6330_v1 *get_rq_api(void) {
-    uv_once(&g_rq_api_init_once, get_rq_api_init);
-    return g_rq_api;
+static struct RaptorQ_v1 *get_rq_raw_api(void) {
+    uv_once(&g_rq_raw_api_init_once, get_rq_raw_api_init);
+    return g_rq_raw_api;
 }
 
 /*
- * Fix #6: the encoder decides how many source symbols (K) actually exist
- * based on input size and symbol size T.  We query the encoder's block info
- * to get the true K rather than trusting the caller's k parameter directly.
- * r repair symbols are added on top.
- * 
- * CRITICAL FIX: Symbol size T must match DNSTUN_CHUNK_PAYLOAD (137 bytes)
- * to avoid truncation during DNS query transport. Previously T=160 caused
- * silent truncation of symbols, breaking FEC decoding.
+ * RaptorQ RAW API implementation:
+ * - We negotiate K and N during the handshake.
+ * - We prepend a 2-byte length to the data before encoding to handle variable sizes within the fixed block.
  */
+
 fec_encoded_t codec_fec_encode(const uint8_t *in, size_t inlen, int k, int r) {
     fec_encoded_t res = {0};
-    struct RFC6330_v1 *api = get_rq_api();
+    struct RaptorQ_v1 *api = get_rq_raw_api();
     if (!api) return res;
 
-    /* Symbol size: MUST match DNSTUN_CHUNK_PAYLOAD for transport compatibility */
     uint16_t T = DNSTUN_CHUNK_PAYLOAD;
+    int total = k + r;
 
-    struct RFC6330_ptr *enc = api->Encoder(RQ_ENC_8, (void*)in, inlen, 4, T, 1024*1024);
-    if (!enc) return res;
+    /* Per plan: prepend 2-byte length to data for reconstruction without OTI */
+    size_t padded_inlen = inlen + 2;
+    uint8_t *padded_in = malloc(padded_inlen);
+    if (!padded_in) return res;
+    padded_in[0] = (uint8_t)((inlen >> 8) & 0xFF);
+    padded_in[1] = (uint8_t)(inlen & 0xFF);
+    memcpy(padded_in + 2, in, inlen);
 
-    /* Extract OTI from encoder before freeing it */
-    res.oti_common = api->OTI_Common(enc);
-    res.oti_scheme = api->OTI_Scheme_Specific(enc);
-    res.has_oti = true;
-
-    /* Synchronous computation */
-    struct RFC6330_future *f = api->compute(enc, RQ_COMPUTE_COMPLETE);
-    if (f) {
-        api->future_wait(f);
-        api->future_free(&f);
+    /* Encoder(type, symbols, symbol_size) */
+    /* Note: symbols must be a valid enum value from block_sizes.hpp mappings.
+     * RaptorQ_Block_Size is an enum. We cast the integer k to it.
+     * libRaptorQ supports specific block sizes. */
+    struct RaptorQ_ptr *enc = api->Encoder(RQ_ENC_8, (RaptorQ_Block_Size)k, T);
+    if (!enc) {
+        free(padded_in);
+        return res;
     }
 
-    /* Query actual source-symbol count from the encoder.
-       K_padded is reported via block_size(). We derive it from inlen / T
-       rounded up, capped by what the API actually generated. */
-    int true_k = (int)((inlen + T - 1) / T);
-    if (true_k < 1) true_k = 1;
-    /* Caller's k is advisory; use max to avoid generating symbols that
-       don't exist. */
-    (void)k; /* advisory only */
+    /* set_data(enc, data_ptr, size) */
+    void *p_in = padded_in;
+    api->set_data(enc, &p_in, padded_inlen);
+    
+    /* Synchronous computation */
+    struct RaptorQ_future_enc *f = api->compute(enc);
+    if (f) {
+        api->future_wait((struct RaptorQ_future*)f);
+        api->future_free((struct RaptorQ_future**)&f);
+    }
 
-    int total = true_k + r;
     res.symbol_len = T;
     res.total_count = total;
+    res.k_source = (uint16_t)k;
     res.symbols = calloc((size_t)total, sizeof(uint8_t*));
     if (!res.symbols) {
         api->free(&enc);
+        free(padded_in);
         return res;
     }
 
     for (int i = 0; i < total; i++) {
         res.symbols[i] = malloc(T);
         if (!res.symbols[i]) {
-            /* Partial failure: free what we have and return error */
             for (int j = 0; j < i; j++) free(res.symbols[j]);
             free(res.symbols);
             res.symbols = NULL;
             res.total_count = 0;
             api->free(&enc);
+            free(padded_in);
             return res;
         }
-        void *p = res.symbols[i];
-        /* encode(enc, data_ptr, size, esi, sbn) */
-        api->encode(enc, &p, T, (uint32_t)i, 0);
+        void *p_out = res.symbols[i];
+        api->encode(enc, &p_out, T, (uint32_t)i);
     }
 
     api->free(&enc);
-    return res;
-}
-
-/*
- * Fix #9: symbols must be added and end_of_input called BEFORE compute().
- * Correct order: add_symbol_id* → end_of_input → compute → future_wait.
- */
-
-/* FEC DECODE using OTI (Object Transmission Information)
- * This is the preferred method as it handles size automatically.
- * The OTI contains the original data size encoded by the encoder.
- */
-codec_result_t codec_fec_decode_oti(fec_encoded_t *encoded) {
-    codec_result_t res = {0};
-    struct RFC6330_v1 *api = get_rq_api();
-    if (!api) { 
-        LOG_DEBUG("FEC OTI: get_rq_api() returned NULL\n");
-        res.error = true; 
-        return res; 
-    }
-
-    if (!encoded->has_oti) {
-        LOG_DEBUG("FEC OTI: no OTI available\n");
-        res.error = true;
-        return res;
-    }
-
-    /*
-     * CRITICAL: OTI_Common() returns the value in BIG-ENDIAN byte order
-     * (the encoder calls h_to_b() before returning). The Decoder() constructor
-     * internally calls b_to_h() to convert back to host order before extracting
-     * fields.  We MUST pass the OTI as-is to Decoder() — do NOT attempt to
-     * extract F or T from the raw big-endian uint64 without byte-swapping first;
-     * doing so produces garbage field values on a little-endian host.
-     *
-     * Example: oti_common=0x6e00006800000000 (big-endian)
-     *   -> host order: 0x000000006800006e
-     *   -> T (lower 16 bits) = 0x006e = 110  (correct)
-     *   -> F (bits 63-24)    = 0x68   = 104  (correct transfer length)
-     * But reading bits 24-63 of the BIG-ENDIAN value gives 0x6e00006800 = ~472B!
-     */
-
-    /* Byte-swap OTI to host order for local diagnostics/validation only */
-    uint64_t host_oti_common;
-    {
-        uint64_t v = encoded->oti_common;
-        host_oti_common = ((v & 0x00000000000000FFULL) << 56) |
-                          ((v & 0x000000000000FF00ULL) << 40) |
-                          ((v & 0x0000000000FF0000ULL) << 24) |
-                          ((v & 0x00000000FF000000ULL) <<  8) |
-                          ((v & 0x000000FF00000000ULL) >>  8) |
-                          ((v & 0x0000FF0000000000ULL) >> 24) |
-                          ((v & 0x00FF000000000000ULL) >> 40) |
-                          ((v & 0xFF00000000000000ULL) >> 56);
-    }
-    uint16_t T = (uint16_t)(host_oti_common & 0xFFFFULL);   /* lower 16 bits = T */
-    uint64_t F = host_oti_common >> 24;                      /* upper 40 bits = F */
-
-    LOG_DEBUG("FEC OTI: oti_common=0x%016llx oti_scheme=0x%08x total_count=%d symbol_len=%zu k_source=%d\n",
-            (unsigned long long)encoded->oti_common,
-            (unsigned int)encoded->oti_scheme,
-            encoded->total_count,
-            (size_t)encoded->symbol_len,
-            encoded->k_source);
-    LOG_DEBUG("FEC OTI: host_oti=0x%016llx => T=%u F=%llu\n",
-            (unsigned long long)host_oti_common, T, (unsigned long long) host_oti_common >> 24);
-
-    /* Guardrails: Reject implausible F (Object Size) or T (Symbol Size) */
-    /* MTU is usually < 1500, and a single burst shouldn't exceed 256KB for DNS tunnel */
-    if (T == 0 || T > 1500 || F > 262144) {
-        LOG_WARN("FEC OTI: F (%llu) or T (%u) implausible, rejecting burst\n", 
-                (unsigned long long)F, T);
-        res.error = true;
-        return res;
-    }
-
-    /* Fallback: use received payload size if T from OTI is implausible */
-    if (T == 0 || T > 1500) {
-        T = (uint16_t)encoded->symbol_len;
-        LOG_DEBUG("FEC OTI: OTI T implausible, using symbol_len T=%u\n", T);
-    }
-    if (T == 0) {
-        LOG_DEBUG("FEC OTI: T=0, cannot decode\n");
-        res.error = true;
-        return res;
-    }
-
-    /* Pass the original big-endian OTI directly — Decoder() calls b_to_h() internally */
-    struct RFC6330_ptr *dec = api->Decoder(RQ_DEC_8, encoded->oti_common, encoded->oti_scheme);
-    if (!dec) {
-        LOG_DEBUG("FEC OTI: Decoder() returned NULL, trying Decoder_raw\n");
-        /* Fallback: explicit parameters when OTI-based decoder fails */
-        if (encoded->k_source <= 0) {
-            LOG_DEBUG("FEC OTI: k_source not set, cannot use Decoder_raw\n");
-            res.error = true;
-            return res;
-        }
-        uint64_t raw_size = (uint64_t)T * (uint64_t)encoded->k_source;
-        dec = api->Decoder_raw(RQ_DEC_8, raw_size, T, 1, 1, 1);
-        if (!dec) {
-            LOG_DEBUG("FEC OTI: Decoder_raw() also returned NULL\n");
-            res.error = true;
-            return res;
-        }
-        LOG_DEBUG("FEC OTI: Decoder_raw created size=%llu T=%u\n",
-                (unsigned long long)raw_size, T);
-    } else {
-        LOG_DEBUG("FEC OTI: Decoder created (F=%llu T=%u)\n",
-                (unsigned long long)F, T);
-    }
-
-    /* Step 1: add all available symbols */
-    for (int i = 0; i < encoded->total_count; i++) {
-        if (encoded->symbols[i]) {
-            void *p = encoded->symbols[i];
-            /* id encodes sbn (upper 8 bits) + esi (lower 24 bits); sbn=0 here */
-            api->add_symbol_id(dec, &p, T, (uint32_t)i);
-        }
-    }
-
-    /* Step 2: signal no more input */
-    api->end_of_input(dec, RQ_NO_FILL);
-
-    /* Step 3: trigger computation and wait for completion */
-    struct RFC6330_future *f = api->compute(dec, RQ_COMPUTE_COMPLETE);
-    if (f) {
-        api->future_wait(f);
-        api->future_free(&f);
-    }
-
-    /* Step 4: extract decoded data
-     * The decoder knows the exact size from OTI, so we just need a buffer.
-     * Allocate extra space for alignment. */
-    size_t max_size = 65536; /* reasonable max for our use case */
-    res.data = buffer_pool_acquire(max_size);
-    if (!res.data) { api->free(&dec); res.error = true; return res; }
-
-    void *out = res.data;
-    struct RFC6330_Dec_Result dres = api->decode_aligned(dec, &out, (uint64_t)max_size, 0);
-    LOG_DEBUG("FEC OTI: decode_aligned written=%llu\n",
-            (unsigned long long)dres.written);
-    if (dres.written == 0 || dres.written > max_size) {
-        buffer_pool_release(res.data, max_size);
-        res.data = NULL;
-        res.error = true;
-    } else {
-        res.len = (size_t)dres.written;
-    }
-
-    api->free(&dec);
+    free(padded_in);
     return res;
 }
 
 codec_result_t codec_fec_decode(fec_encoded_t *encoded, size_t original_len) {
+    /* [DEPRECATED] use codec_fec_decode_raw with negotiated params */
+    (void)original_len;
+    return codec_fec_decode_raw(encoded, encoded->k_source);
+}
+
+codec_result_t codec_fec_decode_raw(fec_encoded_t *encoded, uint16_t k) {
     codec_result_t res = {0};
-    struct RFC6330_v1 *api = get_rq_api();
+    struct RaptorQ_v1 *api = get_rq_raw_api();
     if (!api) { res.error = true; return res; }
 
     uint16_t T = (uint16_t)encoded->symbol_len;
+    if (T == 0) T = DNSTUN_CHUNK_PAYLOAD;
 
-    /* Decoder_raw(type, size, symbol_size, sub_blocks, blocks, alignment) */
-    struct RFC6330_ptr *dec = api->Decoder_raw(RQ_DEC_8, (uint64_t)original_len, T, 1, 1, 1);
+    /* Decoder(type, symbols, symbol_size, report_type) */
+    struct RaptorQ_ptr *dec = api->Decoder(RQ_DEC_8, (RaptorQ_Block_Size)k, T, RQ_COMPLETE);
     if (!dec) { res.error = true; return res; }
 
     /* Step 1: add all available symbols */
     for (int i = 0; i < encoded->total_count; i++) {
         if (encoded->symbols[i]) {
             void *p = encoded->symbols[i];
-            /* add_symbol_id(dec, data, size, id) where id = esi (sbn=0) */
-            api->add_symbol_id(dec, &p, T, (uint32_t)i);
+            api->add_symbol(dec, &p, T, (uint32_t)i);
         }
     }
 
     /* Step 2: signal no more input */
     api->end_of_input(dec, RQ_NO_FILL);
 
-    /* Step 3: trigger computation and wait */
-    struct RFC6330_future *f = api->compute(dec, RQ_COMPUTE_COMPLETE);
-    if (f) {
-        api->future_wait(f);
-        api->future_free(&f);
+    /* Step 3: wait for completion if not already ready */
+    if (!api->ready(dec)) {
+        struct RaptorQ_future_dec *f = api->wait(dec);
+        if (f) {
+            api->future_wait((struct RaptorQ_future*)f);
+            api->future_free((struct RaptorQ_future**)&f);
+        }
     }
 
-    /* Step 4: extract decoded data */
-    /* Try buffer pool first, fallback to malloc */
-    res.data = buffer_pool_acquire(original_len + 16); /* small padding for alignment */
+    /* Step 4: extraction */
+    /* The decoder buffer must be large enough for K * T */
+    size_t max_out = (size_t)k * T;
+    res.data = buffer_pool_acquire(max_out);
     if (!res.data) { api->free(&dec); res.error = true; return res; }
 
-    void *out = res.data;
-    struct RFC6330_Dec_Result dres = api->decode_aligned(dec, &out, (uint64_t)original_len, 0);
-    if (dres.written < original_len) {
-        buffer_pool_release(res.data, original_len + 16);
+    void *out_ptr = res.data;
+    struct RaptorQ_Dec_Written dres = api->decode_bytes(dec, &out_ptr, max_out, 0, 0);
+    
+    if (dres.written < 2) {
+        buffer_pool_release(res.data, max_out);
         res.data = NULL;
         res.error = true;
     } else {
-        res.len = (size_t)dres.written;
+        /* Recover actual length from the 2-byte prefix */
+        uint16_t actual_len = (uint16_t)((res.data[0] << 8) | res.data[1]);
+        if (actual_len > dres.written - 2) {
+            /* Corruption or invalid length */
+            buffer_pool_release(res.data, max_out);
+            res.data = NULL;
+            res.error = true;
+        } else {
+            /* Shift data to remove the 2-byte length prefix */
+            memmove(res.data, res.data + 2, actual_len);
+            res.len = actual_len;
+        }
     }
 
     api->free(&dec);
+    return res;
+}
+
+codec_result_t codec_fec_decode_oti(fec_encoded_t *encoded) {
+    /* [DEPRECATED] OTI is no longer used in the ultra-compact protocol */
+    (void)encoded;
+    codec_result_t res = {0};
+    res.error = true;
     return res;
 }
 

@@ -139,19 +139,14 @@ void on_poll_timer(uv_timer_t *t) {
             int sym_count      = 0;
             fec_encoded_t fenc = {0};
 
-            /* Check if we can do 1-symbol FEC */
-            int target_sym_size = avg_mtu;
-            if (target_sym_size > DNSTUN_CHUNK_PAYLOAD) target_sym_size = DNSTUN_CHUNK_PAYLOAD;
+            /* Use negotiated FEC parameters from handshake */
+            int k_val = (int)r->fec_k;
+            int r_val = 2; /* fixed redundancy or config based */
 
-            if (raw_len > (size_t)target_sym_size) {
-                int k_val = (int)ceil((double)raw_len / target_sym_size);
-                int r_val = (int)ceil(k_val * 0.1);
-                if (r_val < 1) r_val = 1;
+            if (raw_len > 0) {
                 fenc = codec_fec_encode(raw_buf, raw_len, k_val, r_val);
                 if (fenc.symbols) {
                     k_source   = fenc.k_source;
-                    oti_common = fenc.oti_common;
-                    oti_scheme = fenc.oti_scheme;
                     sym_count  = fenc.total_count;
                     sym_ptrs   = fenc.symbols;
                     DBGLOG("[POLL_DATA] FEC encoded: k=%d n=%d -> %d symbols\n", 

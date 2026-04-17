@@ -452,6 +452,8 @@ void send_mtu_handshake(int session_idx) {
     /* Calculate average MTU from active resolvers */
     uint16_t upstream_mtu   = 512;
     uint16_t downstream_mtu = 220;
+    uint16_t fec_k = 10; /* default fallback */
+    uint16_t fec_n = 15; /* default fallback */
     int active_count = 0;
     uint32_t up_sum = 0, down_sum = 0;
 
@@ -460,6 +462,8 @@ void send_mtu_handshake(int session_idx) {
         if (g_pool.resolvers[i].state == RSV_ACTIVE) {
             up_sum   += g_pool.resolvers[i].upstream_mtu;
             down_sum += g_pool.resolvers[i].downstream_mtu;
+            fec_k     = (uint16_t)g_pool.resolvers[i].fec_k;
+            fec_n     = (uint16_t)g_pool.resolvers[i].fec_k + 5; /* default redundancy */
             active_count++;
         }
     }
@@ -472,14 +476,14 @@ void send_mtu_handshake(int session_idx) {
     if (downstream_mtu > g_cfg.max_download_mtu)
         downstream_mtu = g_cfg.max_download_mtu;
 
-    uint8_t hs_payload[5];
-    hs_payload[0] = DNSTUN_VERSION;
-    hs_payload[1] = (uint8_t)(upstream_mtu >> 8);
-    hs_payload[2] = (uint8_t)(upstream_mtu & 0xFF);
-    hs_payload[3] = (uint8_t)(downstream_mtu >> 8);
-    hs_payload[4] = (uint8_t)(downstream_mtu & 0xFF);
+    handshake_packet_t hs = {0};
+    hs.version        = DNSTUN_VERSION;
+    hs.upstream_mtu   = upstream_mtu;
+    hs.downstream_mtu = downstream_mtu;
+    hs.fec_k          = fec_k;
+    hs.fec_n          = fec_n;
 
-    fire_dns_chunk_symbol(session_idx, 0, hs_payload, sizeof(hs_payload), 0, 0, 0, 0);
+    fire_dns_chunk_symbol(session_idx, 0, (uint8_t*)&hs, sizeof(hs), 0, 0, 0, 0);
 }
 
 /* ────────────────────────────────────────────── */
@@ -514,7 +518,7 @@ void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
 
     session_t *sess = &g_sessions[session_idx];
 
-    /* Build chunk header */
+    /* Build chunk header (5 bytes) */
     chunk_header_t hdr = {0};
     if (paylen == 0) {
         hdr.flags = CHUNK_FLAG_POLL;
@@ -525,27 +529,12 @@ void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
         /* Handshake/Capability packet: must be raw */
         hdr.flags = 0;
     }
-    chunk_set_session_id(&hdr, sess->session_id);
+    hdr.session_id = sess->session_id;
     hdr.seq = seq;
+    hdr.esi = (uint8_t)esi;
 
-    uint16_t fire_total = (uint16_t)total_symbols;
-    if (fire_total == 0 && paylen > 0) {
-        /* Handshake - leave it as 0 */
-        fire_total = 1;
-    } else if (fire_total == 0 && paylen == 0) {
-        /* Poll - set to 1 for compatibility */
-        fire_total = 1;
-    }
-    uint8_t fec_k_val   = (uint8_t)(r->fec_k > 15 ? 15 : r->fec_k);
-    if (fec_k_val == 0 && fire_total > 1) fec_k_val = (uint8_t)fire_total - 1;
-    chunk_set_info(&hdr.chunk_info, fire_total, fec_k_val, (uint8_t)esi);
-
-    hdr.oti_common = oti_common;
-    hdr.oti_scheme = oti_scheme;
-
-    LOG_DEBUG("[DNS_FIRE] sid=%u seq=%u flags=0x%02x symbols=%d paylen=%zu comp=%d\n",
-              sess->session_id, seq, hdr.flags, total_symbols, paylen,
-              (hdr.flags & CHUNK_FLAG_COMPRESSED) ? 1 : 0);
+    LOG_DEBUG("[DNS_FIRE] sid=%u seq=%u esi=%u flags=0x%02x symbols=%d paylen=%zu\n",
+              sess->session_id, seq, hdr.esi, hdr.flags, total_symbols, paylen);
 
     int didx     = rpool_flux_domain(&g_cfg);
     const char *domain = (g_cfg.domain_count > 0) ? g_cfg.domains[didx] : "tun.example.com";

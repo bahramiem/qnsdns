@@ -49,10 +49,11 @@ typedef struct {
 
 fec_encoded_t codec_fec_encode(const uint8_t *in, size_t inlen, int k, int r);
 
-/* 6. FEC DECODE (RaptorQ) - using OTI (preferred, size-independent) */
-codec_result_t codec_fec_decode_oti(fec_encoded_t *encoded);
+/* 6. FEC DECODE (RaptorQ) */
+codec_result_t codec_fec_decode_raw(fec_encoded_t *encoded, uint16_t k);
 
-/* Legacy decode with explicit size (for backwards compatibility) */
+/* [DEPRECATED] use codec_fec_decode_raw with negotiated params */
+codec_result_t codec_fec_decode_oti(fec_encoded_t *encoded);
 codec_result_t codec_fec_decode(fec_encoded_t *encoded, size_t original_len);
 
 void codec_fec_free(fec_encoded_t *f);

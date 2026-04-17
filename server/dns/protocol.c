@@ -374,10 +374,12 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     LOG_DEBUG("Incoming Query: id=%u sess=%u seq=%u flags=0x%02x rawlen=%zd\n", 
               query_id, session_id, seq, hdr.flags, rawlen);
     
-    uint16_t chunk_total = chunk_get_total(hdr.chunk_info);
+    bool    is_fec       = (hdr.flags & CHUNK_FLAG_FEC) != 0;
+    uint16_t chunk_total = is_fec ? sess->cl_fec_n : 1;
+    uint16_t esi         = is_fec ? hdr.esi : 0;
+    uint8_t  fec_k       = is_fec ? (uint8_t)sess->cl_fec_k : 1;
+
     if (chunk_total == 0) chunk_total = 1;
-    uint16_t esi         = chunk_get_esi(hdr.chunk_info);
-    uint8_t fec_k        = chunk_get_fec_k(hdr.chunk_info);
 
     /* LOG_DEBUG("DNS Query: id=%u sess=%u seq=%u total=%u esi=%u\n", query_id, session_id, seq, chunk_total, esi); */
 
@@ -423,11 +425,15 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
 
     if (is_handshake) {
         handshake_packet_t hs;
+        if (payload_len < sizeof(hs)) return;
         memcpy(&hs, payload, sizeof(hs));
         if (hs.upstream_mtu >= 128) sess->cl_upstream_mtu = hs.upstream_mtu;
         if (hs.downstream_mtu >= 128) sess->cl_downstream_mtu = hs.downstream_mtu;
+        sess->cl_fec_k = hs.fec_k;
+        sess->cl_fec_n = hs.fec_n;
         
-        LOG_INFO("Session %d: Handshake complete (CL_MTU Up:%u Down:%u)\n", sidx, sess->cl_upstream_mtu, sess->cl_downstream_mtu);
+        LOG_INFO("Session %d: Handshake complete (CL_MTU Up:%u Down:%u FEC K:%u N:%u)\n", 
+                 sidx, sess->cl_upstream_mtu, sess->cl_downstream_mtu, sess->cl_fec_k, sess->cl_fec_n);
         sess->handshake_done = true;
         sess->status_sent     = false;
         sess->retx_len        = 0;
@@ -461,9 +467,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
             slot->count_received = 0;
             slot->decoded        = false;
             slot->symbol_len     = payload_len;
-            slot->oti_common     = hdr.oti_common;
-            slot->oti_scheme     = hdr.oti_scheme;
-            slot->has_oti        = (hdr.oti_common != 0 && hdr.oti_scheme != 0);
+            slot->has_oti        = false;
             
             slot->symbols = calloc(chunk_total, sizeof(uint8_t *));
             if (!slot->symbols) { session_clear_fec_slot(slot); goto skip_fec_processing; }
@@ -493,12 +497,10 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
             fec.symbols      = slot->symbols;
             fec.symbol_len   = slot->symbol_len;
             fec.total_count  = slot->count_needed;
-            fec.k_source     = k_est;
-            fec.oti_common   = slot->oti_common;
-            fec.oti_scheme   = slot->oti_scheme;
-            fec.has_oti      = slot->has_oti;
+            fec.k_source     = (uint16_t)k_est;
+            fec.has_oti      = false;
 
-            codec_result_t fdec = fec.has_oti ? codec_fec_decode_oti(&fec) : codec_fec_decode(&fec, slot->symbol_len);
+            codec_result_t fdec = codec_fec_decode_raw(&fec, (uint16_t)k_est);
             if (!fdec.error && fdec.len > 0) {
                 const uint8_t *dec_in = fdec.data;
                 size_t         dec_len = fdec.len;

@@ -69,7 +69,8 @@ typedef struct srv_session {
     uint16_t cl_downstream_mtu;
     uint8_t  cl_enc_format;
     uint8_t  cl_loss_pct;
-    uint8_t  cl_fec_k;
+    uint16_t cl_fec_k;
+    uint16_t cl_fec_n;
     char     user_id[16];
 
     /* FEC burst reassembly slots (multi-slot tracking for interleaved bursts) */
