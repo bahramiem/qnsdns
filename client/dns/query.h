@@ -67,8 +67,8 @@ int build_dns_query(uint8_t *outbuf, size_t *outlen,
  */
 int fire_dns_multi_symbols(int session_idx, uint16_t seq,
                             const uint8_t **payloads, size_t paylen,
-                            int num_symbols, int total_symbols_in_burst,
-                            int first_esi, bool is_compressed);
+                            int num_symbols_total, int *esi_progress,
+                            bool is_compressed);
 
 /**
  * @brief Send an MTU handshake to the server for the given session.

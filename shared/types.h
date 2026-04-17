@@ -437,6 +437,10 @@ typedef struct session {
     bool      socks5_pending_ok; /* True if server is ready but waiting for FEC sync */
     time_t    last_handshake; /* Timestamp of last handshake attempt */
 
+    /* Partial burst tracking (Resume logic) */
+    uint16_t  tx_burst_esi;     /* Next ESI to send in current burst */
+    uint16_t  tx_burst_total;   /* Total symbols needed for current burst */
+
     /* send/recv ring buffers */
     uint8_t  *send_buf;
     size_t    send_len;
