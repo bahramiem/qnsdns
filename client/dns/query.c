@@ -363,10 +363,15 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                           s->fec_k = echo->fec_k;
                           s->fec_n = echo->fec_n;
                           s->fec_symbol_size = echo->symbol_size;
+                      } else {
+                          LOG_DEBUG("Session %u: duplicate HANDSHAKE echo ignored\n", s->session_id);
                       }
                       /* Handshake echo is consumed here, don't pass to reorder buffer or SOCKS5 */
                       continue;
                   }
+              } else if (!s->fec_synced) {
+                  LOG_DEBUG("Session %u: received non-handshake data (%zu bytes) while waiting for sync, buffering anyway\n", 
+                            s->session_id, payload_len);
               }
             }
 
@@ -406,8 +411,8 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                   uint8_t status_byte = flush_buf[0];
                   s->status_consumed = true;
                   data_start = 1;
-                  LOG_DEBUG("Session %u: SOCKS5 status byte 0x%02x consumed\n",
-                            s->session_id, status_byte);
+                  LOG_INFO("Session %u: SOCKS5 status byte 0x%02x consumed (fec_synced=%d)\n",
+                            s->session_id, status_byte, s->fec_synced);
 
                   if (s->client_ptr) {
                     socks5_client_t *c = (socks5_client_t *)s->client_ptr;

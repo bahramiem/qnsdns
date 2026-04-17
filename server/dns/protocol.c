@@ -467,8 +467,10 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         uint8_t reply[512]; size_t rlen = sizeof(reply);
         int nfrags = 0;
         /* Echo the handshake back to the client as data to acknowledge sync */
-        if (build_txt_reply_multi(reply, &rlen, query_id, qname, (uint8_t*)&hs, sizeof(hs), sess->cl_downstream_mtu, 0, sess->rx_next, sess->session_id, true, &nfrags, NULL) == 0)
+        if (build_txt_reply_multi(reply, &rlen, query_id, qname, (uint8_t*)&hs, sizeof(hs), sess->cl_downstream_mtu, 0, sess->rx_next, sess->session_id, true, &nfrags, NULL) == 0) {
+            LOG_DEBUG("Session %u: sending HANDSHAKE echo back to client\n", sess->session_id);
             send_udp_reply(src, reply, rlen);
+        }
             
         session_handle_data(sidx, NULL, 0, seq, 1);
         return;
