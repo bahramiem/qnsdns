@@ -64,7 +64,7 @@ void on_poll_timer(uv_timer_t *t) {
         if (s->send_len == 0) {
             uint64_t interval = (g_cfg.poll_interval_ms >= 50) ? (uint64_t)g_cfg.poll_interval_ms : 50;
             if (s->socks5_connected && (now_ms - last_poll[i] >= interval)) {
-                DBGLOG("[POLL] session %u seq %u (no data to send)\n", s->session_id, s->tx_next);
+                /* DBGLOG("[POLL] session %u seq %u (no data to send)\n", s->session_id, s->tx_next); */
                 fire_dns_chunk_symbol(i, s->tx_next++, NULL, 0, 0, 0, 0);
                 last_poll[i] = now_ms;
             }
@@ -183,9 +183,9 @@ void on_poll_timer(uv_timer_t *t) {
                     }
                 }
             } else {
-                /* Non-FEC or encode failed */
-                DBGLOG("[POLL_DATA] sending raw data (%zu bytes)\n", raw_len);
-                fire_dns_chunk_symbol(i, s->tx_next++, raw_buf, raw_len, 0, 0, 0);
+                /* Non-FEC or encode failed: Send as 1-symbol FEC burst to preserve flags */
+                DBGLOG("[POLL_DATA] sending raw data (%zu bytes) as 1-sym FEC\n", raw_len);
+                fire_dns_chunk_symbol(i, s->tx_next++, raw_buf, raw_len, 1, 0, 0);
             }
 
             /* Cleanup */

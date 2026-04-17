@@ -184,6 +184,7 @@ static size_t socks5_handle_data(socks5_client_t *c, const uint8_t *data, size_t
         sess->established = true;
         sess->closed      = false;
         sess->last_active = time(NULL);
+        sess->tx_next     = 1; /* Start data sequence at 1, as 0 is reserved for handshake */
 
         reorder_buffer_init(&sess->reorder_buf);
 
@@ -276,8 +277,8 @@ static void on_socks5_read(uv_stream_t *s, ssize_t nread, const uv_buf_t *buf) {
     socks5_client_t *c = s->data;
 
     if (nread < 0) {
-        DBGLOG("[SOCKS5_READ] error nread=%zd state=%d session_idx=%d\n",
-               nread, c ? c->state : -1, c ? c->session_idx : -1);
+        /* DBGLOG("[SOCKS5_READ] error nread=%zd state=%d session_idx=%d\n",
+               nread, c ? c->state : -1, c ? c->session_idx : -1); */
         if (!uv_is_closing((uv_handle_t*)s))
             uv_close((uv_handle_t*)s, on_socks5_close);
         return;
@@ -300,12 +301,12 @@ static void on_socks5_read(uv_stream_t *s, ssize_t nread, const uv_buf_t *buf) {
         c->buf_len += incoming;
     }
 
-    DBGLOG("[SOCKS5_READ] processing buf_len=%zu state=%d session_idx=%d\n",
-           c->buf_len, c ? c->state : -1, c ? c->session_idx : -1);
+    /* DBGLOG("[SOCKS5_READ] processing buf_len=%zu state=%d session_idx=%d\n",
+           c->buf_len, c ? c->state : -1, c ? c->session_idx : -1); */
     while (c->buf_len > 0) {
         size_t consumed = socks5_handle_data(c, c->buf, c->buf_len);
-        DBGLOG("[SOCKS5_HANDLE_DATA] consumed=%zu buf_len before=%zu after=%zu\n",
-               consumed, c->buf_len, c->buf_len - consumed);
+        /* DBGLOG("[SOCKS5_HANDLE_DATA] consumed=%zu buf_len before=%zu after=%zu\n",
+               consumed, c->buf_len, c->buf_len - consumed); */
         if (consumed == 0) break;
         if (consumed < c->buf_len) {
             memmove(c->buf, c->buf + consumed, c->buf_len - consumed);

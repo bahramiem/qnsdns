@@ -352,8 +352,8 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     for (int i = 0; i < payload_start_idx; i++)
         strncat(b32_payload, parts[i], sizeof(b32_payload) - strlen(b32_payload) - 1);
 
-    LOG_DEBUG("QNAME parse: qname='%s' parts=%d domain_parts=%d payload='%s'\n",
-             qname, part_count, domain_parts, b32_payload);
+    /* LOG_DEBUG("QNAME parse: qname='%s' parts=%d domain_parts=%d payload='%s'\n",
+             qname, part_count, domain_parts, b32_payload); */
 
     if (b32_payload[0] == '\0') {
         LOG_DEBUG("Empty payload after QNAME parse, ignoring\n");
@@ -369,8 +369,8 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         return;
     }
 
-    LOG_DEBUG("decode: rawlen=%zd first_bytes=%02x%02x%02x%02x\n",
-             rawlen, raw[0], raw[1], raw[2], raw[3]);
+    /* LOG_DEBUG("decode: rawlen=%zd first_bytes=%02x%02x%02x%02x\n",
+             rawlen, raw[0], raw[1], raw[2], raw[3]); */
 
     /* 9. Parse chunk header */
     chunk_header_t hdr;
@@ -378,8 +378,8 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     const uint8_t *payload     = raw + sizeof(hdr);
     size_t         payload_len = (size_t)(rawlen - (ssize_t)sizeof(hdr));
 
-    LOG_DEBUG("header: session_id=%u flags=0x%02x seq=%u chunk_info=0x%08x\n",
-             hdr.session_id, hdr.flags, hdr.seq, hdr.chunk_info);
+    /* LOG_DEBUG("header: session_id=%u flags=0x%02x seq=%u chunk_info=0x%08x\n",
+             hdr.session_id, hdr.flags, hdr.seq, hdr.chunk_info); */
 
     bool    is_poll      = (hdr.flags & CHUNK_FLAG_POLL) != 0;
     bool    is_encrypted = (hdr.flags & CHUNK_FLAG_ENCRYPTED) != 0;
@@ -674,10 +674,11 @@ send_reply:
         LOG_DEBUG("Server sending: upstream_len=%zu sz=%zu mtu=%u\n",
                 sess->upstream_len, sz, mtu);
 
-        uint16_t out_seq = sess->handshake_done ? sess->downstream_seq++ : 0;
+        uint16_t out_seq = sess->handshake_done ? sess->downstream_seq : 0;
         if (build_txt_reply_with_seq(reply, &rlen, query_id, qname,
                                      sess->upstream_buf, sz, mtu,
                                      out_seq, sess->session_id, sess->handshake_done) == 0) {
+            if (sess->handshake_done) sess->downstream_seq++;
             if (sz <= sizeof(sess->retx_buf)) {
                 memcpy(sess->retx_buf, sess->upstream_buf, sz);
                 sess->retx_len = sz;
@@ -702,9 +703,9 @@ send_reply:
         }
     } else {
 send_empty:;
-        uint16_t out_seq = sess->handshake_done ? sess->downstream_seq++ : 0;
-        LOG_DEBUG("Server empty reply: session=%u seq=%u\n",
-                sess->session_id, out_seq);
+        uint16_t out_seq = sess->handshake_done ? sess->downstream_seq : 0;
+        /* LOG_DEBUG("Server empty reply: session=%u seq=%u\n",
+                sess->session_id, out_seq); */
         if (build_txt_reply_with_seq(reply, &rlen, query_id, qname,
                                      NULL, 0, mtu, out_seq,
                                      sess->session_id, sess->handshake_done) == 0)
