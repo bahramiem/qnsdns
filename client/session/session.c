@@ -59,11 +59,14 @@ bool reorder_buffer_insert(reorder_buffer_t *rb, uint16_t seq,
 
     if (diff < 0) {
         /* Too old (already flushed or before window) — drop */
+        LOG_DEBUG("[REORDER] Dropping old packet: seq=%u expected=%u\n", seq, rb->expected_seq);
         return false;
     }
 
     if (diff >= RX_REORDER_WINDOW) {
         /* Too far ahead — discard stale window and jump */
+        LOG_DEBUG("[REORDER] Window jump: seq=%u expected=%u -> %u\n", 
+                  seq, rb->expected_seq, seq);
         reorder_buffer_free(rb);
         rb->expected_seq = seq;
         offset = 0;
@@ -71,6 +74,7 @@ bool reorder_buffer_insert(reorder_buffer_t *rb, uint16_t seq,
 
     /* Duplicate check */
     if (rb->slots[offset].valid) {
+        LOG_DEBUG("[REORDER] Dropping duplicate packet: seq=%u\n", seq);
         return false;
     }
 

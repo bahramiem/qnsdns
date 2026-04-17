@@ -687,14 +687,21 @@ send_reply:
             sess->upstream_len -= sz;
             send_udp_reply(src, reply, rlen);
         }
-    } else if (sess->retx_len > 0 && sess->retx_seq == (uint16_t)(sess->downstream_seq - 1)) {
-        LOG_DEBUG("Server retransmitting seq=%u len=%zu\n",
-                sess->retx_seq, sess->retx_len);
-        if (build_txt_reply_with_seq(reply, &rlen, query_id, qname,
-                                     sess->retx_buf, sess->retx_len,
-                                     mtu, sess->retx_seq, sess->session_id, true) == 0)
-            send_udp_reply(src, reply, rlen);
+    } else if (sess->retx_len > 0) {
+        if (sess->retx_seq == (uint16_t)(sess->downstream_seq - 1)) {
+            LOG_DEBUG("Server retransmitting seq=%u len=%zu\n",
+                    sess->retx_seq, sess->retx_len);
+            if (build_txt_reply_with_seq(reply, &rlen, query_id, qname,
+                                         sess->retx_buf, sess->retx_len,
+                                         mtu, sess->retx_seq, sess->session_id, true) == 0)
+                send_udp_reply(src, reply, rlen);
+        } else {
+            LOG_DEBUG("Server skipping retransmit of old seq=%u (current downstream_seq=%u)\n",
+                      sess->retx_seq, sess->downstream_seq);
+            goto send_empty;
+        }
     } else {
+send_empty:;
         uint16_t out_seq = sess->handshake_done ? sess->downstream_seq++ : 0;
         LOG_DEBUG("Server empty reply: session=%u seq=%u\n",
                 sess->session_id, out_seq);
