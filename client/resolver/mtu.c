@@ -79,44 +79,30 @@ static bool is_mtu_tested(mtu_binary_search_t *search, int mtu) {
 int get_next_mtu_to_test(mtu_binary_search_t *search) {
     if (!search || !search->active) return -1;
     
-    /* Only terminate if we've tested both boundaries AND the space between them is exhausted.
-      * Don't terminate just because we've found an optimal - we need to verify the upper bound. */
-    if (search->optimal > 0 && is_mtu_tested(search, search->high)) {
+    if (search->low > search->high) {
         search->active = false;
         LOG_INFO("[%s MTU] Search complete, optimal MTU: %d\n", 
                  search->is_upload ? "Up" : "Down", search->optimal);
         return -1;
     }
     
-    /* First, test the high boundary */
-    if (search->optimal == 0 && !is_mtu_tested(search, search->high)) {
-        search->test_size = search->high;
-        return search->high;
-    }
-    /* High already tested, test the low boundary */
-    if (search->optimal == 0 && !is_mtu_tested(search, search->low)) {
-        search->test_size = search->low;
-        return search->low;
-    }
+    /* Calculate mid favoring the upper side when we have a known optimal */
+    int mid = (search->high + search->low) / 2;
     
-    /* Binary search: Find the boundary in [low, high]. 
-     * After finding optimal (success), we search upward: [optimal, high] to find max.
-     * When we've found an optimal value, we want to test values between optimal and high,
-     * not values below optimal. */
-    int mid = (search->optimal > 0) ? 
-              ((search->optimal + search->high + 1) / 2) : 
-              ((search->high + search->low) / 2);
-    
-    /* Ensure we don't test the same value twice */
-    while (is_mtu_tested(search, mid) && mid < search->high) {
+    /* Ensure we don't test the same value twice by probing around mid */
+    int original_mid = mid;
+    while (is_mtu_tested(search, mid) && mid <= search->high) {
         mid++;
     }
-    
-    if (mid >= search->high || is_mtu_tested(search, mid)) {
-        search->active = false;
-        if (search->optimal == 0) {
-            search->optimal = search->low;
+    if (mid > search->high) {
+        mid = original_mid - 1;
+        while (is_mtu_tested(search, mid) && mid >= search->low) {
+            mid--;
         }
+    }
+    
+    if (mid > search->high || mid < search->low || is_mtu_tested(search, mid)) {
+        search->active = false;
         LOG_INFO("[%s MTU] Search complete, optimal MTU: %d\n", 
                  search->is_upload ? "Up" : "Down", search->optimal);
         return -1;
@@ -131,17 +117,13 @@ void mark_mtu_tested(mtu_binary_search_t *search, int mtu, bool success) {
     
     /* Mark in cache */
     if (search->tested_cache && mtu >= 0 && mtu < search->cache_size * 8) {
-        if (success) {
-            search->tested_cache[mtu / 8] |= (1 << (mtu % 8));
-        } else {
-            search->tested_cache[mtu / 8] &= ~(1 << (mtu % 8));
-        }
+        search->tested_cache[mtu / 8] |= (1 << (mtu % 8));
     }
     
     if (success) {
         /* MTU works, shift lower bound up */
-        if (mtu > search->low) {
-            search->low = mtu;
+        if (mtu >= search->low) {
+            search->low = mtu + 1;
         }
         /* If we succeeded, we can keep the optimal value updated */
         if (mtu > search->optimal) {
@@ -157,7 +139,6 @@ void mark_mtu_tested(mtu_binary_search_t *search, int mtu, bool success) {
             if (search->high > effective_max) search->high = effective_max;
             LOG_DEBUG("[%s MTU] Success at %d, extending upper bound to %d\n",
                      search->is_upload ? "Up" : "Down", mtu, search->high);
-            /* After extending bounds, reset test_size to force recomputation */
             search->test_size = search->high;
         } else {
             LOG_DEBUG("[%s MTU] Success at %d, low->%d\n", 
@@ -170,7 +151,9 @@ void mark_mtu_tested(mtu_binary_search_t *search, int mtu, bool success) {
         search->retries++;
         if (search->retries >= search->max_retries) {
             /* Definitely failed, shift upper bound down */
-            search->high = mtu - 1;
+            if (mtu <= search->high) {
+                search->high = mtu - 1;
+            }
             search->retries = 0; /* Reset for next test */
             LOG_DEBUG("[%s MTU] Failed at %d, high->%d\n", 
                      search->is_upload ? "Up" : "Down", mtu, search->high);
@@ -178,6 +161,11 @@ void mark_mtu_tested(mtu_binary_search_t *search, int mtu, bool success) {
             /* Will retry this MTU */
             LOG_DEBUG("[%s MTU] Failed at %d, retry %d/%d\n", 
                      search->is_upload ? "Up" : "Down", mtu, search->retries, search->max_retries);
+            
+            /* Uncheck from tested cache so we retry */
+            if (search->tested_cache && mtu >= 0 && mtu < search->cache_size * 8) {
+                search->tested_cache[mtu / 8] &= ~(1 << (mtu % 8));
+            }
         }
     }
 }
