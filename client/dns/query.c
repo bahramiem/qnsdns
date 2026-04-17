@@ -479,7 +479,7 @@ void send_mtu_handshake(int session_idx) {
     hs_payload[3] = (uint8_t)(downstream_mtu >> 8);
     hs_payload[4] = (uint8_t)(downstream_mtu & 0xFF);
 
-    fire_dns_chunk_symbol(session_idx, 0, hs_payload, sizeof(hs_payload), 0, 0, 0);
+    fire_dns_chunk_symbol(session_idx, 0, hs_payload, sizeof(hs_payload), 0, 0, 0, 0);
 }
 
 /* ────────────────────────────────────────────── */
@@ -488,7 +488,7 @@ void send_mtu_handshake(int session_idx) {
 
 void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
                             const uint8_t *payload, size_t paylen,
-                            int total_symbols,
+                            int total_symbols, int esi,
                             uint64_t oti_common, uint32_t oti_scheme) {
     int ridx = rpool_next(&g_pool);
 
@@ -528,16 +528,17 @@ void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
     chunk_set_session_id(&hdr, sess->session_id);
     hdr.seq = seq;
 
-    uint8_t chunk_total = (uint8_t)total_symbols;
-    if (chunk_total == 0 && paylen > 0) {
+    uint16_t fire_total = (uint16_t)total_symbols;
+    if (fire_total == 0 && paylen > 0) {
         /* Handshake - leave it as 0 */
-    } else if (chunk_total == 0 && paylen == 0) {
+        fire_total = 1;
+    } else if (fire_total == 0 && paylen == 0) {
         /* Poll - set to 1 for compatibility */
-        chunk_total = 1;
+        fire_total = 1;
     }
     uint8_t fec_k_val   = (uint8_t)(r->fec_k > 15 ? 15 : r->fec_k);
-    if (fec_k_val == 0 && chunk_total > 1) fec_k_val = chunk_total - 1;
-    chunk_set_info(&hdr.chunk_info, chunk_total, fec_k_val);
+    if (fec_k_val == 0 && fire_total > 1) fec_k_val = (uint8_t)fire_total - 1;
+    chunk_set_info(&hdr.chunk_info, fire_total, fec_k_val, (uint8_t)esi);
 
     hdr.oti_common = oti_common;
     hdr.oti_scheme = oti_scheme;

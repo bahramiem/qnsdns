@@ -337,7 +337,16 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                 if (strcasecmp(qpart, domain_labels[j]) != 0) { match = false; break; }
 #endif
             }
-            if (match) { domain_parts = dparts; is_mine = true; break; }
+        if (match) { 
+            domain_parts = dparts; 
+            is_mine = true; 
+            /* If the label immediately preceding the domain is 'x' (cache-buster), 
+             * we strip it so it doesn't corrupt the Base32 payload. */
+            if (part_count > dparts && _stricmp(parts[part_count - dparts - 1], "x") == 0) {
+                domain_parts++;
+            }
+            break; 
+        }
         }
     }
 
@@ -457,7 +466,9 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     bool    is_sync      = false;
     uint8_t session_id   = chunk_get_session_id(&hdr);
     uint16_t seq         = hdr.seq;
-    uint8_t chunk_total  = chunk_get_total(hdr.chunk_info);
+    uint16_t chunk_total = chunk_get_total(hdr.chunk_info);
+    if (chunk_total == 0) chunk_total = 1; /* DIVZERO safety */
+    uint16_t esi         = chunk_get_esi(hdr.chunk_info);
     uint8_t fec_k        = chunk_get_fec_k(hdr.chunk_info);
 
     /* 10. Parse capability header */
@@ -563,8 +574,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
             goto skip_fec_processing;
         }
 
-        uint16_t esi           = (uint16_t)(seq % (uint16_t)chunk_total);
-        uint16_t burst_base    = (uint16_t)(seq - esi);
+        uint16_t burst_base    = seq; /* Sequence is now the constant BurstID */
         bool     is_new_burst  = (sess->burst_count_needed == 0) ||
                                   (burst_base != sess->burst_seq_start) ||
                                   (chunk_total != (uint16_t)sess->burst_count_needed);
@@ -603,8 +613,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
 
         if (sess->burst_received >= k_est) {
             if (sess->burst_decoded) {
-                LOG_DEBUG("FEC burst seq=%u already decoded, discarding duplicate\n",
-                          sess->burst_seq_start);
+                /* Silent discard for déjà vu symbols in a decoded burst */
                 goto skip_fec_processing;
             }
             sess->burst_decoded = true;

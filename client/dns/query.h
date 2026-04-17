@@ -78,7 +78,7 @@ int build_dns_query(uint8_t *outbuf, size_t *outlen,
  */
 void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
                             const uint8_t *payload, size_t paylen,
-                            int total_symbols,
+                            int total_symbols, int esi,
                             uint64_t oti_common, uint32_t oti_scheme);
 
 /**

@@ -65,7 +65,7 @@ void on_poll_timer(uv_timer_t *t) {
             uint64_t interval = (g_cfg.poll_interval_ms >= 50) ? (uint64_t)g_cfg.poll_interval_ms : 50;
             if (s->socks5_connected && (now_ms - last_poll[i] >= interval)) {
                 /* DBGLOG("[POLL] session %u seq %u (no data to send)\n", s->session_id, s->tx_next); */
-                fire_dns_chunk_symbol(i, s->tx_next++, NULL, 0, 0, 0, 0);
+                fire_dns_chunk_symbol(i, s->tx_next++, NULL, 0, 0, 0, 0, 0);
                 last_poll[i] = now_ms;
             }
         } else {
@@ -166,26 +166,19 @@ void on_poll_timer(uv_timer_t *t) {
                 int syms_per_packet = calc_symbols_per_packet(avg_mtu, 
                                         fenc.symbol_len);
                 DBGLOG("[POLL_DATA] FEC path: %d symbols, %d per packet\n", sym_count, syms_per_packet);
-                if (syms_per_packet > 1 && sym_count > 1) {
-                    /* Packed multi-symbol send logic... For now, single send */
-                    for (int sym_idx = 0; sym_idx < sym_count; sym_idx++) {
-                        DBGLOG("[POLL_DATA] sending symbol %d/%d\n", sym_idx+1, sym_count);
-                        fire_dns_chunk_symbol(i, s->tx_next++, sym_ptrs[sym_idx],
-                                              fenc.symbol_len,
-                                              sym_count, oti_common, oti_scheme);
-                    }
-                } else {
-                    for (int sym_idx = 0; sym_idx < sym_count; sym_idx++) {
-                        DBGLOG("[POLL_DATA] sending symbol %d/%d\n", sym_idx+1, sym_count);
-                        fire_dns_chunk_symbol(i, s->tx_next++, sym_ptrs[sym_idx],
-                                              fenc.symbol_len,
-                                              sym_count, oti_common, oti_scheme);
-                    }
+                /* Unified FEC send logic using BurstID (burst_seq) and ESI (sym_idx) */
+                for (int sym_idx = 0; sym_idx < sym_count; sym_idx++) {
+                    DBGLOG("[POLL_DATA] sending symbol %d/%d (seq=%u esi=%d)\n", 
+                           sym_idx+1, sym_count, burst_seq, sym_idx);
+                    fire_dns_chunk_symbol(i, burst_seq, sym_ptrs[sym_idx],
+                                          fenc.symbol_len,
+                                          sym_count, sym_idx, oti_common, oti_scheme);
                 }
+                s->tx_next++; /* Increment sequence number only once per burst */
             } else {
                 /* Non-FEC or encode failed: Send as 1-symbol FEC burst to preserve flags */
                 DBGLOG("[POLL_DATA] sending raw data (%zu bytes) as 1-sym FEC\n", raw_len);
-                fire_dns_chunk_symbol(i, s->tx_next++, raw_buf, raw_len, 1, 0, 0);
+                fire_dns_chunk_symbol(i, s->tx_next++, raw_buf, raw_len, 1, 0, 0, 0);
             }
 
             /* Cleanup */

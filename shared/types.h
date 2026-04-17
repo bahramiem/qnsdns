@@ -159,7 +159,7 @@ typedef struct {
     uint8_t  session_id;     /* 8-bit session ID (0-255) */
     uint8_t  flags;          /* protocol flags (FEC, Poll, etc.) */
     uint16_t seq;            /* sequence number (2 bytes) */
-    uint32_t chunk_info;     /* bits 0-7: flags, bits 8-15: fec_k, bits 16-31: chunk_total-1 */
+    uint32_t chunk_info;     /* bits 0-7: esi, bits 8-15: fec_k, bits 16-31: chunk_total-1 */
     /* OTI (Object Transmission Information) for FEC decoder - 12 bytes */
     uint64_t oti_common;     /* OTI Common (includes data size) */
     uint32_t oti_scheme;     /* OTI Scheme Specific */
@@ -322,12 +322,16 @@ static inline void chunk_set_session_id(chunk_header_t *hdr, uint8_t sid) {
 }
 
 /* Extended 32-bit chunk_info format (header now 20 bytes total):
- * bits 0-7: reserved
- * bits 8-15: fec_k
- * bits 16-31: chunk_total - 1
+ * bits 0-7: esi (Encoding Symbol ID: 0 to N-1)
+ * bits 8-15: fec_k (Source symbols count: K)
+ * bits 16-31: chunk_total - 1 (Total symbols: N)
  */
-static inline uint8_t chunk_get_chunk_total(uint32_t chunk_info) {
-    return (uint8_t)(((chunk_info >> 16) & 0xFFFF) + 1);
+static inline uint8_t chunk_get_esi(uint32_t chunk_info) {
+    return (uint8_t)(chunk_info & 0xFF);
+}
+
+static inline uint16_t chunk_get_chunk_total(uint32_t chunk_info) {
+    return (uint16_t)(((chunk_info >> 16) & 0xFFFF) + 1);
 }
 
 /* Alias for chunk_get_chunk_total */
@@ -337,8 +341,10 @@ static inline uint8_t chunk_get_fec_k(uint32_t chunk_info) {
     return (uint8_t)((chunk_info >> 8) & 0xFF);
 }
 
-static inline void chunk_set_info(uint32_t *ci, uint8_t total, uint8_t k) {
-    *ci = (((uint32_t)(total - 1) & 0xFFFF) << 16) | (((uint32_t)k & 0xFF) << 8);
+static inline void chunk_set_info(uint32_t *ci, uint16_t total, uint8_t k, uint8_t esi) {
+    *ci = (((uint32_t)(total - 1) & 0xFFFF) << 16) | 
+          (((uint32_t)k & 0xFF) << 8) | 
+          ((uint32_t)esi & 0xFF);
 }
 
 static inline uint8_t resp_get_encoding(uint8_t flags) {
