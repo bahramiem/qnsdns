@@ -95,10 +95,10 @@ int build_txt_reply_multi(uint8_t *outbuf, size_t *outlen,
     if (num_frags) *num_frags = 0;
     if (bytes_consumed) *bytes_consumed = 0;
 
-    /* Step 1: Compute safe capacity with 85% safety margin and 128-byte hardware padding */
+    /* Step 1: Compute safe capacity with 75% safety margin and 128-byte hardware padding */
     size_t base_overhead = 12 + strlen(qname) + 6 + 11 + 20 + 32; /* +32 for safety */
     if (mtu < base_overhead + 128) mtu = base_overhead + 128;
-    size_t safe_packet_budget = (mtu > base_overhead + 128) ? ((mtu - base_overhead - 128) * 85 / 100) : 64;
+    size_t safe_packet_budget = (mtu > base_overhead + 128) ? ((mtu - base_overhead - 128) * 75 / 100) : 64;
     
     LOG_DEBUG("[MTU] QName='%s' MTU=%u BaseOverhead=%zu Budget=%zu\n", qname, mtu, base_overhead, safe_packet_budget);
 
@@ -527,6 +527,8 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         sess->retx_seq        = 0;
         sess->upstream_len    = 0;
         LOG_INFO("Session %d: handshake done, downstream_seq=0\n", sidx);
+        /* Return early. Handshake query should only trigger its own ACK. */
+        goto send_reply; 
     }
 
     /* ── 15. FEC Burst Reassembly ────────────────────────────── */

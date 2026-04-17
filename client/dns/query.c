@@ -313,11 +313,12 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread,
                             while (reorder_buffer_flush(&s->reorder_buf, flush_buf, sizeof(flush_buf), &flush_len) > 0) {
                                 size_t data_start = 0;
 
-                                /* Detect status byte (first byte of first flushed packet) */
+                                /* Detect status byte (first byte of first non-empty flushed packet) */
                                 if (flush_len >= 1 && !s->status_consumed) {
                                     uint8_t status_byte = flush_buf[0];
                                     s->status_consumed = true;
                                     data_start = 1;
+                                    LOG_DEBUG("Session %u: SOCKS5 status byte 0x%02x consumed\n", s->session_id, status_byte);
 
                                     if (s->client_ptr) {
                                         socks5_client_t *c = (socks5_client_t *)s->client_ptr;
