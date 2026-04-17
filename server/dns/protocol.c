@@ -100,7 +100,7 @@ int build_txt_reply_multi(uint8_t *outbuf, size_t *outlen,
     if (mtu < base_overhead + 128) mtu = base_overhead + 128;
     size_t safe_packet_budget = (mtu > base_overhead + 128) ? ((mtu - base_overhead - 128) * 75 / 100) : 64;
     
-    LOG_DEBUG("[MTU] QName='%s' MTU=%u BaseOverhead=%zu Budget=%zu\n", qname, mtu, base_overhead, safe_packet_budget);
+    /* LOG_DEBUG("[MTU] QName='%s' MTU=%u BaseOverhead=%zu Budget=%zu\n", qname, mtu, base_overhead, safe_packet_budget); */
 
     /* Step 2: Split data into fragments (max 191 binary bytes each) */
     dns_answer_t ans[MAX_FRAGMENTS];
@@ -340,9 +340,11 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         if (match) { 
             domain_parts = dparts; 
             is_mine = true; 
-            /* If the label immediately preceding the domain is 'x' (cache-buster), 
-             * we strip it so it doesn't corrupt the Base32 payload. */
+#ifdef _WIN32
             if (part_count > dparts && _stricmp(parts[part_count - dparts - 1], "x") == 0) {
+#else
+            if (part_count > dparts && strcasecmp(parts[part_count - dparts - 1], "x") == 0) {
+#endif
                 domain_parts++;
             }
             break; 
@@ -552,7 +554,9 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         sess->retx_len        = 0;
         sess->retx_seq        = 0;
         sess->upstream_len    = 0;
-        LOG_INFO("Session %d: handshake done, downstream_seq=0\n", sidx);
+        sess->downstream_seq  = 0; /* CRITICAL: Reset for re-handshake */
+        session_clear_burst(sess);  /* CRITICAL: Discard stale FEC state */
+        LOG_INFO("Session %d: handshake reset done, downstream_seq=0\n", sidx);
         /* 15. Handshake query triggers its own response (NON-sequenced ACK) */
         uint8_t reply[512]; size_t rlen = sizeof(reply);
         int nfrags = 0;
@@ -600,6 +604,8 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
 
         if (esi < (uint16_t)sess->burst_count_needed &&
             sess->burst_symbols && !sess->burst_symbols[esi]) {
+            /* Guard: Ensure symbols are reasonably sized */
+            if (payload_len > 1500) goto skip_fec_processing; 
             sess->burst_symbols[esi] = malloc(payload_len);
             if (sess->burst_symbols[esi]) {
                 memcpy(sess->burst_symbols[esi], payload, payload_len);
@@ -758,11 +764,11 @@ skip_fec_processing:
         uint8_t b1 = decode_len > 1 ? decode_ptr[1] : 0;
         uint8_t b2 = decode_len > 2 ? decode_ptr[2] : 0;
         uint8_t b3 = decode_len > 3 ? decode_ptr[3] : 0;
-        LOG_DEBUG("Session %d: non-FEC forward len=%zu flags=0x%02x enc=%d comp=%d first=%02x %02x %02x %02x\n",
+        /* LOG_DEBUG("Session %d: non-FEC forward len=%zu flags=0x%02x enc=%d comp=%d first=%02x %02x %02x %02x\n",
                   sidx, decode_len, hdr.flags,
                   (hdr.flags & CHUNK_FLAG_ENCRYPTED) ? 1 : 0,
                   (hdr.flags & CHUNK_FLAG_COMPRESSED) ? 1 : 0,
-                  b0, b1, b2, b3);
+                  b0, b1, b2, b3); */
         session_handle_data(sidx, decode_ptr, decode_len);
 
         if (hdr.flags & CHUNK_FLAG_COMPRESSED) {

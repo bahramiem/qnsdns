@@ -97,6 +97,20 @@ void session_close(int idx) {
         g_stats.active_sessions--;
 }
 
+void session_clear_burst(srv_session_t *s) {
+    if (s->burst_symbols) {
+        for (int i = 0; i < s->burst_count_needed; i++) {
+            if (s->burst_symbols[i]) free(s->burst_symbols[i]);
+        }
+        free(s->burst_symbols);
+        s->burst_symbols = NULL;
+    }
+    s->burst_count_needed = 0;
+    s->burst_received     = 0;
+    s->burst_decoded      = false;
+    s->burst_has_oti      = false;
+}
+
 /* ────────────────────────────────────────────── */
 /*  SOCKS5 Status Byte                            */
 /* ────────────────────────────────────────────── */
