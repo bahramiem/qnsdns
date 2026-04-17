@@ -367,7 +367,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     const uint8_t *payload     = raw + 3;
     size_t         payload_len = (size_t)(rawlen - 3);
     
-    LOG_DEBUG("Incoming Query: id=%u sess=%u seq=%u flags=0x%02x rawlen=%zd\n", 
+    LOG_DEBUG("  [IN] id=%04x sid=%u seq=%u f=%02x l=%zd\n", 
               query_id, session_id, seq, q_flags, rawlen);
     
     bool    is_poll      = (q_flags & CHUNK_FLAG_POLL) != 0;
@@ -423,6 +423,9 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     srv_session_t *sess = &g_sessions[sidx];
     sess->last_active   = time(NULL);
     sess->client_addr   = *src;
+
+    sess->client_addr   = *src;
+
     if (has_capability_header) {
         sess->cl_upstream_mtu = client_upstream_mtu;
         sess->cl_downstream_mtu = client_downstream_mtu;
@@ -452,7 +455,8 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         
         uint8_t reply[512]; size_t rlen = sizeof(reply);
         int nfrags = 0;
-        if (build_txt_reply_multi(reply, &rlen, query_id, qname, NULL, 0, sess->cl_downstream_mtu, 0, sess->rx_next, sess->session_id, false, &nfrags, NULL) == 0)
+        /* Echo the handshake back to the client as data to acknowledge sync */
+        if (build_txt_reply_multi(reply, &rlen, query_id, qname, (uint8_t*)&hs, sizeof(hs), sess->cl_downstream_mtu, 0, sess->rx_next, sess->session_id, false, &nfrags, NULL) == 0)
             send_udp_reply(src, reply, rlen);
             
         session_handle_data(sidx, NULL, 0, seq, 1);
@@ -462,6 +466,12 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     /* ── Multi-Symbol Processing Loop ──────────────────────────── */
     const uint8_t *cur_ptr = payload;
     size_t         cur_rem = payload_len;
+
+    /* REJECT data packets if FEC not yet synced via Handshake */
+    if (cur_rem > 0 && !is_poll && !is_sync && sess->cl_symbol_size == 0) {
+        LOG_DEBUG("  [IN] sid=%u: DROPPED data pkt (wait for FEC sync)\n", session_id);
+        goto send_reply;
+    }
 
     while (cur_rem > 0) {
         const uint8_t *sym_data = NULL;
@@ -487,8 +497,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
             break; /* Poll/Sync have no inner payload */
         }
 
-        LOG_DEBUG("  [DE-AGG] Session %u: Extracted symbol ESI %u, len %zu. Remaining: %zu\n", 
-                  session_id, sym_esi, sym_len, cur_rem);
+        LOG_DEBUG("    [EXTR] esi=%u l=%zu rem=%zu\n", sym_esi, sym_len, cur_rem);
 
         /* ── 15. FEC Burst Reassembly ── */
         if (is_fec) {
@@ -507,7 +516,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                 
                 slot->symbols = calloc(sym_total, sizeof(uint8_t *));
                 if (!slot->symbols) { session_clear_fec_slot(slot); continue; }
-                LOG_DEBUG("Session %u: New concurrent FEC burst (id=%u total=%u)\n", sess->session_id, burst_id, sym_total);
+                LOG_DEBUG("  [FEC] id=%04x new_burst n=%u\n", burst_id, sym_total);
             }
 
             if (slot->symbols && sym_esi < (uint16_t)slot->count_needed && !slot->symbols[sym_esi]) {
@@ -544,8 +553,8 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                         if (!zdec.error) {
                             const uint8_t *p = zdec.data; size_t l = zdec.len;
                             if (l >= 4 && !is_encrypted) { p += 4; l -= 4; }
-                            LOG_DEBUG("  [DE-AGG] Session %u: Burst %u successfully decoded (%zu bytes)\n", 
-                                      session_id, burst_id, l);
+                            LOG_DEBUG("  [FEC] id=%04x sid=%u burst=%u deco_ok l=%zu\n", 
+                                      query_id, session_id, burst_id, l);
                             session_handle_data(sidx, p, l, burst_id, slot->count_needed);
                             codec_free_result(&zdec);
                         }
@@ -590,6 +599,11 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
             send_udp_reply(src, reply, rlen);
         session_handle_data(sidx, NULL, 0, seq, 1);
         return;
+    }
+
+    if (has_ack) {
+        extern void session_handle_ack(int sidx, uint16_t ack_seq);
+        session_handle_ack(sidx, client_ack_seq);
     }
 
 send_reply:;

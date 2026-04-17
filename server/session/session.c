@@ -239,8 +239,8 @@ void upstream_write_and_read(int session_idx, const uint8_t *data, size_t len) {
     uint8_t b1 = len > 1 ? data[1] : 0;
     uint8_t b2 = len > 2 ? data[2] : 0;
     uint8_t b3 = len > 3 ? data[3] : 0;
-    LOG_DEBUG("Session %d: upstream_write len=%zu first=%02x %02x %02x %02x\n",
-              session_idx, len, b0, b1, b2, b3);
+    LOG_DEBUG("  [SESS] sid=%d: upstream_write l=%zu head=%02x%02x\n",
+              session_idx, len, b0, b1);
 
     uv_buf_t buf = uv_buf_init((char *)copy, (unsigned)len);
     uv_write(w, (uv_stream_t *)&s->upstream_tcp, &buf, 1, on_upstream_write);
@@ -294,7 +294,7 @@ void on_upstream_read(uv_stream_t *s, ssize_t nread, const uv_buf_t *buf) {
     }
 
     /* Normal path: append target response data to the upstream polling buffer */
-    LOG_DEBUG("Session %d: received %zd bytes from target host\n", sidx, nread);
+    LOG_DEBUG("  [SESS] sid=%d: internal rx l=%zd\n", sidx, nread);
     size_t need = sess->upstream_len + (size_t)nread;
     if (need > sess->upstream_cap) {
         size_t new_cap = need + 8192;
@@ -433,9 +433,9 @@ void session_process_data_direct(int sidx, const uint8_t *data, size_t len) {
         const uint8_t *p = data + consumed;
         size_t l = len - consumed;
 
-        LOG_DEBUG("Session %d: process_direct len=%zu connected=%d connecting=%d hex=%02x%02x%02x%02x\n",
+        LOG_DEBUG("  [SESS] sid=%d: direct l=%zu conn=%d%d head=%02x%02x\n",
                   sidx, l, sess->tcp_connected, sess->tcp_connecting,
-                  l > 0 ? p[0] : 0, l > 1 ? p[1] : 0, l > 2 ? p[2] : 0, l > 3 ? p[3] : 0);
+                  l > 0 ? p[0] : 0, l > 1 ? p[1] : 0);
 
         if (sess->tcp_connected) {
             LOG_DEBUG("Session %d: forwarding %zu bytes to upstream TCP\n", sidx, l);
@@ -589,5 +589,18 @@ void session_handle_data(int sidx, const uint8_t *data, size_t len, uint16_t seq
         sess->upstream_reorder_buf.slots[slot].data = NULL;
         sess->upstream_reorder_buf.slots[slot].valid = false;
         sess->rx_next++;
+    }
+}
+
+void session_handle_ack(int sidx, uint16_t ack_seq) {
+    srv_session_t *s = &g_sessions[sidx];
+    if (s->retx_len > 0) {
+        uint16_t diff = ack_seq - s->retx_seq;
+        if (diff > 0 && diff < 32768) {
+            LOG_DEBUG("  [SESS] Session %u: Retransmission slot cleared (Ack:%u > Seq:%u)\n", 
+                      s->session_id, ack_seq, s->retx_seq);
+            s->retx_len = 0;
+            s->retx_count = 0;
+        }
     }
 }

@@ -431,6 +431,8 @@ typedef struct session {
     char      target_host[256];
     uint16_t  target_port;
     bool      established;
+    bool      fec_synced;   /* True once handshake echoed back by server */
+    bool      socks5_pending_ok; /* True if server is ready but waiting for FEC sync */
 
     /* send/recv ring buffers */
     uint8_t  *send_buf;

@@ -348,11 +348,18 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread,
                                         socks5_client_t *c = (socks5_client_t *)s->client_ptr;
                                         if (!s->socks5_connected) {
                                             if (status_byte == 0x00) {
-                                                /* Success in non-optimistic mode */
-                                                extern void socks5_send(socks5_client_t *, const uint8_t *, size_t);
-                                                uint8_t ok[10] = {0x05,0x00,0x00,0x01,0,0,0,0,0,0};
-                                                socks5_send(c, ok, 10);
-                                                s->socks5_connected = true;
+                                                if (s->fec_synced) {
+                                                    /* Success - send OK now if already synced */
+                                                    extern void socks5_send(socks5_client_t *, const uint8_t *, size_t);
+                                                    uint8_t ok[10] = {0x05,0x00,0x00,0x01,0,0,0,0,0,0};
+                                                    socks5_send(c, ok, 10);
+                                                    s->socks5_connected = true;
+                                                    LOG_DEBUG("Session %u: SOCKS5 SUCCESS sent (already synced)\n", s->session_id);
+                                                } else {
+                                                    /* Delay OK until FEC sync echo arrives */
+                                                    s->socks5_pending_ok = true;
+                                                    LOG_DEBUG("Session %u: SOCKS5 SUCCESS pended, waiting for FEC sync...\n", s->session_id);
+                                                }
                                             } else {
                                                 extern void socks5_send(socks5_client_t *, const uint8_t *, size_t);
                                                 uint8_t err[10] = {0x05, status_byte, 0x00, 0x01, 0,0,0,0,0,0};
@@ -374,6 +381,23 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread,
                                 }
 
                                 size_t data_len = flush_len - data_start;
+
+                                /* ── HANDSHAKE SYNC ECHO DETECTION ── */
+                                if (!s->fec_synced && data_len == 13 && flush_buf[data_start] == DNSTUN_VERSION) {
+                                    LOG_INFO("[UPSTREAM] Session %u: HANDSHAKE ECHO RECEIVED (FEC Synced!)\n", s->session_id);
+                                    s->fec_synced = true;
+
+                                    if (s->socks5_pending_ok && s->client_ptr) {
+                                        socks5_client_t *c = (socks5_client_t *)s->client_ptr;
+                                        extern void socks5_send(socks5_client_t *, const uint8_t *, size_t);
+                                        uint8_t ok[10] = {0x05,0x00,0x00,0x01,0,0,0,0,0,0};
+                                        socks5_send(c, ok, 10);
+                                        s->socks5_connected = true;
+                                        s->socks5_pending_ok = false;
+                                        LOG_INFO("Session %u: SOCKS5 SUCCESS sent after FEC sync\n", s->session_id);
+                                    }
+                                }
+
                                 LOG_DEBUG("[DOWNSTREAM_FLUSH] sid=%u seq=%u flushed=%zu data_start=%zu data_len=%zu recv_len_before=%zu\n",
                                           s->session_id, seq, flush_len, data_start, data_len, s->recv_len);
                                 if (data_len > 0) {
@@ -521,7 +545,19 @@ void send_mtu_handshake(int session_idx) {
 void fire_dns_multi_symbols(int session_idx, uint16_t seq,
                             const uint8_t **payloads, size_t paylen,
                             int num_symbols, int total_symbols_in_burst,
-                            int first_esi) {
+                            int first_esi, bool is_compressed) {
+    if (session_idx < 0 || session_idx >= DNSTUN_MAX_SESSIONS) return;
+    session_t *sess = &g_sessions[session_idx];
+
+    /* ── FEC SYNC CHECK ──
+     * Only allow high-speed data bursts if the server has acknowledged FEC parameters.
+     * This avoids the "Extracted symbol len 0" race on the server. */
+    if (num_symbols > 1 || total_symbols_in_burst > 1) {
+        if (!sess->fec_synced && !g_cfg.encryption) { /* Allow encryption-only for testing, but FEC needs MTU sync */
+             LOG_DEBUG("[UPSTREAM] Session %u: FEC data postponed, waiting for HANDSHAKE echo sync...\n", sess->session_id);
+             return;
+        }
+    }
     if (num_symbols <= 0) num_symbols = 0;
 
     int symbols_sent = 0;
@@ -564,8 +600,6 @@ void fire_dns_multi_symbols(int session_idx, uint16_t seq,
         size_t pack_len = 0;
         int cur_esi = first_esi + symbols_sent;
 
-        session_t *sess = &g_sessions[session_idx];
-
         /* Prepend tiered metadata based on packet type to minimize overhead */
         if (num_symbols == 0) {
             /* POLL/SYNC: Prepend full 9-byte capability header (MTU/loss sync) */
@@ -587,8 +621,6 @@ void fire_dns_multi_symbols(int session_idx, uint16_t seq,
             uint16_t ack_seq = sess->reorder_buf.expected_seq;
             pack_buf[pack_len++] = (uint8_t)((ack_seq >> 8) & 0xFF);
             pack_buf[pack_len++] = (uint8_t)(ack_seq & 0xFF);
-            DBGLOG("[UPSTREAM] Packing %d symbols (ESI %d-%d) into query for resolver %s (Ack:%u)\n", 
-                   to_pack, cur_esi, cur_esi + to_pack - 1, r->ip, ack_seq);
         }
 
         if (num_symbols > 0) {
@@ -607,9 +639,9 @@ void fire_dns_multi_symbols(int session_idx, uint16_t seq,
         if (num_symbols == 0) {
             q_flags = (to_pack == 1 && total_symbols_in_burst == 0) ? 0 : CHUNK_FLAG_POLL;
         } else if (total_symbols_in_burst > 1) {
-            q_flags = CHUNK_FLAG_COMPRESSED | (g_cfg.encryption ? CHUNK_FLAG_ENCRYPTED : 0) | CHUNK_FLAG_FEC;
+            q_flags = (is_compressed ? CHUNK_FLAG_COMPRESSED : 0) | (g_cfg.encryption ? CHUNK_FLAG_ENCRYPTED : 0) | CHUNK_FLAG_FEC;
         } else {
-            q_flags = 0;
+            q_flags = (is_compressed ? CHUNK_FLAG_COMPRESSED : 0);
         }
 
         hdr.sess_flags = PACK_SID_FLAGS(sess->session_id, q_flags);
@@ -650,4 +682,9 @@ void fire_dns_multi_symbols(int session_idx, uint16_t seq,
         symbols_sent += (to_pack > 0 ? to_pack : 1);
         if (num_symbols == 0) break;
     } while (symbols_sent < num_symbols);
+
+    if (num_symbols > 0 && total_symbols_in_burst > 1) {
+        LOG_DEBUG("  [OUT] sid=%u burst=%u sent %d syms (ESI %d-%d)\n",
+                  sess->session_id, seq, num_symbols, first_esi, first_esi + num_symbols - 1);
+    }
 }

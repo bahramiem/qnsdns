@@ -148,7 +148,7 @@ void session_clear_burst(srv_session_t *s);
 void session_clear_fec_slot(fec_burst_t *slot);
 
 fec_burst_t* session_get_fec_burst(srv_session_t *s, uint16_t burst_id);
-
+void session_handle_ack(int sidx, uint16_t ack_seq);
 void session_handle_data(int sidx, const uint8_t *data, size_t len, uint16_t seq, int num_seqs);
 
 /* ── Upstream TCP helpers ─────────────────────────────── */

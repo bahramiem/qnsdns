@@ -76,7 +76,7 @@ void on_poll_timer(uv_timer_t *t) {
             uint64_t interval = (g_cfg.poll_interval_ms >= 50) ? (uint64_t)g_cfg.poll_interval_ms : 50;
             if (s->socks5_connected && (now_ms - last_poll[i] >= interval)) {
                 /* DBGLOG("[POLL] session %u seq %u (no data to send)\n", s->session_id, s->tx_next); */
-                fire_dns_multi_symbols(i, s->tx_next++, NULL, 0, 0, 0, 0);
+                fire_dns_multi_symbols(i, s->tx_next++, NULL, 0, 0, 0, 0, false);
                 last_poll[i] = now_ms;
             }
         } else {
@@ -124,9 +124,11 @@ void on_poll_timer(uv_timer_t *t) {
             codec_result_t zres = codec_compress(comp_buf, comp_len, 0);
             if (nonce_buf) free(nonce_buf);
 
+            bool is_compressed = false;
             if (!zres.error && zres.data) {
                 raw_buf = zres.data;
                 raw_len = zres.len;
+                is_compressed = true;
                 DBGLOG("[POLL_DATA] compressed %zu -> %zu\n", take, zres.len);
             } else {
                 DBGLOG("[POLL_DATA] compression failed, dropping packet\n");
@@ -177,13 +179,13 @@ void on_poll_timer(uv_timer_t *t) {
 
             if (sym_ptrs && sym_count > 0) {
                 DBGLOG("[POLL_DATA] FEC path: sending burst of %d symbols (seq=%u)\n", sym_count, burst_seq);
-                fire_dns_multi_symbols(i, burst_seq, (const uint8_t**)sym_ptrs, fenc.symbol_len, sym_count, sym_count, 0);
+                fire_dns_multi_symbols(i, burst_seq, (const uint8_t**)sym_ptrs, fenc.symbol_len, sym_count, sym_count, 0, is_compressed);
                 s->tx_next++; /* Increment sequence number once per burst */
             } else {
                 /* Non-FEC or encode failed: Send as 1-symbol burst */
                 const uint8_t *payload_ptr[1] = { raw_buf };
                 DBGLOG("[POLL_DATA] sending raw data (%zu bytes) as 1-sym query\n", raw_len);
-                fire_dns_multi_symbols(i, s->tx_next++, payload_ptr, raw_len, 1, 1, 0);
+                fire_dns_multi_symbols(i, s->tx_next++, payload_ptr, raw_len, 1, 1, 0, is_compressed);
             }
 
             /* Cleanup */

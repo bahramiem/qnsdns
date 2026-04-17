@@ -26,5 +26,5 @@ void fire_debug_packet(const char *msg) {
     /* Fire as a chunk symbol on a dummy session (session 255) 
      * Signature: sid, seq, payloads, paylen, num_syms, total_syms, first_esi */
     const uint8_t *p[1] = { (const uint8_t*)payload };
-    fire_dns_multi_symbols(255, 0, p, strlen(payload), 1, 1, 0);
+    fire_dns_multi_symbols(255, 0, p, strlen(payload), 1, 1, 0, false);
 }
