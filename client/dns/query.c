@@ -109,20 +109,17 @@ size_t inline_dotify(char *buf, size_t buflen, size_t len) {
 /* ────────────────────────────────────────────── */
 
 int build_dns_query(uint8_t *outbuf, size_t *outlen,
-                     const chunk_header_t *hdr,
+                     const query_header_t *hdr,
                      const uint8_t *payload, size_t paylen,
                      const char *domain) {
     /* Step 1: Encode header + payload into one raw block */
-#define HDR_AND_PAYLOAD_MAX (20 + DNSTUN_CHUNK_PAYLOAD)
+#define HDR_AND_PAYLOAD_MAX (512)
     uint8_t raw[HDR_AND_PAYLOAD_MAX];
     size_t  rawlen = 0;
-    memcpy(raw, hdr, sizeof(chunk_header_t));
-    rawlen += sizeof(chunk_header_t);
+    memcpy(raw, hdr, sizeof(query_header_t));
+    rawlen += sizeof(query_header_t);
     if (payload && paylen > 0) {
-        if (paylen > DNSTUN_CHUNK_PAYLOAD) {
-            /* Payload too large — FEC symbol size mismatch */
-            return -1;
-        }
+        if (rawlen + paylen > HDR_AND_PAYLOAD_MAX) return -1;
         memcpy(raw + rawlen, payload, paylen);
         rawlen += paylen;
     }
@@ -132,7 +129,7 @@ int build_dns_query(uint8_t *outbuf, size_t *outlen,
     char b32_raw[BASE32_MAX_OUTPUT(HDR_AND_PAYLOAD_MAX)];
     size_t b32_len = base32_encode((uint8_t *)b32_raw, raw, rawlen);
 
-    /* Step 3: Insert dots every 57 chars */
+    /* Step 3: Insert dots every 60 chars (maximize labels) */
     char b32_dotted[BASE32_MAX_OUTPUT(HDR_AND_PAYLOAD_MAX) + 64];
     memcpy(b32_dotted, b32_raw, b32_len);
     size_t dotted_len = inline_dotify(b32_dotted, sizeof(b32_dotted), b32_len);
@@ -507,23 +504,29 @@ void send_mtu_handshake(int session_idx) {
     hs.version        = DNSTUN_VERSION;
     hs.upstream_mtu   = upstream_mtu;
     hs.downstream_mtu = downstream_mtu;
-    hs.fec_k          = fec_k;
-    hs.fec_n          = fec_n;
+    hs.fec_k          = (uint16_t)fec_k;
+    hs.fec_n          = (uint16_t)fec_n;
+    hs.symbol_size    = (uint16_t)r->symbol_size;
+    if (hs.symbol_size == 0) hs.symbol_size = 40; /* Default granular size */
+    hs.encoding       = (r->enc == ENC_BASE64) ? DNSTUN_ENC_BASE64 : DNSTUN_ENC_HEX;
+    hs.loss_pct       = (uint8_t)(r->loss_rate * 100.0);
 
-    fire_dns_chunk_symbol(session_idx, 0, (uint8_t*)&hs, sizeof(hs), 0, 0, 0, 0);
+    const uint8_t *hs_ptr[1] = { (uint8_t*)&hs };
+    fire_dns_multi_symbols(session_idx, 0, hs_ptr, sizeof(hs), 1, 0, 0);
 }
 
 /* ────────────────────────────────────────────── */
-/*  Fire One DNS Query Chunk                      */
+/*  Fire Multi-Symbol DNS Query                   */
 /* ────────────────────────────────────────────── */
 
-void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
-                            const uint8_t *payload, size_t paylen,
-                            int total_symbols, int esi,
-                            uint64_t oti_common, uint32_t oti_scheme) {
-    int ridx = rpool_next(&g_pool);
+void fire_dns_multi_symbols(int session_idx, uint16_t seq,
+                            const uint8_t **payloads, size_t paylen,
+                            int num_symbols, int total_symbols_in_burst,
+                            int first_esi) {
+    dns_query_ctx_t *q = calloc(1, sizeof(*q));
+    if (!q) return;
 
-    /* Fallback to dead resolvers if no active ones */
+    int ridx = rpool_next(&g_pool);
     if (ridx < 0) {
         uv_mutex_lock(&g_pool.lock);
         if (g_pool.dead_count > 0)
@@ -532,49 +535,41 @@ void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
     }
     if (ridx < 0) {
         g_stats.queries_dropped++;
+        free(q);
         return;
     }
 
     resolver_t *r = &g_pool.resolvers[ridx];
-
-    dns_query_ctx_t *q = calloc(1, sizeof(*q));
-    if (!q) return;
     q->resolver_idx = ridx;
     q->session_idx  = session_idx;
     q->seq          = seq;
 
     session_t *sess = &g_sessions[session_idx];
 
-    /* Build chunk header (5 bytes) */
-    chunk_header_t hdr = {0};
-    if (paylen == 0) {
-        hdr.flags = CHUNK_FLAG_POLL;
-    } else if (total_symbols > 0) {
+    /* Build packed header (3 bytes) */
+    query_header_t hdr = {0};
+    uint8_t flags = 0;
+    if (num_symbols == 0) {
+        flags = CHUNK_FLAG_POLL;
+    } else if (total_symbols_in_burst > 0) {
         /* Data packet: compressed and encrypted by on_poll_timer */
-        hdr.flags = CHUNK_FLAG_COMPRESSED | (g_cfg.encryption ? CHUNK_FLAG_ENCRYPTED : 0) | CHUNK_FLAG_FEC;
+        flags = CHUNK_FLAG_COMPRESSED | (g_cfg.encryption ? CHUNK_FLAG_ENCRYPTED : 0) | CHUNK_FLAG_FEC;
     } else {
-        /* Handshake/Capability packet: must be raw */
-        hdr.flags = 0;
+        /* Handshake packet: must be raw */
+        flags = 0;
     }
-    hdr.session_id = sess->session_id;
+    hdr.sess_flags = PACK_SID_FLAGS(sess->session_id, flags);
     hdr.seq = seq;
-    hdr.esi = (uint8_t)esi;
-
-    LOG_DEBUG("[DNS_FIRE] sid=%u seq=%u esi=%u flags=0x%02x symbols=%d paylen=%zu\n",
-              sess->session_id, seq, hdr.esi, hdr.flags, total_symbols, paylen);
 
     int didx     = rpool_flux_domain(&g_cfg);
     const char *domain = (g_cfg.domain_count > 0) ? g_cfg.domains[didx] : "tun.example.com";
 
-    /* Build payload with capability header (non-FEC only) */
-    uint8_t payload_with_cap[DNSTUN_CHUNK_PAYLOAD + sizeof(capability_header_t)];
-    size_t final_paylen;
+    /* Pack symbols into payload buffer: [Capability/ACK] + [ESI1][Data1] + [ESI2][Data2] ... */
+    uint8_t pack_buf[512];
+    size_t pack_len = 0;
 
-    if (total_symbols > 0) {
-        if (paylen > DNSTUN_CHUNK_PAYLOAD) paylen = DNSTUN_CHUNK_PAYLOAD;
-        if (payload && paylen > 0) memcpy(payload_with_cap, payload, paylen);
-        final_paylen = paylen;
-    } else {
+    if (num_symbols == 0 || (flags == 0)) {
+        /* Capability/ACK header for Polls/Handshakes */
         capability_header_t cap = {0};
         cap.version       = DNSTUN_VERSION;
         cap.upstream_mtu  = r->upstream_mtu;
@@ -582,19 +577,27 @@ void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
         cap.encoding      = (r->enc == ENC_BASE64) ? DNSTUN_ENC_BASE64 : DNSTUN_ENC_HEX;
         cap.loss_pct      = (uint8_t)(r->loss_rate * 100.0);
         cap.ack_seq       = sess->reorder_buf.expected_seq;
-        size_t cap_len    = sizeof(capability_header_t);
-        memcpy(payload_with_cap, &cap, cap_len);
-        if (payload && paylen > 0) {
-            if (paylen + cap_len > DNSTUN_CHUNK_PAYLOAD)
-                paylen = DNSTUN_CHUNK_PAYLOAD - cap_len;
-            memcpy(payload_with_cap + cap_len, payload, paylen);
+        memcpy(pack_buf, &cap, sizeof(cap));
+        pack_len = sizeof(cap);
+        
+        /* Add any extra data (e.g. handshake payload) */
+        if (num_symbols == 1 && payloads[0] && paylen > 0) {
+            memcpy(pack_buf + pack_len, payloads[0], paylen);
+            pack_len += paylen;
         }
-        final_paylen = paylen + cap_len;
+    } else {
+        /* Data symbols: loop and pack [ESI(1)][Data(T)] */
+        for (int i = 0; i < num_symbols; i++) {
+            if (pack_len + 1 + paylen > sizeof(pack_buf)) break;
+            pack_buf[pack_len++] = (uint8_t)(first_esi + i);
+            memcpy(pack_buf + pack_len, payloads[i], paylen);
+            pack_len += paylen;
+        }
     }
 
     q->sendlen = sizeof(q->sendbuf);
     if (build_dns_query(q->sendbuf, &q->sendlen, &hdr,
-                         payload_with_cap, final_paylen, domain) != 0) {
+                         pack_buf, pack_len, domain) != 0) {
         free(q);
         return;
     }

@@ -154,14 +154,16 @@ typedef struct resolver {
     FEC parameters (K, N) are negotiated during handshake.
     Layout: session_id(1) + flags(1) + seq(2) + esi(1)
   ────────────────────────────────────────────── */
-#pragma pack(push, 1)
 typedef struct {
-    uint8_t  session_id;     /* 8-bit session ID (0-255) */
-    uint8_t  flags;          /* protocol flags (FEC, Poll, etc.) */
+    uint8_t  sess_flags;     /* session_id(low 4 bits) | flags(high 4 bits) */
     uint16_t seq;            /* burst id / sequence number (2 bytes) */
-    uint8_t  esi;            /* symbol index in burst (0 to N-1) */
-} chunk_header_t;            /* Total: 5 bytes (was 20 bytes) */
+} query_header_t;            /* Common Query Header: 3 bytes */
 #pragma pack(pop)
+
+/* Helper macros for packed header */
+#define GET_SID(sf) ((sf) & 0x0F)
+#define GET_FLAGS(sf) (((sf) >> 4) & 0x0F)
+#define PACK_SID_FLAGS(sid, f) (((sid) & 0x0F) | (((f) & 0x0F) << 4))
 
 /* ──────────────────────────────────────────────
    Server response header (4 bytes)
@@ -212,11 +214,14 @@ typedef struct {
 #pragma pack(push, 1)
 typedef struct {
     uint8_t  version;        /* protocol version */
-    uint16_t upstream_mtu;   /* client's upstream MTU */
+    uint16_t upstream_mtu;   /* client's upstream MTU override */
     uint16_t downstream_mtu; /* requested downstream MTU */
     uint16_t fec_k;          /* Negotiated source symbols (K) */
     uint16_t fec_n;          /* Negotiated total symbols (N) */
-} handshake_packet_t;        /* Total: 9 bytes (was 5 bytes) */
+    uint16_t symbol_size;    /* Negotiated granular symbol size T */
+    uint8_t  encoding;       /* Handshake encoding pref (base64/hex) */
+    uint8_t  loss_pct;       /* Estimated loss pct */
+} handshake_packet_t;        /* Total: 13 bytes */
 #pragma pack(pop)
 
 /* ──────────────────────────────────────────────
@@ -431,6 +436,12 @@ typedef struct session {
     uint8_t  *recv_buf;
     size_t    recv_len;
     size_t    recv_cap;
+
+    /* Handshake-negotiated parameters */
+    uint16_t  cl_fec_k;
+    uint16_t  cl_fec_n;
+    uint16_t  cl_symbol_size;
+    char      user_id[16];
 
     /* sliding window / reliability */
     uint16_t  tx_next;    /* next seq to send */

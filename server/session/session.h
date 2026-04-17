@@ -71,6 +71,7 @@ typedef struct srv_session {
     uint8_t  cl_loss_pct;
     uint16_t cl_fec_k;
     uint16_t cl_fec_n;
+    uint16_t cl_symbol_size;
     char     user_id[16];
 
     /* FEC burst reassembly slots (multi-slot tracking for interleaved bursts) */

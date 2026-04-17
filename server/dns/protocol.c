@@ -355,34 +355,27 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     char b32_payload[512] = {0};
     for (int i = 0; i < payload_start_idx; i++)
         strncat(b32_payload, parts[i], sizeof(b32_payload) - strlen(b32_payload) - 1);
-
-    if (b32_payload[0] == '\0') return;
-
     uint8_t raw[512];
     size_t  b32_len = strlen(b32_payload);
     ssize_t rawlen  = base32_decode(raw, b32_payload, b32_len);
-    if (rawlen < (ssize_t)sizeof(chunk_header_t)) return;
-
-    chunk_header_t hdr;
-    memcpy(&hdr, raw, sizeof(hdr));
-    const uint8_t *payload     = raw + sizeof(hdr);
-    size_t         payload_len = (size_t)(rawlen - (ssize_t)sizeof(hdr));
-
-    bool    is_poll      = (hdr.flags & CHUNK_FLAG_POLL) != 0;
-    bool    is_encrypted = (hdr.flags & CHUNK_FLAG_ENCRYPTED) != 0;
-    bool    is_sync      = false;
-    uint8_t session_id   = chunk_get_session_id(&hdr);
-    uint16_t seq         = hdr.seq;
+    if (rawlen < 3) return;
+    query_header_t *q_hdr = (query_header_t *)raw;
+    uint8_t session_id = GET_SID(q_hdr->sess_flags);
+    uint8_t flags      = GET_FLAGS(q_hdr->sess_flags);
+    uint16_t seq       = q_hdr->seq;
+    
+    const uint8_t *payload     = raw + 3;
+    size_t         payload_len = (size_t)(rawlen - 3);
     
     LOG_DEBUG("Incoming Query: id=%u sess=%u seq=%u flags=0x%02x rawlen=%zd\n", 
-              query_id, session_id, seq, hdr.flags, rawlen);
+              query_id, session_id, seq, flags, rawlen);
     
-    bool    is_fec       = (hdr.flags & CHUNK_FLAG_FEC) != 0;
-    uint16_t chunk_total = is_fec ? sess->cl_fec_n : 1;
-    uint16_t esi         = is_fec ? hdr.esi : 0;
-    uint8_t  fec_k       = is_fec ? (uint8_t)sess->cl_fec_k : 1;
-
-    if (chunk_total == 0) chunk_total = 1;
+    bool    is_poll      = (flags & CHUNK_FLAG_POLL) != 0;
+    bool    is_encrypted = (flags & CHUNK_FLAG_ENCRYPTED) != 0;
+    bool    is_fec       = (flags & CHUNK_FLAG_FEC) != 0;
+    bool    is_sync      = false;
+    uint16_t chunk_total = 1;
+    uint16_t esi         = 0;
 
     /* LOG_DEBUG("DNS Query: id=%u sess=%u seq=%u total=%u esi=%u\n", query_id, session_id, seq, chunk_total, esi); */
 
@@ -392,7 +385,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     bool     has_ack          = false;
     bool     has_capability_header = false;
 
-    if ((chunk_total == 0 || chunk_total == 1) && payload_len >= sizeof(capability_header_t)) {
+    if (payload_len >= sizeof(capability_header_t)) {
         capability_header_t cap;
         memcpy(&cap, payload, sizeof(cap));
         if (cap.version == DNSTUN_VERSION) {
@@ -434,9 +427,12 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         if (hs.downstream_mtu >= 128) sess->cl_downstream_mtu = hs.downstream_mtu;
         sess->cl_fec_k = hs.fec_k;
         sess->cl_fec_n = hs.fec_n;
+        sess->cl_symbol_size = hs.symbol_size;
+        sess->cl_enc_format = hs.encoding;
+        sess->cl_loss_pct = hs.loss_pct;
         
-        LOG_INFO("Session %d: Handshake complete (CL_MTU Up:%u Down:%u FEC K:%u N:%u)\n", 
-                 sidx, sess->cl_upstream_mtu, sess->cl_downstream_mtu, sess->cl_fec_k, sess->cl_fec_n);
+        LOG_INFO("Session %d: Handshake complete (CL_MTU Up:%u Down:%u FEC K:%u N:%u SymbolSize:%u)\n", 
+                 sidx, sess->cl_upstream_mtu, sess->cl_downstream_mtu, sess->cl_fec_k, sess->cl_fec_n, sess->cl_symbol_size);
         sess->handshake_done = true;
         sess->status_sent     = false;
         sess->retx_len        = 0;

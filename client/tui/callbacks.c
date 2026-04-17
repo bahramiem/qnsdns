@@ -176,23 +176,34 @@ void on_poll_timer(uv_timer_t *t) {
             s->tx_offset_map[s->tx_next % 256] = (uint32_t)take;
 
             if (sym_ptrs && sym_count > 0) {
-                /* Aggregation check */
-                int syms_per_packet = calc_symbols_per_packet(avg_mtu, 
-                                        fenc.symbol_len);
-                DBGLOG("[POLL_DATA] FEC path: %d symbols, %d per packet\n", sym_count, syms_per_packet);
-                /* Unified FEC send logic using BurstID (burst_seq) and ESI (sym_idx) */
-                for (int sym_idx = 0; sym_idx < sym_count; sym_idx++) {
-                    DBGLOG("[POLL_DATA] sending symbol %d/%d (seq=%u esi=%d)\n", 
-                           sym_idx+1, sym_count, burst_seq, sym_idx);
-                    fire_dns_chunk_symbol(i, burst_seq, sym_ptrs[sym_idx],
-                                          fenc.symbol_len,
-                                          sym_count, sym_idx, oti_common, oti_scheme);
+                /* Adaptive Aggregation check: 
+                 * Calculate how many [ESI(1) + Symbol(T)] pairs fit in the resolver's QNAME.
+                 * Max QNAME=253. Overhead = CommonHeader(3) + Base32(1.6x) + Domain.
+                 * To stay safe across all resolvers, we use the resolver's current upstream_mtu. */
+                int sym_size = (int)fenc.symbol_len;
+                int max_symbols_per_packet = (r->upstream_mtu - (int)sizeof(query_header_t)) / (sym_size + 1);
+                if (max_symbols_per_packet < 1) max_symbols_per_packet = 1;
+                if (max_symbols_per_packet > 16) max_symbols_per_packet = 16; /* Reasonable cap */
+
+                DBGLOG("[POLL_DATA] FEC path: %d symbols, packing up to %d per query\n", sym_count, max_symbols_per_packet);
+
+                for (int sym_idx = 0; sym_idx < sym_count; ) {
+                    int pack_count = (sym_count - sym_idx < max_symbols_per_packet) ? (sym_count - sym_idx) : max_symbols_per_packet;
+                    
+                    DBGLOG("[POLL_DATA] query firing: symbols %d-%d/%d (seq=%u)\n", 
+                           sym_idx, sym_idx + pack_count - 1, sym_count, burst_seq);
+                    
+                    fire_dns_multi_symbols(i, burst_seq, (const uint8_t**)&sym_ptrs[sym_idx],
+                                           fenc.symbol_len, pack_count, sym_count, sym_idx);
+                    
+                    sym_idx += pack_count;
                 }
                 s->tx_next++; /* Increment sequence number only once per burst */
             } else {
-                /* Non-FEC or encode failed: Send as 1-symbol FEC burst to preserve flags */
-                DBGLOG("[POLL_DATA] sending raw data (%zu bytes) as 1-sym FEC\n", raw_len);
-                fire_dns_chunk_symbol(i, s->tx_next++, raw_buf, raw_len, 1, 0, 0, 0);
+                /* Non-FEC or encode failed: Send as 1-symbol burst */
+                const uint8_t *payload_ptr[1] = { raw_buf };
+                DBGLOG("[POLL_DATA] sending raw data (%zu bytes) as 1-sym query\n", raw_len);
+                fire_dns_multi_symbols(i, s->tx_next++, payload_ptr, raw_len, 1, 1, 0);
             }
 
             /* Cleanup */
