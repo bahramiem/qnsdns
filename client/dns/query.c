@@ -679,7 +679,7 @@ void fire_dns_multi_symbols(int session_idx, uint16_t seq,
       q_flags = (is_compressed ? CHUNK_FLAG_COMPRESSED : 0);
     }
 
-    hdr.sess_flags = PACK_SID_FLAGS(sess->session_id, q_flags);
+    hdr.sess_flags = PACK_SID_FLAGS(sess->session_id, q_flags | CHUNK_FLAG_IS_TUNNEL);
     hdr.seq = seq;
 
     q->sendlen = sizeof(q->sendbuf);

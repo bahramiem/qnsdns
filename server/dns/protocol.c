@@ -392,6 +392,12 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     LOG_DEBUG("  [IN] sid=%u flags=%02x seq=%u rawlen=%zd payload_len=%zu\n", 
               session_id, q_flags, seq, rawlen, payload_len);
     
+    /* ── Traffic Isolation ─────────────────────────────────────── */
+    if (!(q_flags & CHUNK_FLAG_IS_TUNNEL)) {
+        /* Discard random MTU Phase 3 labels or other non-tunnel traffic */
+        return;
+    }
+    
     
     bool    is_poll      = (q_flags & CHUNK_FLAG_POLL) != 0;
     bool    is_encrypted = (q_flags & CHUNK_FLAG_ENCRYPTED) != 0;
@@ -465,6 +471,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         LOG_INFO("Session %d: Handshake complete (CL_MTU Up:%u Down:%u FEC K:%u N:%u SymbolSize:%u)\n", 
                  sidx, sess->cl_upstream_mtu, sess->cl_downstream_mtu, sess->cl_fec_k, sess->cl_fec_n, sess->cl_symbol_size);
         sess->handshake_done = true;
+        sess->waiting_for_first_data = true; /* Trigger Flash Sync on next data burst */
         sess->status_sent     = false;
         sess->retx_len        = 0;
         sess->retx_seq        = 0;

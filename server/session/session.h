@@ -95,6 +95,7 @@ typedef struct srv_session {
 
     bool      status_sent;
     time_t    last_active;
+    bool      waiting_for_first_data; /* True after handshake, causes Flash Sync on next data */
 
     /**
      * Retransmit slot: last sent downstream payload.
