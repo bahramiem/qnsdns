@@ -69,6 +69,10 @@ int session_alloc_by_id(uint8_t id) {
             g_sessions[i].session_id  = id;
             g_sessions[i].used        = true;
             g_sessions[i].last_active = time(NULL);
+            g_sessions[i].pending_tx_buf = NULL;
+            g_sessions[i].pending_tx_len = 0;
+            g_sessions[i].pending_tx_cap = 0;
+            g_sessions[i].tcp_connecting = false;
             g_stats.active_sessions++;
             return i;
         }
@@ -85,6 +89,8 @@ void session_close(int idx) {
 
     free(s->upstream_buf);
     s->upstream_buf = NULL;
+    free(s->pending_tx_buf);
+    s->pending_tx_buf = NULL;
 
     if (s->burst_symbols) {
         for (int i = 0; i < s->burst_count_needed; i++)
@@ -345,6 +351,7 @@ void on_upstream_connect(uv_connect_t *req, int status) {
     }
 
     sess->tcp_connected = true;
+    sess->tcp_connecting = false;
 
     /* Store per-session index for the stream handle's data pointer */
     static int sidx_store[SRV_MAX_SESSIONS];
@@ -352,6 +359,17 @@ void on_upstream_connect(uv_connect_t *req, int status) {
     sess->upstream_tcp.data = &sidx_store[sidx];
 
     uv_read_start((uv_stream_t *)&sess->upstream_tcp, on_upstream_alloc, on_upstream_read);
+
+    /* Flush any data that arrived while we were connecting */
+    if (sess->pending_tx_buf && sess->pending_tx_len > 0) {
+        LOG_INFO("Session %d: flushing %zu buffered bytes to upstream\n",
+                 sidx, sess->pending_tx_len);
+        upstream_write_and_read(sidx, sess->pending_tx_buf, sess->pending_tx_len);
+        free(sess->pending_tx_buf);
+        sess->pending_tx_buf = NULL;
+        sess->pending_tx_len = 0;
+        sess->pending_tx_cap = 0;
+    }
 
     if (cr->payload && cr->payload_len > 0)
         upstream_write_and_read(sidx, cr->payload, cr->payload_len);
@@ -386,7 +404,27 @@ void session_handle_data(int sidx, const uint8_t *data, size_t len) {
             return;
         }
 
-        /* Handle SOCKS5 CONNECT when not connected */
+        if (sess->tcp_connecting) {
+            /* Buffer data until connection is established */
+            size_t need = sess->pending_tx_len + l;
+            if (need > sess->pending_tx_cap) {
+                size_t new_cap = need + 8192;
+                uint8_t *new_buf = realloc(sess->pending_tx_buf, new_cap);
+                if (new_buf) {
+                    sess->pending_tx_buf = new_buf;
+                    sess->pending_tx_cap = new_cap;
+                }
+            }
+            if (sess->pending_tx_buf) {
+                memcpy(sess->pending_tx_buf + sess->pending_tx_len, p, l);
+                sess->pending_tx_len += l;
+                LOG_DEBUG("Session %d: buffered %zu bytes while connecting (total=%zu)\n",
+                          sidx, l, sess->pending_tx_len);
+            }
+            return;
+        }
+
+        /* Handle SOCKS5 CONNECT when not connected and not connecting */
         if (l >= 10 && p[0] == 0x05 && p[1] == 0x01) {
             LOG_DEBUG("Session %d: SOCKS5 CONNECT header detected, atype=0x%02x\n", sidx, p[3]);
             char     target_host[256] = {0};
@@ -412,8 +450,11 @@ void session_handle_data(int sidx, const uint8_t *data, size_t len) {
             if (target_host[0] && target_port > 0) {
                 LOG_INFO("Session %d: SOCKS CONNECT request target=%s:%u atype=0x%02x len=%zu\n",
                          sidx, target_host, target_port, atype, l);
+                
+                sess->tcp_connecting = true; /* CRITICAL: Prevent dropping subsequent data */
+
                 connect_req_t *cr = calloc(1, sizeof(*cr));
-                if (!cr) return;
+                if (!cr) { sess->tcp_connecting = false; return; }
                 cr->session_idx = sidx;
                 strncpy(cr->target_host, target_host, sizeof(cr->target_host) - 1);
                 cr->target_port = target_port;
@@ -442,9 +483,11 @@ void session_handle_data(int sidx, const uint8_t *data, size_t len) {
                     if (uv_getaddrinfo(g_loop, resolver_req, on_upstream_resolve,
                                        target_host, port_str, &hints) != 0) {
                         free(resolver_req); free(cr->payload); free(cr);
+                        sess->tcp_connecting = false;
                     }
                 } else {
                     free(cr->payload); free(cr);
+                    sess->tcp_connecting = false;
                 }
                 return; /* Async connect started, return and wait for on_upstream_connect */
             }

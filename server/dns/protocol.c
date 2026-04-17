@@ -573,8 +573,8 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     if (chunk_total > 1) {
         /* Guardrails: Reject implausible FEC headers to prevent corruption crashes */
         if (chunk_total > 128 || payload_len > 1500) {
-            LOG_ERR("Session %u: Implausible FEC header ignored (total=%u len=%zu)\n", 
-                    session_id, chunk_total, payload_len);
+            LOG_ERR("Session %u: Implausible FEC header ignored (total=%u len=%zu inf=0x%08x)\n", 
+                    session_id, chunk_total, payload_len, hdr.chunk_info);
             goto skip_fec_processing;
         }
 

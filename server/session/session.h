@@ -49,6 +49,12 @@ typedef struct srv_session {
     /** libuv TCP handle for the upstream connection */
     uv_tcp_t upstream_tcp;
     bool tcp_connected;
+    bool tcp_connecting;
+
+    /** Buffer for data arriving while upstream is still connecting */
+    uint8_t *pending_tx_buf;
+    size_t   pending_tx_len;
+    size_t   pending_tx_cap;
 
     /** Heap-allocated buffer of bytes received from upstream, not yet delivered */
     uint8_t *upstream_buf;
