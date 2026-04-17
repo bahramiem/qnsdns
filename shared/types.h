@@ -113,8 +113,10 @@ typedef struct resolver {
     enc_format_t      enc;
 
     /* MTU */
-    uint16_t           upstream_mtu;   /* max query payload bytes */
-    uint16_t           downstream_mtu; /* max TXT response bytes */
+    uint16_t           upstream_mtu;   /* max query payload bytes (capped) */
+    uint16_t           downstream_mtu; /* max TXT response bytes (capped) */
+    uint16_t           true_upstream_mtu;   /* max query payload bytes (uncapped, for TUI) */
+    uint16_t           true_downstream_mtu; /* max TXT response bytes (uncapped, for TUI) */
     bool               edns0_supported;
 
     /* RTT */

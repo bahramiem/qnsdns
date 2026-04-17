@@ -237,23 +237,29 @@ void resolver_init_phase(void) {
 
     if (results[i].longname_supported && results[i].nxdomain_correct &&
         (results[i].edns_supported || results[i].txt_supported)) {
+      /* Upstream MTU */
       if (results[i].up_mtu_search.optimal > 0)
-        r->upstream_mtu = results[i].up_mtu_search.optimal;
+        r->true_upstream_mtu = results[i].up_mtu_search.optimal;
       else if (results[i].upstream_mtu > 0)
-        r->upstream_mtu = results[i].upstream_mtu;
+        r->true_upstream_mtu = results[i].upstream_mtu;
       else
-        r->upstream_mtu = 50;
+        r->true_upstream_mtu = 50;
+      
+      r->upstream_mtu = r->true_upstream_mtu;
+      if (g_cfg.max_upload_mtu > 0 && r->upstream_mtu > g_cfg.max_upload_mtu)
+          r->upstream_mtu = g_cfg.max_upload_mtu;
 
-      if (results[i].down_mtu_search.optimal > 0) {
-        r->downstream_mtu = results[i].down_mtu_search.optimal;
-        if (r->downstream_mtu > g_cfg.max_download_mtu)
-          r->downstream_mtu = g_cfg.max_download_mtu;
-      } else if (results[i].downstream_mtu > 0) {
-        /* EDNS advertised payload size from the resolver's OPT record */
-        r->downstream_mtu = results[i].downstream_mtu;
-      } else {
-        r->downstream_mtu = 200; /* conservative fallback */
-      }
+      /* Downstream MTU */
+      if (results[i].down_mtu_search.optimal > 0)
+        r->true_downstream_mtu = results[i].down_mtu_search.optimal;
+      else if (results[i].downstream_mtu > 0)
+        r->true_downstream_mtu = results[i].downstream_mtu;
+      else
+        r->true_downstream_mtu = 200;
+
+      r->downstream_mtu = r->true_downstream_mtu;
+      if (g_cfg.max_download_mtu > 0 && r->downstream_mtu > g_cfg.max_download_mtu)
+        r->downstream_mtu = g_cfg.max_download_mtu;
 
       r->edns0_supported = true;
       rpool_set_state(&g_pool, i, RSV_ACTIVE);
@@ -262,6 +268,8 @@ void resolver_init_phase(void) {
       LOG_WARN("Resolver %s failed Phase 3 (no EDNS/TXT), using minimal MTU "
                "fallback\n",
                r->ip);
+      r->true_upstream_mtu = 512;
+      r->true_downstream_mtu = 220;
       r->upstream_mtu = 512;
       r->downstream_mtu = 220;
       r->edns0_supported = false;
@@ -282,17 +290,17 @@ void resolver_init_phase(void) {
   for (int i = 0; i < g_pool.count; i++) {
     resolver_t *r = &g_pool.resolvers[i];
     if (r->state == RSV_ACTIVE) {
-      if (r->upstream_mtu > 0) {
-        if (r->upstream_mtu < up_mtu_min)
-          up_mtu_min = r->upstream_mtu;
-        if (r->upstream_mtu > up_mtu_max)
-          up_mtu_max = r->upstream_mtu;
+      if (r->true_upstream_mtu > 0) {
+        if (r->true_upstream_mtu < up_mtu_min)
+          up_mtu_min = r->true_upstream_mtu;
+        if (r->true_upstream_mtu > up_mtu_max)
+          up_mtu_max = r->true_upstream_mtu;
       }
-      if (r->downstream_mtu > 0) {
-        if (r->downstream_mtu < down_mtu_min)
-          down_mtu_min = r->downstream_mtu;
-        if (r->downstream_mtu > down_mtu_max)
-          down_mtu_max = r->downstream_mtu;
+      if (r->true_downstream_mtu > 0) {
+        if (r->true_downstream_mtu < down_mtu_min)
+          down_mtu_min = r->true_downstream_mtu;
+        if (r->true_downstream_mtu > down_mtu_max)
+          down_mtu_max = r->true_downstream_mtu;
       }
     }
   }

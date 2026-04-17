@@ -542,7 +542,7 @@ static void render_resolvers_view(tui_ctx_t *t, int x, int y, int width, int hei
                    r->state == RSV_DEAD ? "DEAD" :
                    r->state == RSV_ZOMBIE ? "ZOMBIE" :
                    r->state == RSV_TESTING ? "TESTING" : "UNKNOWN",
-                   r->cwnd, r->rtt_ms, r->max_qps, r->upstream_mtu, r->downstream_mtu,
+                   r->cwnd, r->rtt_ms, r->max_qps, r->true_upstream_mtu, r->true_downstream_mtu,
                    r->loss_rate * 100.0, r->fec_k);
             shown++;
         }
