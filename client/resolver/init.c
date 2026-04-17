@@ -209,6 +209,10 @@ void resolver_init_phase(void) {
       }
     }
   }
+  if (phase4_count > 0) {
+    int mtu_wait_ms = (g_cfg.mtu_test_timeout_ms > 0) ? g_cfg.mtu_test_timeout_ms * 20 : 20000;
+    run_event_loop_ms(mtu_wait_ms);
+  }
 
   /* Final filter */
   int active = 0;
