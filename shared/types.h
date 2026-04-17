@@ -322,12 +322,11 @@ static inline int decode_varint16(const uint8_t *in, size_t len, uint16_t *out) 
 
 /* Inline functions for header manipulation */
 static inline uint8_t chunk_get_session_id(const chunk_header_t *hdr) {
-    return GET_SID(hdr->sess_flags);
+    return hdr->sid;
 }
 
 static inline void chunk_set_session_id(chunk_header_t *hdr, uint8_t sid) {
-    uint8_t flags = GET_FLAGS(hdr->sess_flags);
-    hdr->sess_flags = PACK_SID_FLAGS(sid, flags);
+    hdr->sid = sid;
 }
 
 /* Extended 32-bit chunk_info format (header now 20 bytes total):
