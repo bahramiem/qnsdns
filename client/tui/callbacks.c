@@ -161,18 +161,29 @@ void on_poll_timer(uv_timer_t *t) {
                 }
             }
 
+            bool sent = false;
             if (sym_ptrs && sym_count > 0) {
                 if (fire_dns_multi_symbols(i, burst_seq, (const uint8_t**)sym_ptrs, fenc.symbol_len, sym_count, sym_count, 0, is_compressed)) {
-                    s->tx_offset_map[s->tx_next % 256] = (uint32_t)take;
-                    s->tx_next++; /* Increment sequence number only if actually sent */
+                    sent = true;
                 }
             } else {
                 /* Non-FEC or encode failed: Send as 1-symbol burst */
                 const uint8_t *payload_ptr[1] = { raw_buf };
                 if (fire_dns_multi_symbols(i, burst_seq, payload_ptr, raw_len, 1, 1, 0, is_compressed)) {
-                    s->tx_offset_map[s->tx_next % 256] = (uint32_t)take;
-                    s->tx_next++;
+                    sent = true;
                 }
+            }
+
+            if (sent) {
+                s->tx_offset_map[s->tx_next % 256] = (uint32_t)take;
+                s->tx_next++; /* Increment sequence number only if actually sent */
+
+                /* CRITICAL: Consume data from buffer so we move to the next chunk */
+                if (take < s->send_len) {
+                    memmove(s->send_buf, s->send_buf + take, s->send_len - take);
+                }
+                s->send_len -= take;
+                last_poll[i] = uv_hrtime() / 1000000ULL;
             }
 
             /* Cleanup */
