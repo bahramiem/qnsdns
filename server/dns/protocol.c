@@ -89,8 +89,8 @@ int build_txt_reply_with_seq(uint8_t *outbuf, size_t *outlen,
                              uint16_t mtu, uint16_t seq,
                              uint8_t session_id, bool has_seq) {
     /* Step 1: Compute safe capacity to avoid truncation inside the MTU */
-    size_t overhead     = 12 + strlen(qname) + 6 + 16 + 20;
-    size_t safe_txt_len = (mtu > overhead + 64) ? (mtu - overhead) : 64;
+    /* Subtract an extra 16 bytes margin to prevent slight MTU overflows (e.g. 702/700) */
+    size_t safe_txt_len = (mtu > overhead + 80) ? (mtu - overhead - 16) : 64;
     size_t max_packet   = (safe_txt_len * 3) / 4;
     size_t binary_mtu   = max_packet > 4 ? max_packet - 4 : 0;
     if (data_len > binary_mtu) data_len = binary_mtu;
@@ -689,7 +689,10 @@ send_reply:
             send_udp_reply(src, reply, rlen);
         }
     } else if (sess->retx_len > 0) {
-        if (sess->retx_seq == (uint16_t)(sess->downstream_seq - 1)) {
+        /* If client is behind or just asking for last, re-send the data from the retx slot.
+         * We relax the check to allow retransmitting even if intervening empty ACKs 
+         * have advanced downstream_seq. */
+        if (sess->retx_seq <= (uint16_t)(sess->downstream_seq - 1)) {
             LOG_DEBUG("Server retransmitting seq=%u len=%zu\n",
                     sess->retx_seq, sess->retx_len);
             if (build_txt_reply_with_seq(reply, &rlen, query_id, qname,
