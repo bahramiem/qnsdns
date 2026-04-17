@@ -194,7 +194,7 @@ typedef struct {
    Downstream Reordering Buffer
    Used for handling out-of-order packets on downstream
 ────────────────────────────────────────────── */
-#define RX_REORDER_WINDOW    32     /* Number of slots in reorder buffer */
+#define RX_REORDER_WINDOW    128    /* Number of slots in reorder buffer */
 
 /* Single slot in the reorder buffer */
 typedef struct {

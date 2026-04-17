@@ -479,7 +479,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
             LOG_DEBUG("Session %u: sending HANDSHAKE echo back to client\n", sess->session_id);
             send_udp_reply(src, reply, rlen);
         }
-            
+        sess->rx_next = seq + 1; /* Adopt client sequence exactly */
         session_handle_data(sidx, NULL, 0, seq, 1);
         return;
     }
@@ -586,7 +586,8 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                             if (l >= 4 && !is_encrypted) { p += 4; l -= 4; }
                             LOG_DEBUG("  [FEC] sid=%u burst=%u DECO_OK l=%zu\n", 
                                       session_id, burst_id, l);
-                            session_handle_data(sidx, p, l, burst_id, slot->count_needed);
+                             session_handle_data(sidx, p, l, burst_id, slot->count_needed);
+                             session_clear_fec_slot(slot); /* Clear slot immediately after processing */
                             codec_free_result(&zdec);
                         }
                         if (!dret.error && dret.data) codec_free_result(&dret);
