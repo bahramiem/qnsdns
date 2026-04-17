@@ -502,14 +502,13 @@ void send_mtu_handshake(int session_idx) {
 
     handshake_packet_t hs = {0};
     hs.version        = DNSTUN_VERSION;
-    hs.upstream_mtu   = upstream_mtu;
-    hs.downstream_mtu = downstream_mtu;
+    hs.upstream_mtu   = (uint16_t)upstream_mtu;
+    hs.downstream_mtu = (uint16_t)downstream_mtu;
     hs.fec_k          = (uint16_t)fec_k;
     hs.fec_n          = (uint16_t)fec_n;
-    hs.symbol_size    = (uint16_t)r->symbol_size;
-    if (hs.symbol_size == 0) hs.symbol_size = 40; /* Default granular size */
-    hs.encoding       = (r->enc == ENC_BASE64) ? DNSTUN_ENC_BASE64 : DNSTUN_ENC_HEX;
-    hs.loss_pct       = (uint8_t)(r->loss_rate * 100.0);
+    hs.symbol_size    = 40; /* Standard granular size for this tunnel */
+    hs.encoding       = DNSTUN_ENC_BASE64; 
+    hs.loss_pct       = 0;
 
     const uint8_t *hs_ptr[1] = { (uint8_t*)&hs };
     fire_dns_multi_symbols(session_idx, 0, hs_ptr, sizeof(hs), 1, 0, 0);
@@ -523,119 +522,125 @@ void fire_dns_multi_symbols(int session_idx, uint16_t seq,
                             const uint8_t **payloads, size_t paylen,
                             int num_symbols, int total_symbols_in_burst,
                             int first_esi) {
-    dns_query_ctx_t *q = calloc(1, sizeof(*q));
-    if (!q) return;
+    if (num_symbols <= 0) num_symbols = 0;
 
-    int ridx = rpool_next(&g_pool);
-    if (ridx < 0) {
-        uv_mutex_lock(&g_pool.lock);
-        if (g_pool.dead_count > 0)
-            ridx = g_pool.dead[rand() % g_pool.dead_count];
-        uv_mutex_unlock(&g_pool.lock);
-    }
-    if (ridx < 0) {
-        g_stats.queries_dropped++;
-        free(q);
-        return;
-    }
+    int symbols_sent = 0;
+    do {
+        dns_query_ctx_t *q = calloc(1, sizeof(*q));
+        if (!q) return;
 
-    resolver_t *r = &g_pool.resolvers[ridx];
-    q->resolver_idx = ridx;
-    q->session_idx  = session_idx;
-    q->seq          = seq;
-
-    session_t *sess = &g_sessions[session_idx];
-
-    /* Build packed header (3 bytes) */
-    query_header_t hdr = {0};
-    uint8_t flags = 0;
-    if (num_symbols == 0) {
-        flags = CHUNK_FLAG_POLL;
-    } else if (total_symbols_in_burst > 0) {
-        /* Data packet: compressed and encrypted by on_poll_timer */
-        flags = CHUNK_FLAG_COMPRESSED | (g_cfg.encryption ? CHUNK_FLAG_ENCRYPTED : 0) | CHUNK_FLAG_FEC;
-    } else {
-        /* Handshake packet: must be raw */
-        flags = 0;
-    }
-    hdr.sess_flags = PACK_SID_FLAGS(sess->session_id, flags);
-    hdr.seq = seq;
-
-    int didx     = rpool_flux_domain(&g_cfg);
-    const char *domain = (g_cfg.domain_count > 0) ? g_cfg.domains[didx] : "tun.example.com";
-
-    /* Pack symbols into payload buffer: [Capability/ACK] + [ESI1][Data1] + [ESI2][Data2] ... */
-    uint8_t pack_buf[512];
-    size_t pack_len = 0;
-
-    if (num_symbols == 0 || (flags == 0)) {
-        /* Capability/ACK header for Polls/Handshakes */
-        capability_header_t cap = {0};
-        cap.version       = DNSTUN_VERSION;
-        cap.upstream_mtu  = r->upstream_mtu;
-        cap.downstream_mtu = r->downstream_mtu;
-        cap.encoding      = (r->enc == ENC_BASE64) ? DNSTUN_ENC_BASE64 : DNSTUN_ENC_HEX;
-        cap.loss_pct      = (uint8_t)(r->loss_rate * 100.0);
-        cap.ack_seq       = sess->reorder_buf.expected_seq;
-        memcpy(pack_buf, &cap, sizeof(cap));
-        pack_len = sizeof(cap);
-        
-        /* Add any extra data (e.g. handshake payload) */
-        if (num_symbols == 1 && payloads[0] && paylen > 0) {
-            memcpy(pack_buf + pack_len, payloads[0], paylen);
-            pack_len += paylen;
+        int ridx = rpool_next(&g_pool);
+        if (ridx < 0) {
+            uv_mutex_lock(&g_pool.lock);
+            if (g_pool.dead_count > 0)
+                ridx = g_pool.dead[rand() % g_pool.dead_count];
+            uv_mutex_unlock(&g_pool.lock);
         }
-    } else {
-        /* Data symbols: loop and pack [ESI(1)][Data(T)] */
-        for (int i = 0; i < num_symbols; i++) {
-            if (pack_len + 1 + paylen > sizeof(pack_buf)) break;
-            pack_buf[pack_len++] = (uint8_t)(first_esi + i);
-            memcpy(pack_buf + pack_len, payloads[i], paylen);
-            pack_len += paylen;
-        }
-    }
-
-    q->sendlen = sizeof(q->sendbuf);
-    if (build_dns_query(q->sendbuf, &q->sendlen, &hdr,
-                         pack_buf, pack_len, domain) != 0) {
-        free(q);
-        return;
-    }
-
-    memcpy(&q->dest, &r->addr, sizeof(q->dest));
-    q->dest.sin_port = htons(53);
-
-    uv_udp_init(g_loop, &q->udp);
-    q->udp.data  = q;
-    q->sent_ms   = uv_hrtime() / 1000000ULL;
-
-    uv_timer_init(g_loop, &q->timer);
-    q->timer.data = q;
-    uv_timer_start(&q->timer, on_dns_timeout, 8000, 0);
-
-    uv_udp_recv_start(&q->udp, on_dns_alloc, on_dns_recv);
-
-    /* Anti-DPI Jitter: defer the UDP send by 0-50 ms */
-    if (g_cfg.jitter) {
-        uint64_t delay_ms = (uint64_t)(rand() % 50);
-        jitter_ctx_t *jc  = malloc(sizeof(*jc));
-        if (jc) {
-            jc->q = q;
-            uv_timer_init(g_loop, &jc->timer);
-            jc->timer.data = jc;
-            uv_timer_start(&jc->timer, on_jitter_timer, delay_ms, 0);
+        if (ridx < 0) {
+            g_stats.queries_dropped++;
+            free(q);
             return;
         }
-    }
 
-    /* Immediate send */
-    uv_buf_t buf = uv_buf_init((char *)q->sendbuf, (unsigned)q->sendlen);
-    int send_rc  = uv_udp_send(&q->send_req, &q->udp, &buf, 1,
-                                (const struct sockaddr *)&q->dest, on_dns_send);
-    if (send_rc != 0) {
-        uv_close((uv_handle_t *)&q->udp,   on_dns_query_close);
-        uv_close((uv_handle_t *)&q->timer, on_dns_query_close);
-    } else {
-        g_stats.queries_sent++;
-    }
+        resolver_t *r = &g_pool.resolvers[ridx];
+        q->resolver_idx = ridx;
+        q->session_idx  = session_idx;
+        q->seq          = seq;
+
+        /* Adaptive Packing: How many symbols fit? */
+        int sym_size = (int)paylen;
+        int max_pack = 10; /* Default */
+        if (sym_size > 0) {
+            max_pack = (r->upstream_mtu - 5) / (sym_size + 1);
+            if (max_pack < 1) max_pack = 1;
+            if (max_pack > 16) max_pack = 16;
+        }
+        
+        int to_pack = (num_symbols - symbols_sent < max_pack) ? (num_symbols - symbols_sent) : max_pack;
+        if (num_symbols == 0) to_pack = 0;
+
+        uint8_t pack_buf[512];
+        size_t pack_len = 0;
+        int cur_esi = first_esi + symbols_sent;
+
+        session_t *sess = &g_sessions[session_idx];
+
+        if (num_symbols == 0) {
+            capability_header_t cap = {0};
+            cap.version       = DNSTUN_VERSION;
+            cap.upstream_mtu  = r->upstream_mtu;
+            cap.downstream_mtu = r->downstream_mtu;
+            cap.encoding      = (r->enc == ENC_BASE64) ? DNSTUN_ENC_BASE64 : DNSTUN_ENC_HEX;
+            cap.loss_pct      = (uint8_t)(r->loss_rate * 100.0);
+            cap.ack_seq       = sess->reorder_buf.expected_seq;
+            memcpy(pack_buf, &cap, sizeof(cap));
+            pack_len = sizeof(cap);
+            
+            DBGLOG("[UPSTREAM] Sending Poll query to resolver %s (Ack:%u)\n", r->ip_str, cap.ack_seq);
+
+            if (num_symbols == 1 && payloads[0] && paylen > 0) {
+                memcpy(pack_buf + pack_len, payloads[0], paylen);
+                pack_len += paylen;
+            }
+        } else {
+            DBGLOG("[UPSTREAM] Packing %d symbols (ESI %d-%d) into query for resolver %s (MTU %d)\n", 
+                   to_pack, cur_esi, cur_esi + to_pack - 1, r->ip_str, r->upstream_mtu);
+            for (int i = 0; i < to_pack; i++) {
+                if (pack_len + 1 + sym_size > sizeof(pack_buf)) break;
+                if (total_symbols_in_burst > 1) {
+                    pack_buf[pack_len++] = (uint8_t)(cur_esi + i);
+                }
+                memcpy(pack_buf + pack_len, payloads[symbols_sent + i], sym_size);
+                pack_len += sym_size;
+            }
+        }
+
+        query_header_t hdr = {0};
+        uint8_t q_flags = 0;
+        if (num_symbols == 0) {
+            q_flags = (to_pack == 1 && total_symbols_in_burst == 0) ? 0 : CHUNK_FLAG_POLL;
+        } else if (total_symbols_in_burst > 1) {
+            q_flags = CHUNK_FLAG_COMPRESSED | (g_cfg.encryption ? CHUNK_FLAG_ENCRYPTED : 0) | CHUNK_FLAG_FEC;
+        } else {
+            q_flags = 0;
+        }
+
+        hdr.sess_flags = PACK_SID_FLAGS(sess->session_id, q_flags);
+        hdr.seq        = seq;
+
+        int didx     = rpool_flux_domain(&g_cfg);
+        const char *domain = (g_cfg.domain_count > 0) ? g_cfg.domains[didx] : "tun.example.com";
+
+        q->sendlen = sizeof(q->sendbuf);
+        if (build_dns_query(q->sendbuf, &q->sendlen, &hdr, pack_buf, pack_len, domain) != 0) {
+            free(q); 
+            symbols_sent += (to_pack > 0 ? to_pack : 1);
+            continue;
+        }
+
+        memcpy(&q->dest, &r->addr, sizeof(q->dest));
+        q->dest.sin_port = htons(53);
+
+        uv_udp_init(g_loop, &q->udp);
+        q->udp.data  = q;
+        q->sent_ms   = uv_hrtime() / 1000000ULL;
+
+        uv_timer_init(g_loop, &q->timer);
+        q->timer.data = q;
+        uv_timer_start(&q->timer, on_dns_timeout, 8000, 0);
+        uv_udp_recv_start(&q->udp, on_dns_alloc, on_dns_recv);
+
+        uv_buf_t buf = uv_buf_init((char *)q->sendbuf, (unsigned)q->sendlen);
+        int send_rc  = uv_udp_send(&q->send_req, &q->udp, &buf, 1,
+                                    (const struct sockaddr *)&q->dest, on_dns_send);
+        if (send_rc != 0) {
+            uv_close((uv_handle_t *)&q->udp,   on_dns_query_close);
+            uv_close((uv_handle_t *)&q->timer, on_dns_query_close);
+        } else {
+            g_stats.queries_sent++;
+        }
+
+        symbols_sent += (to_pack > 0 ? to_pack : 1);
+        if (num_symbols == 0) break;
+    } while (symbols_sent < num_symbols);
 }

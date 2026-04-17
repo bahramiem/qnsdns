@@ -51,7 +51,16 @@ int build_txt_reply_with_seq(uint8_t *outbuf, size_t *outlen,
                              uint16_t query_id, const char *qname,
                              const uint8_t *data, size_t data_len,
                              uint16_t mtu, uint16_t seq,
+                             uint16_t ack_seq,
                              uint8_t session_id, bool has_seq);
+
+int build_txt_reply_multi(uint8_t *outbuf, size_t *outlen,
+                          uint16_t query_id, const char *qname,
+                          const uint8_t *data, size_t data_len,
+                          uint16_t mtu, uint16_t start_seq,
+                          uint16_t ack_seq,
+                          uint8_t session_id, bool has_seq,
+                          int *num_frags, size_t *bytes_consumed);
 
 /**
  * @brief Send a raw UDP reply to the given destination.

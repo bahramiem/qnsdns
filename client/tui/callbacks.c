@@ -155,9 +155,9 @@ void on_poll_timer(uv_timer_t *t) {
             int sym_count      = 0;
             fec_encoded_t fenc = {0};
 
-            /* Use negotiated FEC parameters from handshake */
-            int k_val = (int)r->fec_k;
-            int r_val = 2; /* fixed redundancy or config based */
+            /* Use negotiated FEC parameters from handshake or config defaults */
+            int k_val = (s->cl_fec_k > 0) ? (int)s->cl_fec_k : g_cfg.fec_k;
+            int r_val = (s->cl_fec_n > s->cl_fec_k) ? (int)(s->cl_fec_n - s->cl_fec_k) : 2;
 
             if (raw_len > 0) {
                 fenc = codec_fec_encode(raw_buf, raw_len, k_val, r_val);
@@ -176,29 +176,9 @@ void on_poll_timer(uv_timer_t *t) {
             s->tx_offset_map[s->tx_next % 256] = (uint32_t)take;
 
             if (sym_ptrs && sym_count > 0) {
-                /* Adaptive Aggregation check: 
-                 * Calculate how many [ESI(1) + Symbol(T)] pairs fit in the resolver's QNAME.
-                 * Max QNAME=253. Overhead = CommonHeader(3) + Base32(1.6x) + Domain.
-                 * To stay safe across all resolvers, we use the resolver's current upstream_mtu. */
-                int sym_size = (int)fenc.symbol_len;
-                int max_symbols_per_packet = (r->upstream_mtu - (int)sizeof(query_header_t)) / (sym_size + 1);
-                if (max_symbols_per_packet < 1) max_symbols_per_packet = 1;
-                if (max_symbols_per_packet > 16) max_symbols_per_packet = 16; /* Reasonable cap */
-
-                DBGLOG("[POLL_DATA] FEC path: %d symbols, packing up to %d per query\n", sym_count, max_symbols_per_packet);
-
-                for (int sym_idx = 0; sym_idx < sym_count; ) {
-                    int pack_count = (sym_count - sym_idx < max_symbols_per_packet) ? (sym_count - sym_idx) : max_symbols_per_packet;
-                    
-                    DBGLOG("[POLL_DATA] query firing: symbols %d-%d/%d (seq=%u)\n", 
-                           sym_idx, sym_idx + pack_count - 1, sym_count, burst_seq);
-                    
-                    fire_dns_multi_symbols(i, burst_seq, (const uint8_t**)&sym_ptrs[sym_idx],
-                                           fenc.symbol_len, pack_count, sym_count, sym_idx);
-                    
-                    sym_idx += pack_count;
-                }
-                s->tx_next++; /* Increment sequence number only once per burst */
+                DBGLOG("[POLL_DATA] FEC path: sending burst of %d symbols (seq=%u)\n", sym_count, burst_seq);
+                fire_dns_multi_symbols(i, burst_seq, (const uint8_t**)sym_ptrs, fenc.symbol_len, sym_count, sym_count, 0);
+                s->tx_next++; /* Increment sequence number once per burst */
             } else {
                 /* Non-FEC or encode failed: Send as 1-symbol burst */
                 const uint8_t *payload_ptr[1] = { raw_buf };

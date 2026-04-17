@@ -361,24 +361,21 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     if (rawlen < 3) return;
     query_header_t *q_hdr = (query_header_t *)raw;
     uint8_t session_id = GET_SID(q_hdr->sess_flags);
-    uint8_t flags      = GET_FLAGS(q_hdr->sess_flags);
+    uint8_t q_flags     = GET_FLAGS(q_hdr->sess_flags);
     uint16_t seq       = q_hdr->seq;
     
     const uint8_t *payload     = raw + 3;
     size_t         payload_len = (size_t)(rawlen - 3);
     
     LOG_DEBUG("Incoming Query: id=%u sess=%u seq=%u flags=0x%02x rawlen=%zd\n", 
-              query_id, session_id, seq, flags, rawlen);
+              query_id, session_id, seq, q_flags, rawlen);
     
-    bool    is_poll      = (flags & CHUNK_FLAG_POLL) != 0;
-    bool    is_encrypted = (flags & CHUNK_FLAG_ENCRYPTED) != 0;
-    bool    is_fec       = (flags & CHUNK_FLAG_FEC) != 0;
+    bool    is_poll      = (q_flags & CHUNK_FLAG_POLL) != 0;
+    bool    is_encrypted = (q_flags & CHUNK_FLAG_ENCRYPTED) != 0;
+    bool    is_fec       = (q_flags & CHUNK_FLAG_FEC) != 0;
     bool    is_sync      = false;
-    uint16_t chunk_total = 1;
-    uint16_t esi         = 0;
 
-    /* LOG_DEBUG("DNS Query: id=%u sess=%u seq=%u total=%u esi=%u\n", query_id, session_id, seq, chunk_total, esi); */
-
+    /* ... MTU and Capability parsing ... */
     uint16_t client_upstream_mtu = 220;
     uint16_t client_downstream_mtu = g_cfg.downstream_mtu;
     uint16_t client_ack_seq   = 0;
@@ -402,7 +399,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     }
 
     if (payload_len >= 4 && memcmp(payload, "SYNC", 4) == 0) is_sync = true;
-    bool is_handshake = (payload_len == 5 && payload[0] == DNSTUN_VERSION);
+    bool is_handshake = (payload_len == 13 && payload[0] == DNSTUN_VERSION);
 
     int sidx = session_find_by_id(session_id);
     if (sidx < 0) {
@@ -450,87 +447,124 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         return;
     }
 
-    /* ── 15. FEC Burst Reassembly ────────────────────────────── */
-    if (chunk_total > 1) {
-        if (chunk_total > 128 || payload_len > 1500) {
-            LOG_ERR("Session %u: Implausible FEC header ignored (total=%u len=%zu)\n", session_id, chunk_total, payload_len);
-            goto skip_fec_processing;
+    /* ── Multi-Symbol Processing Loop ──────────────────────────── */
+    const uint8_t *cur_ptr = payload;
+    size_t         cur_rem = payload_len;
+
+    while (cur_rem > 0) {
+        const uint8_t *sym_data = NULL;
+        size_t         sym_len  = 0;
+        uint16_t       sym_esi  = 0;
+        uint16_t       sym_total = 1;
+
+        if (is_fec) {
+            /* FEC Aggregation: query payload is [ESI(1)][Data(T)] ... */
+            if (cur_rem < (size_t)(1 + sess->cl_symbol_size)) break;
+            sym_esi = *cur_ptr++;
+            sym_data = cur_ptr;
+            sym_len = sess->cl_symbol_size;
+            sym_total = sess->cl_fec_n;
+            cur_ptr += sym_len;
+            cur_rem -= (1 + sym_len);
+        } else if (!is_poll && !is_sync) {
+            /* Single raw/compressed packet */
+            sym_data = cur_ptr;
+            sym_len = cur_rem;
+            cur_rem = 0;
+        } else {
+            break; /* Poll/Sync have no inner payload */
         }
 
-        uint16_t burst_id = seq; 
-        fec_burst_t *slot = session_get_fec_burst(sess, burst_id);
-        if (!slot) goto skip_fec_processing;
+        LOG_DEBUG("  [DE-AGG] Session %u: Extracted symbol ESI %u, len %zu. Remaining: %zu\n", 
+                  session_id, sym_esi, sym_len, cur_rem);
 
-        if (slot->count_needed == 0) {
-            slot->count_needed   = chunk_total;
-            slot->count_received = 0;
-            slot->decoded        = false;
-            slot->symbol_len     = payload_len;
-            slot->has_oti        = false;
-            
-            slot->symbols = calloc(chunk_total, sizeof(uint8_t *));
-            if (!slot->symbols) { session_clear_fec_slot(slot); goto skip_fec_processing; }
-            LOG_DEBUG("Session %u: New concurrent FEC burst (id=%u total=%u)\n", session_id, burst_id, chunk_total);
-        }
+        /* ── 15. FEC Burst Reassembly ── */
+        if (is_fec) {
+            if (sym_total > 128 || sym_len > 1500) continue;
 
-        /* Store the symbol if we haven't received this ESI yet */
-        if (slot->symbols && esi < (uint16_t)slot->count_needed && !slot->symbols[esi]) {
-            slot->symbols[esi] = malloc(payload_len);
-            if (slot->symbols[esi]) {
-                memcpy(slot->symbols[esi], payload, payload_len);
-                slot->count_received++;
-                /* LOG_DEBUG("Session %u: Burst %u ESI %u received (%d symbols so far)\n", 
-                         session_id, burst_id, esi, slot->count_received); */
+            uint16_t burst_id = seq; 
+            fec_burst_t *slot = session_get_fec_burst(sess, burst_id);
+            if (!slot) continue;
+
+            if (slot->count_needed == 0) {
+                slot->count_needed   = sym_total;
+                slot->count_received = 0;
+                slot->decoded        = false;
+                slot->symbol_len     = sym_len;
+                slot->has_oti        = false;
+                
+                slot->symbols = calloc(sym_total, sizeof(uint8_t *));
+                if (!slot->symbols) { session_clear_fec_slot(slot); continue; }
+                LOG_DEBUG("Session %u: New concurrent FEC burst (id=%u total=%u)\n", sess->session_id, burst_id, sym_total);
             }
-        }
 
-        int k_est = (int)fec_k;
-        if (k_est < 1) k_est = 1;
-        if (k_est > slot->count_needed) k_est = slot->count_needed;
-
-        if (slot->count_received >= k_est) {
-            if (slot->decoded) goto skip_fec_processing;
-            slot->decoded = true;
-
-            fec_encoded_t fec = {0};
-            fec.symbols      = slot->symbols;
-            fec.symbol_len   = slot->symbol_len;
-            fec.total_count  = slot->count_needed;
-            fec.k_source     = (uint16_t)k_est;
-            fec.has_oti      = false;
-
-            codec_result_t fdec = codec_fec_decode_raw(&fec, (uint16_t)k_est);
-            if (!fdec.error && fdec.len > 0) {
-                const uint8_t *dec_in = fdec.data;
-                size_t         dec_len = fdec.len;
-                codec_result_t dret = {0};
-                if (is_encrypted) {
-                    dret = codec_decrypt(fdec.data, fdec.len, g_cfg.psk);
-                    if (!dret.error) { dec_in = dret.data; dec_len = dret.len; }
-                    else { codec_free_result(&fdec); session_clear_fec_slot(slot); return; }
+            if (slot->symbols && sym_esi < (uint16_t)slot->count_needed && !slot->symbols[sym_esi]) {
+                slot->symbols[sym_esi] = malloc(sym_len);
+                if (slot->symbols[sym_esi]) {
+                    memcpy(slot->symbols[sym_esi], sym_data, sym_len);
+                    slot->count_received++;
                 }
+            }
 
-                codec_result_t zdec = codec_decompress(dec_in, dec_len, 0);
-                if (!zdec.error) {
-                    const uint8_t *p = zdec.data; size_t l = zdec.len;
-                    /* Skip 4-byte nonce only if it wasn't encrypted (client only adds it when encryption is off) */
-                    if (l >= 4 && !is_encrypted) { p += 4; l -= 4; }
-                    else if (l < 4 && !is_encrypted) {
-                        /* This shouldn't happen with valid packets */
-                        l = 0;
+            int k_est = (int)sess->cl_fec_k;
+            if (k_est < 1) k_est = 1;
+
+            if (slot->count_received >= k_est) {
+                if (!slot->decoded) {
+                    slot->decoded = true;
+                    fec_encoded_t fec = {0};
+                    fec.symbols      = slot->symbols;
+                    fec.symbol_len   = slot->symbol_len;
+                    fec.total_count  = slot->count_needed;
+                    fec.k_source     = (uint16_t)k_est;
+                    fec.has_oti      = false;
+
+                    codec_result_t fdec = codec_fec_decode_raw(&fec, (uint16_t)k_est);
+                    if (!fdec.error && fdec.len > 0) {
+                        const uint8_t *dec_in = fdec.data;
+                        size_t         dec_len = fdec.len;
+                        codec_result_t dret = {0};
+                        if (is_encrypted) {
+                            dret = codec_decrypt(fdec.data, fdec.len, g_cfg.psk);
+                            if (!dret.error) { dec_in = dret.data; dec_len = dret.len; }
+                        }
+                        codec_result_t zdec = codec_decompress(dec_in, dec_len, 0);
+                        if (!zdec.error) {
+                            const uint8_t *p = zdec.data; size_t l = zdec.len;
+                            if (l >= 4 && !is_encrypted) { p += 4; l -= 4; }
+                            LOG_DEBUG("  [DE-AGG] Session %u: Burst %u successfully decoded (%zu bytes)\n", 
+                                      session_id, burst_id, l);
+                            session_handle_data(sidx, p, l, burst_id, slot->count_needed);
+                            codec_free_result(&zdec);
+                        }
+                        if (!dret.error && dret.data) codec_free_result(&dret);
+                        codec_free_result(&fdec);
+                    } else {
+                        LOG_DEBUG("  [DE-AGG] Session %u: Burst %u decoding FAILED\n", session_id, burst_id);
                     }
-                    LOG_DEBUG("Session %u: FEC burst %u decoded, len %zu\n", session_id, burst_id, l);
-                    session_handle_data(sidx, p, l, burst_id, slot->count_needed);
-                    codec_free_result(&zdec);
                 }
-                if (!dret.error && dret.data) codec_free_result(&dret);
-                codec_free_result(&fdec);
             }
+        } else if (!is_poll && !is_sync) {
+            /* Single Packet Data */
+            const uint8_t *dec_ptr = sym_data; size_t dec_len = sym_len;
+            codec_result_t dcret = {0}, zret = {0};
+            if (is_encrypted) {
+                dcret = codec_decrypt(sym_data, sym_len, g_cfg.psk);
+                if (!dcret.error) { dec_ptr = dcret.data; dec_len = dcret.len; }
+            }
+            if (q_flags & CHUNK_FLAG_COMPRESSED) {
+                zret = codec_decompress(dec_ptr, dec_len, 0);
+                if (!zret.error) {
+                    const uint8_t *p = zret.data; size_t l = zret.len;
+                    if (!is_encrypted && l >= 4) { p += 4; l -= 4; }
+                    session_handle_data(sidx, p, l, seq, 1);
+                    codec_free_result(&zret);
+                }
+            } else {
+                session_handle_data(sidx, dec_ptr, dec_len, seq, 1);
+            }
+            if (!dcret.error && dcret.data) codec_free_result(&dcret);
         }
-        goto send_reply;
-
-skip_fec_processing:
-        goto send_reply;
     }
 
     if (is_poll) { session_handle_data(sidx, NULL, 0, seq, 1); }
@@ -544,27 +578,6 @@ skip_fec_processing:
             send_udp_reply(src, reply, rlen);
         session_handle_data(sidx, NULL, 0, seq, 1);
         return;
-    }
-
-    if (!is_poll && !is_sync && payload_len > 0) {
-        const uint8_t *dec_ptr = payload; size_t dec_len = payload_len;
-        codec_result_t dcret = {0}, zret = {0};
-        if (is_encrypted) {
-            dcret = codec_decrypt(payload, payload_len, g_cfg.psk);
-            if (dcret.error) goto send_reply;
-            dec_ptr = dcret.data; dec_len = dcret.len;
-        }
-        if (hdr.flags & CHUNK_FLAG_COMPRESSED) {
-            zret = codec_decompress(dec_ptr, dec_len, 0);
-            if (zret.error) { if (is_encrypted) codec_free_result(&dcret); goto send_reply; }
-            const uint8_t *p = zret.data; size_t l = zret.len;
-            if (!is_encrypted && l >= 4) { p += 4; l -= 4; }
-            else if (!is_encrypted && l < 4) l = 0;
-            dec_ptr = p; dec_len = l;
-        }
-        session_handle_data(sidx, dec_ptr, dec_len, seq, 1);
-        if (hdr.flags & CHUNK_FLAG_COMPRESSED) codec_free_result(&zret);
-        if (is_encrypted) codec_free_result(&dcret);
     }
 
 send_reply:;

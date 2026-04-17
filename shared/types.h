@@ -154,11 +154,14 @@ typedef struct resolver {
     FEC parameters (K, N) are negotiated during handshake.
     Layout: session_id(1) + flags(1) + seq(2) + esi(1)
   ────────────────────────────────────────────── */
+#pragma pack(push, 1)
 typedef struct {
     uint8_t  sess_flags;     /* session_id(low 4 bits) | flags(high 4 bits) */
     uint16_t seq;            /* burst id / sequence number (2 bytes) */
 } query_header_t;            /* Common Query Header: 3 bytes */
 #pragma pack(pop)
+
+typedef query_header_t chunk_header_t; /* Compatibility alias */
 
 /* Helper macros for packed header */
 #define GET_SID(sf) ((sf) & 0x0F)
@@ -319,11 +322,12 @@ static inline int decode_varint16(const uint8_t *in, size_t len, uint16_t *out) 
 
 /* Inline functions for header manipulation */
 static inline uint8_t chunk_get_session_id(const chunk_header_t *hdr) {
-    return hdr->session_id;
+    return GET_SID(hdr->sess_flags);
 }
 
 static inline void chunk_set_session_id(chunk_header_t *hdr, uint8_t sid) {
-    hdr->session_id = sid;
+    uint8_t flags = GET_FLAGS(hdr->sess_flags);
+    hdr->sess_flags = PACK_SID_FLAGS(sid, flags);
 }
 
 /* Extended 32-bit chunk_info format (header now 20 bytes total):

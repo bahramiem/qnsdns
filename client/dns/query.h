@@ -58,28 +58,17 @@ size_t inline_dotify(char *buf, size_t buflen, size_t len);
  * @return 0 on success, -1 on QNAME too long or encode error.
  */
 int build_dns_query(uint8_t *outbuf, size_t *outlen,
-                     const chunk_header_t *hdr,
+                     const query_header_t *hdr,
                      const uint8_t *payload, size_t paylen,
                      const char *domain);
 
 /**
- * @brief Fire one DNS TXT query for the given session and FEC symbol.
- *
- * Selects a resolver from the pool (falling back to dead resolvers if needed),
- * builds the DNS query packet, and sends it via UDP with an 8-second timeout.
- *
- * @param session_idx    Client session index.
- * @param seq            Upstream sequence number for this symbol.
- * @param payload        FEC symbol data (NULL for poll queries).
- * @param paylen         Symbol data length.
- * @param total_symbols  Total FEC symbols in this burst (0 = non-FEC).
- * @param oti_common     RaptorQ OTI common field (0 if not FEC).
- * @param oti_scheme     RaptorQ OTI scheme field (0 if not FEC).
+ * @brief Fire a multi-symbol DNS query carrying one or more FEC symbols.
  */
-void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
-                            const uint8_t *payload, size_t paylen,
-                            int total_symbols, int esi,
-                            uint64_t oti_common, uint32_t oti_scheme);
+void fire_dns_multi_symbols(int session_idx, uint16_t seq,
+                            const uint8_t **payloads, size_t paylen,
+                            int num_symbols, int total_symbols_in_burst,
+                            int first_esi);
 
 /**
  * @brief Send an MTU handshake to the server for the given session.
