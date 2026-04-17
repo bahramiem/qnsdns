@@ -128,6 +128,7 @@ typedef struct resolver {
     double             max_qps;        /* burst-test determined max QPS */
     double             cwnd;           /* AIMD congestion window */
     double             cwnd_max;       /* config-capped ceiling */
+    uint64_t           last_query_ms;  /* Per-resolver rate-limit timestamp (ms) */
 
     /* Loss */
     double             loss_rate;      /* EWMA 0.0–1.0 */

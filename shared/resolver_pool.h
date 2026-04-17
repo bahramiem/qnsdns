@@ -50,6 +50,7 @@ void rpool_set_state(resolver_pool_t *pool, int idx, resolver_state_t s);
 /* Pick the next active resolver in round-robin (thread-safe).
    Returns index, or -1 if none available. */
 int  rpool_next(resolver_pool_t *pool);
+int  rpool_next_ready(resolver_pool_t *pool, int interval_ms);
 
 /* AIMD congestion window update */
 void rpool_on_ack(resolver_pool_t *pool, int idx, double rtt_ms);

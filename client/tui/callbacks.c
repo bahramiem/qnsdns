@@ -90,6 +90,8 @@ void on_poll_timer(uv_timer_t *t) {
                 last_poll[i] = now_ms;
             }
         } else {
+            /* Data Burst: Fire as fast as resolvers allow.
+             * The 50ms gap is now enforced per-resolver in query.c. */
             size_t   take      = (s->send_len > (size_t)chunk_size) ? (size_t)chunk_size : s->send_len;
             uint8_t *raw_buf   = s->send_buf;
             size_t   raw_len   = take;

@@ -42,7 +42,7 @@ void config_defaults(dnstun_config_t *cfg, bool is_server) {
     cfg->background_recovery_rate = 5;
 
     /* tuning */
-    cfg->poll_interval_ms     = 500;
+    cfg->poll_interval_ms     = 50;
     cfg->fec_window           = 32;
     cfg->cwnd_init            = 16.0;
     cfg->cwnd_max             = 512.0;

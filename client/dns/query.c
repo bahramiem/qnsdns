@@ -581,17 +581,16 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
     if (!q)
       return;
 
-    int ridx = rpool_next(&g_pool);
+    int ridx = rpool_next_ready(&g_pool, g_cfg.poll_interval_ms);
     if (ridx < 0) {
-      uv_mutex_lock(&g_pool.lock);
-      if (g_pool.dead_count > 0)
-        ridx = g_pool.dead[rand() % g_pool.dead_count];
-      uv_mutex_unlock(&g_pool.lock);
-    }
-    if (ridx < 0) {
-      g_stats.queries_dropped++;
+      if (num_symbols > 0) {
+        /* Postpone data bursts if no resolver is ready */
+        free(q);
+        return 0;
+      }
+      /* For keep-alives (num_symbols=0), we can just skip this tick or wait. */
       free(q);
-      return;
+      return 0;
     }
 
     resolver_t *r = &g_pool.resolvers[ridx];

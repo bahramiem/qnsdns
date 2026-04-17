@@ -118,6 +118,35 @@ int rpool_next(resolver_pool_t *pool) {
     return result;
 }
 
+int rpool_next_ready(resolver_pool_t *pool, int interval_ms) {
+    uv_mutex_lock(&pool->lock);
+    int result = -1;
+    if (pool->active_count > 0) {
+        uint64_t now = uv_hrtime() / 1000000ULL;
+        int start_idx = pool->rr_cursor % pool->active_count;
+
+        for (int i = 0; i < pool->active_count; i++) {
+            int current_ptr = (start_idx + i) % pool->active_count;
+            int idx = pool->active[current_ptr];
+            resolver_t *r = &pool->resolvers[idx];
+
+            /* Apply 10% random jitter to the interval */
+            int jitter = (interval_ms > 0) ? (rand() % (interval_ms / 10 + 1)) : 0;
+            uint64_t final_interval = (uint64_t)interval_ms + (uint64_t)jitter;
+
+            if (now - r->last_query_ms >= final_interval) {
+                r->last_query_ms = now;
+                result = idx;
+                /* Update cursor for next call to maintain fair distribution */
+                pool->rr_cursor = (current_ptr + 1) % pool->active_count;
+                break;
+            }
+        }
+    }
+    uv_mutex_unlock(&pool->lock);
+    return result;
+}
+
 /* ── AIMD Congestion Control ────────────────────────────────────────────────
    [MEDIUM] Uses sharded per-resolver lock instead of global lock
    to reduce contention on multi-core systems. */

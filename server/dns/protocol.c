@@ -598,7 +598,9 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                             if (l >= 4 && !is_encrypted) { p += 4; l -= 4; }
                             LOG_DEBUG("  [FEC] sid=%u burst=%u DECO_OK l=%zu\n", 
                                       session_id, burst_id, l);
-                             session_handle_data(sidx, p, l, burst_id, slot->count_needed);
+                             /* Crucial fix: Increment rx_next by 1 burst, not by symbol count. 
+                             * The client increments tx_next by 1 per burst. */
+                            session_handle_data(sidx, p, l, burst_id, 1);
                              session_clear_fec_slot(slot); /* Clear slot immediately after processing */
                             codec_free_result(&zdec);
                         }
