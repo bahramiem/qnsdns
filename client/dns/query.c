@@ -354,6 +354,8 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
 
               /* Check for Handshake Echo Sync */
               if (payload_len == sizeof(handshake_packet_t)) {
+                  LOG_DEBUG("Session %u: received 13-byte packet, first 4 bytes: %02x %02x %02x %02x (expected version %02x)\n",
+                            s->session_id, payload_ptr[0], payload_ptr[1], payload_ptr[2], payload_ptr[3], DNSTUN_VERSION);
                   handshake_packet_t *echo = (handshake_packet_t *)payload_ptr;
                   if (echo->version == DNSTUN_VERSION) {
                       if (!s->fec_synced) {
