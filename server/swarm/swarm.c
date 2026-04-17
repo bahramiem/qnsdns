@@ -48,7 +48,7 @@ void swarm_record_ip(const char *ip) {
     }
     if (g_swarm_count < SWARM_MAX) {
         strncpy(g_swarm_ips[g_swarm_count++], ip, 45);
-        LOG_INFO("Swarm: recorded new resolver IP %s (total=%d)\n", ip, g_swarm_count);
+        LOG_DEBUG("Swarm: recorded new resolver IP %s (total=%d)\n", ip, g_swarm_count);
     }
     uv_mutex_unlock(&g_swarm_lock);
 }

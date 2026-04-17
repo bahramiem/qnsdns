@@ -85,25 +85,10 @@ void on_poll_timer(uv_timer_t *t) {
         if (s->send_len == 0) {
             uint64_t interval = (g_cfg.poll_interval_ms >= 50) ? (uint64_t)g_cfg.poll_interval_ms : 50;
             if (s->socks5_connected && (now_ms - last_poll[i] >= interval)) {
-                /* DBGLOG("[POLL] session %u seq %u (no data to send)\n", s->session_id, s->tx_next); */
                 fire_dns_multi_symbols(i, s->tx_next++, NULL, 0, 0, 0, 0, false);
                 last_poll[i] = now_ms;
             }
         } else {
-            /* We have data to send */
-            DBGLOG("[POLL_DATA] session %u seq %u send_len=%zu\n", s->session_id, s->tx_next, s->send_len);
-            int avg_mtu = 512;
-            int act_cnt = 0, up_sum = 0;
-            uv_mutex_lock(&g_pool.lock);
-            for(int r=0; r<g_pool.count; r++) {
-                if(g_pool.resolvers[r].state == RSV_ACTIVE) {
-                    up_sum += g_pool.resolvers[r].upstream_mtu;
-                    act_cnt++;
-                }
-            }
-            if(act_cnt > 0) avg_mtu = up_sum / act_cnt;
-            uv_mutex_unlock(&g_pool.lock);
-
             size_t   take      = (s->send_len > (size_t)chunk_size) ? (size_t)chunk_size : s->send_len;
             uint8_t *raw_buf   = s->send_buf;
             size_t   raw_len   = take;
@@ -139,7 +124,6 @@ void on_poll_timer(uv_timer_t *t) {
                 raw_buf = zres.data;
                 raw_len = zres.len;
                 is_compressed = true;
-                DBGLOG("[POLL_DATA] compressed %zu -> %zu\n", take, zres.len);
             } else {
                 DBGLOG("[POLL_DATA] compression failed, dropping packet\n");
                 continue;
@@ -152,17 +136,12 @@ void on_poll_timer(uv_timer_t *t) {
                 if (!eres.error && eres.data) {
                     raw_buf = eres.data;
                     raw_len = eres.len;
-                    DBGLOG("[POLL_DATA] encrypted %zu -> %zu\n", take, eres.len);
                 } else if (eres.error) {
                     DBGLOG("[POLL_DATA] encryption failed\n");
                 }
             }
 
             uint16_t burst_seq  = s->tx_next;
-            int      k_source   = 1;
-            uint64_t oti_common = 0;
-            uint32_t oti_scheme = 0;
-
             uint8_t **sym_ptrs = NULL;
             int sym_count      = 0;
             fec_encoded_t fenc = {0};
@@ -174,13 +153,8 @@ void on_poll_timer(uv_timer_t *t) {
             if (raw_len > 0) {
                 fenc = codec_fec_encode(raw_buf, raw_len, k_val, r_val);
                 if (fenc.symbols) {
-                    k_source   = fenc.k_source;
                     sym_count  = fenc.total_count;
                     sym_ptrs   = fenc.symbols;
-                    DBGLOG("[POLL_DATA] FEC encoded: k=%d n=%d -> %d symbols\n", 
-                           fenc.k_source, fenc.total_count, fenc.total_count);
-                } else {
-                    DBGLOG("[POLL_DATA] FEC encoding failed\n");
                 }
             }
 
@@ -188,13 +162,11 @@ void on_poll_timer(uv_timer_t *t) {
             s->tx_offset_map[s->tx_next % 256] = (uint32_t)take;
 
             if (sym_ptrs && sym_count > 0) {
-                DBGLOG("[POLL_DATA] FEC path: sending burst of %d symbols (seq=%u)\n", sym_count, burst_seq);
                 fire_dns_multi_symbols(i, burst_seq, (const uint8_t**)sym_ptrs, fenc.symbol_len, sym_count, sym_count, 0, is_compressed);
                 s->tx_next++; /* Increment sequence number once per burst */
             } else {
                 /* Non-FEC or encode failed: Send as 1-symbol burst */
                 const uint8_t *payload_ptr[1] = { raw_buf };
-                DBGLOG("[POLL_DATA] sending raw data (%zu bytes) as 1-sym query\n", raw_len);
                 fire_dns_multi_symbols(i, s->tx_next++, payload_ptr, raw_len, 1, 1, 0, is_compressed);
             }
 
@@ -204,9 +176,6 @@ void on_poll_timer(uv_timer_t *t) {
             }
             if (eres.data) codec_free_result(&eres);
             if (zres.data) codec_free_result(&zres);
-
-            /* ── SLIDING WINDOW: Pruning is now handled in on_dns_recv via ACKs ── */
-            DBGLOG("[POLL_DATA] burst sent, waiting for ACK (current send_len: %zu)\n", s->send_len);
 
             last_poll[i] = uv_hrtime() / 1000000ULL;
         }

@@ -59,6 +59,7 @@ typedef struct dnstun_config {
     /* [encoding] - Downstream encoding for server → client */
     int      downstream_encoding;    /* 0=base64 (default), 1=hex */
     size_t   downstream_buffer_size; /* Buffer size for downstream (default: 8192, max: 65536) */
+    bool     downstream_compression; /* Enable downstream compression (Server -> Client) */
 
     /* [domains] */
     char     domains[DNSTUN_MAX_DOMAINS][256];

@@ -50,7 +50,7 @@ void cidr_scan_subnet(const char *seed_ip, int prefix) {
   uint32_t mask = (prefix == 16) ? 0xFFFF0000 : 0xFFFFFF00;
   uint32_t net = base & mask;
 
-  LOG_INFO("CIDR scan /%d on %s (%d IPs)\n", prefix, seed_ip, count);
+  LOG_DEBUG("CIDR scan /%d on %s (%d IPs)\n", prefix, seed_ip, count);
 
   char ip[46];
   for (int i = 1; i < count - 1; i++) {
@@ -83,13 +83,13 @@ void resolver_init_phase(void) {
   for (int i = 0; i < g_cfg.seed_count; i++)
     rpool_add(&g_pool, g_cfg.seed_resolvers[i]);
 
-  LOG_INFO("Loaded %d seed resolvers\n", g_pool.count);
+  LOG_DEBUG("Loaded %d seed resolvers\n", g_pool.count);
 
   /* Step 2: CIDR scan seed IPs */
   if (g_cfg.cidr_scan) {
     for (int i = 0; i < g_cfg.seed_count; i++)
       cidr_scan_subnet(g_cfg.seed_resolvers[i], g_cfg.cidr_prefix);
-    LOG_INFO("After CIDR scan: %d resolvers in pool\n", g_pool.count);
+    LOG_DEBUG("After CIDR scan: %d resolvers in pool\n", g_pool.count);
   }
 
   resolver_test_result_t *results =
@@ -119,7 +119,7 @@ void resolver_init_phase(void) {
     if (results[i].longname_supported) {
       longname_ok++;
     } else {
-      LOG_WARN("Resolver %s does not support long QNAME, marking as degraded "
+      LOG_DEBUG("Resolver %s does not support long QNAME, marking as degraded "
                "but alive\n",
                g_pool.resolvers[i].ip);
       longname_ok++;
@@ -142,7 +142,7 @@ void resolver_init_phase(void) {
   int nxdomain_ok = 0;
   for (int i = 0; i < g_pool.count; i++) {
     if (results[i].longname_supported && !results[i].nxdomain_correct) {
-      LOG_WARN(
+      LOG_DEBUG(
           "Resolver %s failed NXDOMAIN (possible hijack), proceeding anyway\n",
           g_pool.resolvers[i].ip);
       nxdomain_ok++;
@@ -249,7 +249,7 @@ void resolver_init_phase(void) {
       rpool_set_state(&g_pool, i, RSV_ACTIVE);
       active++;
     } else if (results[i].longname_supported && results[i].nxdomain_correct) {
-      LOG_WARN("Resolver %s failed Phase 3 (no EDNS/TXT), using minimal MTU "
+      LOG_DEBUG("Resolver %s failed Phase 3 (no EDNS/TXT), using minimal MTU "
                "fallback\n",
                r->ip);
       r->true_upstream_mtu = 512;

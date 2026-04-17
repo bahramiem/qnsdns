@@ -641,6 +641,10 @@ static void render_config_view(tui_ctx_t *t, int x, int y, int width, int height
     printf("\033[%d;%dH%s[ j ]" ANSI_RESET " DNS Flux      : %s",
            row++, x + 2, c->dns_flux ? ANSI_BG_GREEN ANSI_BR_WHITE : ANSI_DIM,
            c->dns_flux ? ANSI_GREEN "● ON" ANSI_RESET : ANSI_RED "○ OFF" ANSI_RESET);
+
+    printf("\033[%d;%dH%s[ k ]" ANSI_RESET " Dn Compression: %s",
+           row++, x + 2, c->downstream_compression ? ANSI_BG_GREEN ANSI_BR_WHITE : ANSI_DIM,
+           c->downstream_compression ? ANSI_GREEN "● ON" ANSI_RESET : ANSI_RED "○ OFF" ANSI_RESET);
     
     /* Numeric settings */
     row += 2;
@@ -1025,6 +1029,10 @@ void tui_handle_key(tui_ctx_t *t, int key) {
         case 'j': 
         case 'J': 
             if (t->panel == 2) config_set_key(c,"domains","dns_flux", c->dns_flux ? "false":"true"); 
+            break;
+        case 'k':
+        case 'K':
+            if (t->panel == 2) config_set_key(c,"tuning","downstream_compression", c->downstream_compression ? "false":"true");
             break;
     }
     

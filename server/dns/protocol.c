@@ -107,9 +107,27 @@ int build_txt_reply_multi(uint8_t *outbuf, size_t *outlen,
         packet_len += sizeof(hdr);
 
         if (chunk_data_len > 0 && data != NULL) {
-            memcpy(packet + packet_len, data + data_offset, chunk_data_len);
-            packet_len += chunk_data_len;
+            bool used_compression = false;
+            if (g_cfg.downstream_compression && chunk_data_len > 16) {
+                codec_result_t zres = codec_compress(data + data_offset, chunk_data_len, 0);
+                if (!zres.error && zres.len < (size_t)chunk_data_len) {
+                    hdr.flags |= RESP_FLAG_COMPRESSED;
+                    LOG_DEBUG("Session %u: COMPRESSED fragment %d -> %zu bytes\n", session_id, chunk_data_len, zres.len);
+                    memcpy(packet + packet_len, zres.data, zres.len);
+                    packet_len += zres.len;
+                    used_compression = true;
+                }
+                codec_free_result(&zres);
+            }
+            
+            if (!used_compression) {
+                memcpy(packet + packet_len, data + data_offset, chunk_data_len);
+                packet_len += chunk_data_len;
+            }
         }
+
+        /* Update header in packet buffer since flags might have changed */
+        memcpy(packet, &hdr, sizeof(hdr));
 
         size_t elen = encode_downstream_data(encoded_chunks[frag_count], packet, packet_len);
         if (elen >= 1024) elen = 1023;
@@ -313,7 +331,6 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
 
     if (qtype != RR_TXT && qtype != RR_ANY) {
         if (!is_mtu_probe && !is_capability_probe && !is_crypto_probe) {
-            if (is_mine) LOG_DEBUG("Non-TXT query (qtype=%u) for matches domain - sending NXDOMAIN\n", qtype);
             uint8_t nx[512];
             nx[0] = query_id >> 8; nx[1] = query_id & 0xFF;
             nx[2] = 0x81; nx[3] = 0x03;
@@ -367,8 +384,6 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     const uint8_t *payload     = raw + 3;
     size_t         payload_len = (size_t)(rawlen - 3);
     
-    LOG_DEBUG("  [IN] id=%04x sid=%u seq=%u f=%02x l=%zd\n", 
-              query_id, session_id, seq, q_flags, rawlen);
     
     bool    is_poll      = (q_flags & CHUNK_FLAG_POLL) != 0;
     bool    is_encrypted = (q_flags & CHUNK_FLAG_ENCRYPTED) != 0;
@@ -395,7 +410,6 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                 has_capability_header = true;
                 payload     += sizeof(capability_header_t);
                 payload_len -= sizeof(capability_header_t);
-                LOG_DEBUG("Sess %u: Poll metadata found (Ack:%u)\n", session_id, client_ack_seq);
             }
         }
     } else if (q_flags == 0 && payload_len == 13 && payload[0] == DNSTUN_VERSION) {
@@ -407,7 +421,6 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         has_ack = true;
         payload     += 2;
         payload_len -= 2;
-        LOG_DEBUG("Sess %u: Compact ACK found (Ack:%u)\n", session_id, client_ack_seq);
     }
 
     if (payload_len >= 4 && memcmp(payload, "SYNC", 4) == 0) is_sync = true;
@@ -454,7 +467,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         uint8_t reply[512]; size_t rlen = sizeof(reply);
         int nfrags = 0;
         /* Echo the handshake back to the client as data to acknowledge sync */
-        if (build_txt_reply_multi(reply, &rlen, query_id, qname, (uint8_t*)&hs, sizeof(hs), sess->cl_downstream_mtu, 0, sess->rx_next, sess->session_id, false, &nfrags, NULL) == 0)
+        if (build_txt_reply_multi(reply, &rlen, query_id, qname, (uint8_t*)&hs, sizeof(hs), sess->cl_downstream_mtu, 0, sess->rx_next, sess->session_id, true, &nfrags, NULL) == 0)
             send_udp_reply(src, reply, rlen);
             
         session_handle_data(sidx, NULL, 0, seq, 1);

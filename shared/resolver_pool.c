@@ -56,7 +56,7 @@ int rpool_add(resolver_pool_t *pool, const char *ip) {
     r->upstream_mtu   = 220;  /* conservative default */
     r->downstream_mtu = 512;
     r->loss_rate      = 0.0;
-    r->fec_k          = 0;
+    r->fec_k          = 10;
     r->rtt_ms         = 999.0;
     r->rtt_baseline   = 999.0;
     r->enc            = ENC_BASE64;
@@ -110,8 +110,6 @@ int rpool_next(resolver_pool_t *pool) {
         pool->rr_cursor = pool->rr_cursor % pool->active_count;
         result = pool->active[pool->rr_cursor];
         pool->rr_cursor = (pool->rr_cursor + 1) % pool->active_count;
-        LOG_DEBUG("rpool_next: selected resolver %d (%s), active_count=%d\n",
-                result, pool->resolvers[result].ip, pool->active_count);
     } else {
         LOG_ERR("rpool_next: NO ACTIVE RESOLVERS! total=%d, dead=%d\n",
                 pool->count, pool->dead_count);
