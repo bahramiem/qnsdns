@@ -297,6 +297,10 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
               payload_ptr = raw_decoded + sizeof(resp_hdr);
               payload_len = (size_t)(decoded_len - sizeof(resp_hdr));
 
+              if (resp_hdr.flags & RESP_FLAG_MORE_DATA) {
+                s->fast_poll = true;
+              }
+
               uint16_t ack_seq = resp_hdr.ack_seq;
               if (ack_seq > s->tx_acked || (ack_seq < 100 && s->tx_acked > 60000)) {
                 uint32_t prune_bytes = s->tx_offset_map[ack_seq % 256];

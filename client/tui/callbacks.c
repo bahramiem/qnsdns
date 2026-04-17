@@ -84,9 +84,13 @@ void on_poll_timer(uv_timer_t *t) {
 
         if (s->send_len == 0) {
             uint64_t interval = (g_cfg.poll_interval_ms >= 50) ? (uint64_t)g_cfg.poll_interval_ms : 50;
+            if (s->fast_poll) interval = 0; /* Override for backlog drain */
+            
             if (s->socks5_connected && (now_ms - last_poll[i] >= interval)) {
                 /* Don't increment tx_next for empty polls; they don't carry sequence-sensitive data */
-                fire_dns_multi_symbols(i, 0, NULL, 0, 0, 0, 0, false);
+                if (fire_dns_multi_symbols(i, 0, NULL, 0, 0, 0, 0, false)) {
+                     s->fast_poll = false;
+                }
                 last_poll[i] = now_ms;
             }
         } else {

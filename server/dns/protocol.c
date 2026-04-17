@@ -68,6 +68,7 @@ int build_txt_reply_multi(uint8_t *outbuf, size_t *outlen,
                           uint16_t mtu, uint16_t start_seq,
                           uint16_t ack_seq,
                           uint8_t session_id, bool has_seq,
+                          bool buffer_has_more,
                           int *num_frags, size_t *bytes_consumed) {
     if (num_frags) *num_frags = 0;
     if (bytes_consumed) *bytes_consumed = 0;
@@ -98,6 +99,9 @@ int build_txt_reply_multi(uint8_t *outbuf, size_t *outlen,
         hdr.session_id = session_id;
         hdr.flags = 0;
         if (has_seq) hdr.flags |= RESP_FLAG_HAS_SEQ;
+        if (buffer_has_more || (data_offset + (size_t)chunk_data_len < data_len)) {
+            hdr.flags |= RESP_FLAG_MORE_DATA;
+        }
         hdr.seq = current_seq;
         hdr.ack_seq = ack_seq;
 
@@ -190,11 +194,13 @@ int build_txt_reply_with_seq(uint8_t *outbuf, size_t *outlen,
                              const uint8_t *data, size_t data_len,
                              uint16_t mtu, uint16_t seq,
                              uint16_t ack_seq,
-                             uint8_t session_id, bool has_seq) {
+                             uint8_t session_id, bool has_seq,
+                             bool buffer_has_more) {
     int nf = 0;
     size_t bc = 0;
     return build_txt_reply_multi(outbuf, outlen, query_id, qname, data, data_len,
-                                 mtu, seq, ack_seq, session_id, has_seq, &nf, &bc);
+                                 mtu, seq, ack_seq, session_id, has_seq,
+                                 buffer_has_more, &nf, &bc);
 }
 
 /* ────────────────────────────────────────────── */
@@ -641,7 +647,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         size_t slen = swarm_build_sync_text(swarm_text, sizeof(swarm_text));
         uint8_t reply[4096]; size_t rlen = sizeof(reply);
         uint16_t swarm_seq = sess->handshake_done ? sess->downstream_seq++ : 0;
-        if (build_txt_reply_with_seq(reply, &rlen, query_id, qname, (const uint8_t *)swarm_text, slen, sess->cl_downstream_mtu, swarm_seq, sess->rx_next, sess->session_id, sess->handshake_done) == 0)
+        if (build_txt_reply_with_seq(reply, &rlen, query_id, qname, (const uint8_t *)swarm_text, slen, sess->cl_downstream_mtu, swarm_seq, sess->rx_next, sess->session_id, sess->handshake_done, false) == 0)
             send_udp_reply(src, reply, rlen);
         session_handle_data(sidx, NULL, 0, seq, 1);
         return;
@@ -663,7 +669,9 @@ send_reply:;
 
     if (can_send_new) {
         int nfrags = 0; size_t sz = 0;
-        if (build_txt_reply_multi(reply, &rlen, query_id, qname, sess->upstream_buf, sess->upstream_len, mtu, out_seq, sess->rx_next, sess->session_id, sess->handshake_done, &nfrags, &sz) == 0) {
+        /* Pass true if we have significantly more data than a single MTU-worth of fragments */
+        bool hint_more = (sess->upstream_len > (size_t)mtu * 2); 
+        if (build_txt_reply_multi(reply, &rlen, query_id, qname, sess->upstream_buf, sess->upstream_len, mtu, out_seq, sess->rx_next, sess->session_id, sess->handshake_done, hint_more, &nfrags, &sz) == 0) {
             if (sess->handshake_done && sz > 0) sess->downstream_seq += nfrags;
             if (sz <= sizeof(sess->retx_buf)) {
                 memcpy(sess->retx_buf, sess->upstream_buf, sz);
@@ -678,13 +686,13 @@ send_reply:;
     } else if (client_needs_retx && sess->retx_len > 0) {
         if (client_ack_seq >= sess->retx_seq && client_ack_seq < sess->retx_seq + sess->retx_count) {
             int nfrags = 0;
-            if (build_txt_reply_multi(reply, &rlen, query_id, qname, sess->retx_buf, sess->retx_len, mtu, sess->retx_seq, sess->rx_next, sess->session_id, true, &nfrags, NULL) == 0)
+            if (build_txt_reply_multi(reply, &rlen, query_id, qname, sess->retx_buf, sess->retx_len, mtu, sess->retx_seq, sess->rx_next, sess->session_id, true, false, &nfrags, NULL) == 0)
                 send_udp_reply(src, reply, rlen);
         } else goto send_empty;
     } else {
 send_empty:;
         int nfrags = 0;
-        if (build_txt_reply_multi(reply, &rlen, query_id, qname, NULL, 0, mtu, out_seq, sess->rx_next, sess->session_id, false, &nfrags, NULL) == 0)
+        if (build_txt_reply_multi(reply, &rlen, query_id, qname, NULL, 0, mtu, out_seq, sess->rx_next, sess->session_id, false, false, &nfrags, NULL) == 0)
             send_udp_reply(src, reply, rlen);
     }
 }

@@ -187,6 +187,7 @@ typedef struct {
 #define RESP_ENC_MASK        0x01  /* 0=base64, 1=hex */
 #define RESP_FLAG_HAS_SEQ    0x02  /* 1 = seq field is valid (downstream sequencing) */
 #define RESP_FLAG_COMPRESSED 0x04  /* 1 = payload is compressed */
+#define RESP_FLAG_MORE_DATA  0x08  /* 1 = server has more data pending in its buffer */
 
 /* ──────────────────────────────────────────────
    Downstream Reordering Buffer
@@ -430,8 +431,9 @@ typedef struct session {
     uint8_t   session_id;    /* 8-bit session ID (0-255) */
     char      target_host[256];
     uint16_t  target_port;
-    bool      established;
-    bool      fec_synced;   /* True once handshake echoed back by server */
+    bool      socks5_connected;
+    bool      fec_synced;       /* True once handshake echoed back by server */
+    bool      fast_poll;        /* Server signaled 'MORE_DATA' flag */
     bool      socks5_pending_ok; /* True if server is ready but waiting for FEC sync */
     time_t    last_handshake; /* Timestamp of last handshake attempt */
 

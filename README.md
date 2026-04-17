@@ -101,8 +101,11 @@ Run your client locally. It will auto-locate `client.ini`.
 Configure Firefox, Chrome, or any application to use the SOCKS5 proxy running precisely at `127.0.0.1:1080`!
 
 ```bash
-# Test command!
-curl -x socks5h://127.0.0.1:1080 http://example.com
+# fast command!
+curl -x socks5h://127.0.0.1:1080 http://google.com
+
+curl -x socks5h://127.0.0.1:1080 https://www.google.com -o google.html
+
 ```
 
 ---
