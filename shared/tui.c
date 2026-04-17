@@ -494,11 +494,37 @@ static void render_dashboard(tui_ctx_t *t, int x, int y, int width, int height) 
     printf("\033[%d;%dH" ANSI_BOLD "Dead:     " ANSI_RESET ANSI_RED "%3d" ANSI_RESET, session_y + 4, mid_x + 2,
            t->stats->dead_resolvers);
     
+    /* MTU summary */
+    int up_min = 9999, up_max = 0;
+    int dn_min = 9999, dn_max = 0;
+    if (t->pool) {
+        for (int i = 0; i < t->pool->count; i++) {
+            resolver_t *r = &t->pool->resolvers[i];
+            if (r->state == RSV_ACTIVE) {
+                if (r->upstream_mtu > 0) {
+                    if (r->upstream_mtu < up_min) up_min = r->upstream_mtu;
+                    if (r->upstream_mtu > up_max) up_max = r->upstream_mtu;
+                }
+                if (r->downstream_mtu > 0) {
+                    if (r->downstream_mtu < dn_min) dn_min = r->downstream_mtu;
+                    if (r->downstream_mtu > dn_max) dn_max = r->downstream_mtu;
+                }
+            }
+        }
+    }
+    if (up_min < 9999) {
+        printf("\033[%d;%dH" ANSI_BOLD "Up MTU:   " ANSI_RESET "%d-%d", session_y + 5, mid_x + 2, up_min, up_max);
+    }
+    if (dn_min < 9999) {
+        printf("\033[%d;%dH" ANSI_BOLD "Dn MTU:   " ANSI_RESET "%d-%d", session_y + 6, mid_x + 2, dn_min, dn_max);
+        /* Push domains down 1 more row if we have MTU info */
+    }
+
     /* Domains */
-    printf("\033[%d;%dH" ANSI_DIM "Domains ──────────────" ANSI_RESET, session_y + 6, mid_x + 2);
+    printf("\033[%d;%dH" ANSI_DIM "Domains ──────────────" ANSI_RESET, session_y + 8, mid_x + 2);
     if (t->cfg->domain_count > 0) {
         for (int i = 0; i < t->cfg->domain_count && i < 4; i++) {
-            printf("\033[%d;%dH" ANSI_CYAN "%s" ANSI_RESET, session_y + 7 + i, mid_x + 2,
+            printf("\033[%d;%dH" ANSI_CYAN "%s" ANSI_RESET, session_y + 9 + i, mid_x + 2,
                    t->cfg->domains[i]);
         }
     }
@@ -519,8 +545,8 @@ static void render_resolvers_view(tui_ctx_t *t, int x, int y, int width, int hei
         resolver_pool_t *pool = t->pool;
         
         /* Header */
-        printf("\033[%d;%dH" ANSI_BOLD "%-16s %-8s %4s %5s %4s %4s %4s %5s %3s" ANSI_RESET,
-               y + 2, x + 2, "IP", "State", "cwnd", "RTT", "QPS", "UP", "DN", "Loss%", "FEC");
+        printf("\033[%d;%dH" ANSI_BOLD "%-16s %-8s %4s %5s %4s %9s %9s %5s %3s" ANSI_RESET,
+               y + 2, x + 2, "IP", "State", "cwnd", "RTT", "QPS", "UP(Cap)", "DN(Cap)", "Loss%", "FEC");
         
         /* List resolvers */
         int shown = 0;
@@ -534,15 +560,19 @@ static void render_resolvers_view(tui_ctx_t *t, int x, int y, int width, int hei
             const char *state_color = ANSI_GREEN;
             if (r->state == RSV_PENALTY) state_color = ANSI_YELLOW;
             if (r->state == RSV_DEAD || r->state == RSV_ZOMBIE) state_color = ANSI_RED;
+
+            char up_str[16], dn_str[16];
+            snprintf(up_str, sizeof(up_str), "%d(%d)", r->true_upstream_mtu, r->upstream_mtu);
+            snprintf(dn_str, sizeof(dn_str), "%d(%d)", r->true_downstream_mtu, r->downstream_mtu);
             
-            printf("\033[%d;%dH" ANSI_DIM "%-16s" ANSI_RESET " %s%-8s" ANSI_RESET " %4.0f %5.1f %4.0f %4d %4d %5.1f %3u",
+            printf("\033[%d;%dH" ANSI_DIM "%-16s" ANSI_RESET " %s%-8s" ANSI_RESET " %4.0f %5.1f %4.0f %9s %9s %5.1f %3u",
                    row, x + 2, r->ip, state_color,
                    r->state == RSV_ACTIVE ? "ACTIVE" :
                    r->state == RSV_PENALTY ? "PENALTY" :
                    r->state == RSV_DEAD ? "DEAD" :
                    r->state == RSV_ZOMBIE ? "ZOMBIE" :
                    r->state == RSV_TESTING ? "TESTING" : "UNKNOWN",
-                   r->cwnd, r->rtt_ms, r->max_qps, r->true_upstream_mtu, r->true_downstream_mtu,
+                   r->cwnd, r->rtt_ms, r->max_qps, up_str, dn_str,
                    r->loss_rate * 100.0, r->fec_k);
             shown++;
         }
