@@ -152,7 +152,7 @@ void session_send_status(int sidx, uint8_t status);
  */
 void session_clear_burst(srv_session_t *s);
 
-void session_handle_data(int sidx, const uint8_t *data, size_t len, uint16_t seq);
+void session_handle_data(int sidx, const uint8_t *data, size_t len, uint16_t seq, int num_seqs);
 
 /* ── Upstream TCP helpers ─────────────────────────────── */
 

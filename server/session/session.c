@@ -465,14 +465,12 @@ void session_process_data_direct(int sidx, const uint8_t *data, size_t len) {
     }
 }
 
-void session_handle_data(int sidx, const uint8_t *data, size_t len, uint16_t seq) {
-    if (!data || len == 0) return;
-    
+void session_handle_data(int sidx, const uint8_t *data, size_t len, uint16_t seq, int num_seqs) {
     srv_session_t *sess = &g_sessions[sidx];
 
     /* 1. Sequence check */
-    LOG_DEBUG("Session %d: handle_data seq=%u (expected=%u) len=%zu\n", 
-              sidx, seq, sess->rx_next, len);
+    LOG_DEBUG("Session %d: handle_data seq=%u num=%d (expected=%u) len=%zu\n", 
+              sidx, seq, num_seqs, sess->rx_next, len);
 
     if (seq < sess->rx_next) {
         LOG_DEBUG("Session %d: ignoring duplicate upstream seq=%u (expected=%u)\n", 
@@ -481,27 +479,41 @@ void session_handle_data(int sidx, const uint8_t *data, size_t len, uint16_t seq
     }
 
     if (seq > sess->rx_next) {
-        /* Store in reorder buffer */
-        int slot = seq % RX_REORDER_WINDOW;
-        if (sess->upstream_reorder_buf.slots[slot].valid) {
-            LOG_DEBUG("Session %d: upstream reorder buffer collision at seq=%u\n", sidx, seq);
-            return;
-        }
-        sess->upstream_reorder_buf.slots[slot].data = malloc(len);
-        if (sess->upstream_reorder_buf.slots[slot].data) {
-            memcpy(sess->upstream_reorder_buf.slots[slot].data, data, len);
-            sess->upstream_reorder_buf.slots[slot].len = len;
-            sess->upstream_reorder_buf.slots[slot].seq = seq;
-            sess->upstream_reorder_buf.slots[slot].valid = true;
-            LOG_DEBUG("Session %d: buffered out-of-order upstream seq=%u (expected=%u)\n", 
-                      sidx, seq, sess->rx_next);
+        /* Store in reorder buffer if it has data. 
+         * Note: Control packets (len=0) that are ahead are ignored; 
+         * they will be "accounted for" when the sequence eventually 
+         * reaches them or are superceded. */
+        if (len > 0 && data) {
+            int slot = seq % RX_REORDER_WINDOW;
+            if (sess->upstream_reorder_buf.slots[slot].valid) {
+                 if (sess->upstream_reorder_buf.slots[slot].seq != seq) {
+                    LOG_DEBUG("Session %d: upstream reorder buffer collision at seq=%u\n", sidx, seq);
+                    free(sess->upstream_reorder_buf.slots[slot].data);
+                    sess->upstream_reorder_buf.slots[slot].data = NULL;
+                    sess->upstream_reorder_buf.slots[slot].valid = false;
+                 } else {
+                    return; /* Already have this one */
+                 }
+            }
+            sess->upstream_reorder_buf.slots[slot].data = malloc(len);
+            if (sess->upstream_reorder_buf.slots[slot].data) {
+                memcpy(sess->upstream_reorder_buf.slots[slot].data, data, len);
+                sess->upstream_reorder_buf.slots[slot].len = len;
+                sess->upstream_reorder_buf.slots[slot].seq = seq;
+                sess->upstream_reorder_buf.slots[slot].valid = true;
+                LOG_DEBUG("Session %d: buffered out-of-order upstream seq=%u (expected=%u)\n", 
+                          sidx, seq, sess->rx_next);
+            }
         }
         return;
     }
 
     /* seq == rx_next: process it */
-    session_process_data_direct(sidx, data, len);
-    sess->rx_next++;
+    if (len > 0 && data) {
+        session_process_data_direct(sidx, data, len);
+    }
+    
+    sess->rx_next += (uint16_t)num_seqs;
 
     /* 2. Drain reorder buffer */
     while (true) {

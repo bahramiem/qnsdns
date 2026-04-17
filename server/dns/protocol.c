@@ -567,6 +567,8 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                                  sess->session_id, false, &nfrags, NULL) == 0) {
             send_udp_reply(src, reply, rlen);
         }
+        /* Update sequence for handshake packet */
+        session_handle_data(sidx, NULL, 0, seq, 1);
         return;
     }
 
@@ -669,8 +671,9 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                         goto reset_burst;
                     }
 
-                    LOG_DEBUG("Session %u: FEC decoded burst, len %zu seq=%u\n", session_id, l, sess->burst_seq_start);
-                    if (l > 0) session_handle_data(sidx, p, l, sess->burst_seq_start);
+                    LOG_DEBUG("Session %u: FEC decoded burst, len %zu seq=%u num=%u\n", session_id, l, sess->burst_seq_start, sess->burst_count_needed);
+                    if (l > 0) session_handle_data(sidx, p, l, sess->burst_seq_start, sess->burst_count_needed);
+                    else session_handle_data(sidx, NULL, 0, sess->burst_seq_start, sess->burst_count_needed);
                     codec_free_result(&zdec);
                 } else {
                     codec_free_result(&zdec);
@@ -704,6 +707,7 @@ skip_fec_processing:
         goto send_reply;
     } else if (is_poll) {
         /* empty poll — triggers downstream data push below */
+        session_handle_data(sidx, NULL, 0, seq, 1);
     }
 
     /* 16. SYNC response */
@@ -717,6 +721,8 @@ skip_fec_processing:
                                      sess->cl_downstream_mtu, swarm_seq,
                                      sess->session_id, sess->handshake_done) == 0)
             send_udp_reply(src, reply, rlen);
+        
+        session_handle_data(sidx, NULL, 0, seq, 1);
         return;
     }
 
@@ -771,7 +777,7 @@ skip_fec_processing:
                   (hdr.flags & CHUNK_FLAG_ENCRYPTED) ? 1 : 0,
                   (hdr.flags & CHUNK_FLAG_COMPRESSED) ? 1 : 0,
                   b0, b1, b2, b3); */
-        session_handle_data(sidx, decode_ptr, decode_len, seq);
+        session_handle_data(sidx, decode_ptr, decode_len, seq, 1);
 
         if (hdr.flags & CHUNK_FLAG_COMPRESSED) {
             codec_free_result(&zret);
