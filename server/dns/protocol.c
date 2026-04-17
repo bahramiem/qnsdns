@@ -470,11 +470,15 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         handshake_packet_t hs;
         if (payload_len < sizeof(hs)) return;
         memcpy(&hs, payload, sizeof(hs));
-        if (hs.upstream_mtu >= 128) sess->cl_upstream_mtu = hs.upstream_mtu;
-        if (hs.downstream_mtu >= 128) sess->cl_downstream_mtu = hs.downstream_mtu;
-        sess->cl_fec_k = hs.fec_k;
-        sess->cl_fec_n = hs.fec_n;
-        sess->cl_symbol_size = hs.symbol_size;
+        
+        uint16_t umtu = ntohs(hs.upstream_mtu);
+        uint16_t dmtu = ntohs(hs.downstream_mtu);
+        
+        if (umtu >= 128) sess->cl_upstream_mtu = umtu;
+        if (dmtu >= 128) sess->cl_downstream_mtu = dmtu;
+        sess->cl_fec_k = ntohs(hs.fec_k);
+        sess->cl_fec_n = ntohs(hs.fec_n);
+        sess->cl_symbol_size = ntohs(hs.symbol_size);
         sess->cl_enc_format = hs.encoding;
         sess->cl_loss_pct = hs.loss_pct;
         

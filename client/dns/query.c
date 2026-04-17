@@ -185,7 +185,10 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         if (paylen == sizeof(handshake_packet_t)) {
             handshake_packet_t *echo = (handshake_packet_t *)payload;
             if (echo->version == DNSTUN_VERSION && !s->fec_synced) {
-                s->fec_synced = true; s->cl_fec_k = echo->fec_k; s->cl_fec_n = echo->fec_n; s->cl_symbol_size = echo->symbol_size;
+                s->fec_synced = true; 
+                s->cl_fec_k = ntohs(echo->fec_k); 
+                s->cl_fec_n = ntohs(echo->fec_n); 
+                s->cl_symbol_size = ntohs(echo->symbol_size);
                 if (s->socks5_pending_ok && s->client_ptr) {
                     socks5_client_t *c = (socks5_client_t *)s->client_ptr;
                     extern void socks5_send(socks5_client_t *, const uint8_t *, size_t);
@@ -247,7 +250,13 @@ static void on_dns_response(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf, con
 void send_mtu_handshake(int session_idx) {
     session_t *s = &g_sessions[session_idx];
     handshake_packet_t hs = {0};
-    hs.version = DNSTUN_VERSION; hs.upstream_mtu = 512; hs.downstream_mtu = 220; hs.fec_k = (uint16_t)g_cfg.fec_k; hs.fec_n = (uint16_t)g_cfg.fec_n; hs.symbol_size = DNSTUN_CHUNK_PAYLOAD; hs.encoding = DNSTUN_ENC_BASE64;
+    hs.version = DNSTUN_VERSION; 
+    hs.upstream_mtu = htons(512); 
+    hs.downstream_mtu = htons(220); 
+    hs.fec_k = htons((uint16_t)g_cfg.fec_k); 
+    hs.fec_n = htons((uint16_t)g_cfg.fec_n); 
+    hs.symbol_size = htons(DNSTUN_CHUNK_PAYLOAD); 
+    hs.encoding = DNSTUN_ENC_BASE64;
     const uint8_t *hs_ptr[1] = {(const uint8_t *)&hs};
     int esi = 0;
     for (int i=0; i<3; i++) { esi = 0; fire_dns_multi_symbols(session_idx, 0, hs_ptr, sizeof(hs), 1, &esi, false); }

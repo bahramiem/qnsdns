@@ -146,3 +146,16 @@ else
     echo ""
     echo "    Configure proxy: socks5h://127.0.0.1:1080"
 fi
+
+echo ""
+read -p "==> Do you want to start $TARGET_BIN now? [y/N] " run_now < /dev/tty
+if [[ "$run_now" =~ ^[Yy]$ ]]; then
+    echo "    Starting $TARGET_BIN..."
+    if [ "$INSTALL_TYPE" == "server" ]; then
+        sudo ./build/$TARGET_BIN
+    else
+        ./build/$TARGET_BIN
+    fi
+else
+    echo "    To start later, run: $( [ "$INSTALL_TYPE" == "server" ] && echo "sudo " )./build/$TARGET_BIN"
+fi

@@ -378,8 +378,21 @@ int build_mtu_test_query(uint8_t *buf, size_t *outlen, const char *domain, uint1
         size_t overhead = 12 + 4 + 11 + base_qname_bytes;
         size_t padding_needed = (target_mtu > (int)overhead) ? (target_mtu - (int)overhead) : 0;
 
+        /* Add Protocol Header (SID=0, Flags=0, SEQ=0) to identify as non-tunnel */
+        query_header_t qh = {0}; 
+        qh.sid = 0; qh.flags = 0; qh.seq = 0;
+        char hs_b32[16];
+        base32_encode(hs_b32, (uint8_t*)&qh, sizeof(qh));
+        
+        size_t hs_len = strlen(hs_b32);
+        buf[offset++] = (uint8_t)hs_len;
+        memcpy(buf + offset, hs_b32, hs_len);
+        offset += hs_len;
+        
+        /* Padding follows */
         static const char b32_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-        while (padding_needed > 0) {
+        while (padding_needed > (int)hs_len) {
+            padding_needed -= hs_len; /* account for header already added */
             label_len = (padding_needed > 63) ? 63 : padding_needed;
             if (offset + 1 + label_len + 1 > bufsize - 64) break;
             buf[offset++] = (uint8_t)label_len;
