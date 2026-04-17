@@ -85,7 +85,8 @@ void on_poll_timer(uv_timer_t *t) {
         if (s->send_len == 0) {
             uint64_t interval = (g_cfg.poll_interval_ms >= 50) ? (uint64_t)g_cfg.poll_interval_ms : 50;
             if (s->socks5_connected && (now_ms - last_poll[i] >= interval)) {
-                fire_dns_multi_symbols(i, s->tx_next++, NULL, 0, 0, 0, 0, false);
+                /* Don't increment tx_next for empty polls; they don't carry sequence-sensitive data */
+                fire_dns_multi_symbols(i, 0, NULL, 0, 0, 0, 0, false);
                 last_poll[i] = now_ms;
             }
         } else {

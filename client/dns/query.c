@@ -351,6 +351,23 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                 }
                 codec_free_result(&zdec);
               }
+
+              /* Check for Handshake Echo Sync */
+              if (payload_len == sizeof(handshake_packet_t)) {
+                  handshake_packet_t *echo = (handshake_packet_t *)payload_ptr;
+                  if (echo->version == DNSTUN_VERSION) {
+                      if (!s->fec_synced) {
+                          LOG_INFO("Session %u: HANDSHAKE synced (FEC Parameters: K=%u N=%u SymbolSize=%u)\n",
+                                   s->session_id, echo->fec_k, echo->fec_n, echo->symbol_size);
+                          s->fec_synced = true;
+                          s->fec_k = echo->fec_k;
+                          s->fec_n = echo->fec_n;
+                          s->fec_symbol_size = echo->symbol_size;
+                      }
+                      /* Handshake echo is consumed here, don't pass to reorder buffer or SOCKS5 */
+                      continue;
+                  }
+              }
             }
 
             /* ACK byte check */
@@ -569,8 +586,8 @@ void send_mtu_handshake(int session_idx) {
   /* Calculate average MTU from active resolvers */
   uint16_t upstream_mtu = 512;
   uint16_t downstream_mtu = 220;
-  uint16_t fec_k = 10; /* default fallback */
-  uint16_t fec_n = 15; /* default fallback */
+  uint16_t fec_k = (g_cfg.fec_k > 0) ? (uint16_t)g_cfg.fec_k : 10;
+  uint16_t fec_n = (g_cfg.fec_n > 0) ? (uint16_t)g_cfg.fec_n : (fec_k + 5);
   int active_count = 0;
   uint32_t up_sum = 0, down_sum = 0;
 
@@ -579,8 +596,8 @@ void send_mtu_handshake(int session_idx) {
     if (g_pool.resolvers[i].state == RSV_ACTIVE) {
       up_sum += g_pool.resolvers[i].upstream_mtu;
       down_sum += g_pool.resolvers[i].downstream_mtu;
-      fec_k = (uint16_t)g_pool.resolvers[i].fec_k;
-      fec_n = (uint16_t)g_pool.resolvers[i].fec_k + 5; /* default redundancy */
+      /* If resolver has specific FEC params, they would be used here. 
+       * Currently fallback to config-defined defaults is safer. */
       active_count++;
     }
   }
