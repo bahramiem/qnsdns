@@ -139,8 +139,9 @@ void session_clear_burst(srv_session_t *s) {
 
 fec_burst_t* session_get_fec_burst(srv_session_t *s, uint16_t burst_id) {
     time_t now = time(NULL);
+    int empty_idx = -1;
     int oldest_idx = -1;
-    time_t oldest_time = now + 1000;
+    time_t oldest_time = now + 10000;
 
     /* 1. Try to find existing slot for this burst */
     for (int i = 0; i < SRV_MAX_FEC_SLOTS; i++) {
@@ -150,6 +151,7 @@ fec_burst_t* session_get_fec_burst(srv_session_t *s, uint16_t burst_id) {
                 LOG_DEBUG("Session %u: timing out stale FEC slot %d (burst %u)\n", 
                           s->session_id, i, s->fec_slots[i].burst_id);
                 session_clear_fec_slot(&s->fec_slots[i]);
+                if (empty_idx == -1) empty_idx = i;
                 continue;
             }
             if (s->fec_slots[i].burst_id == burst_id) {
@@ -160,10 +162,14 @@ fec_burst_t* session_get_fec_burst(srv_session_t *s, uint16_t burst_id) {
                 oldest_time = s->fec_slots[i].last_active;
                 oldest_idx = i;
             }
-        } else if (oldest_idx == -1) {
-            oldest_idx = i; /* Use first empty slot */
-            oldest_time = 0;
+        } else if (empty_idx == -1) {
+            empty_idx = i;
         }
+    }
+
+    /* 2. Prefer empty slot if available */
+    if (empty_idx != -1) {
+        oldest_idx = empty_idx;
     }
 
     /* 2. Allocate new slot if not found */

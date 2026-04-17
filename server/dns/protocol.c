@@ -526,7 +526,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
             break; /* Poll/Sync have no inner payload */
         }
 
-        LOG_DEBUG("    [EXTR] esi=%u l=%zu rem=%zu\n", sym_esi, sym_len, cur_rem);
+        LOG_DEBUG("    [EXTR] burst=%u esi=%u l=%zu rem=%zu\n", (is_fec ? seq : 0), sym_esi, sym_len, cur_rem);
 
         /* ── 15. FEC Burst Reassembly ── */
         if (is_fec) {
@@ -584,8 +584,8 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                         if (!zdec.error) {
                             const uint8_t *p = zdec.data; size_t l = zdec.len;
                             if (l >= 4 && !is_encrypted) { p += 4; l -= 4; }
-                            LOG_DEBUG("  [FEC] id=%04x sid=%u burst=%u deco_ok l=%zu\n", 
-                                      query_id, session_id, burst_id, l);
+                            LOG_DEBUG("  [FEC] sid=%u burst=%u DECO_OK l=%zu\n", 
+                                      session_id, burst_id, l);
                             session_handle_data(sidx, p, l, burst_id, slot->count_needed);
                             codec_free_result(&zdec);
                         }
