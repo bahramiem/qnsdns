@@ -373,29 +373,6 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread,
                                     socks5_flush_recv_buf((socks5_client_t *)s->client_ptr);
                                 }
                             }
-                        } else if (payload_len > 0) {
-                            /* Non-sequenced fallback */
-                            LOG_DEBUG("[DOWNSTREAM_FALLBACK] sid=%u payload_len=%zu recv_len_before=%zu\n",
-                                      s->session_id, payload_len, s->recv_len);
-                            size_t need = s->recv_len + payload_len;
-                            if (need > s->recv_cap) {
-                                size_t new_cap = need + 4096;
-                                if (new_cap > MAX_SESSION_BUFFER) new_cap = MAX_SESSION_BUFFER;
-                                uint8_t *new_buf = realloc(s->recv_buf, new_cap);
-                                if (new_buf) { s->recv_buf = new_buf; s->recv_cap = new_cap; }
-                            }
-                            if (s->recv_cap >= s->recv_len + payload_len) {
-                                memcpy(s->recv_buf + s->recv_len, payload_ptr, payload_len);
-                                s->recv_len += payload_len;
-                                g_stats.rx_total     += payload_len;
-                                g_stats.rx_bytes_sec += payload_len;
-                            }
-                            if (s->client_ptr) {
-                                LOG_DEBUG("[SOCKS5_FLUSH_TRIGGER] sid=%u fallback_len=%zu recv_total=%zu\n",
-                                          s->session_id, payload_len, s->recv_len);
-                                socks5_flush_recv_buf((socks5_client_t *)s->client_ptr);
-                            }
-
                         }
                     }
                 }
