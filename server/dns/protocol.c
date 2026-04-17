@@ -359,7 +359,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
             if (mtu_payload) {
                 for (int i = 0; i < requested_mtu && i < 4096; i++) mtu_payload[i] = (uint8_t)(rand() & 0xFF);
                 uint8_t reply[5120]; size_t rlen = sizeof(reply);
-                if (build_txt_reply_with_seq(reply, &rlen, query_id, qname, mtu_payload, (size_t)requested_mtu, 4096, 0, 0, 0, false) == 0)
+                if (build_txt_reply_with_seq(reply, &rlen, query_id, qname, mtu_payload, (size_t)requested_mtu, 4096, 0, 0, 0, false, false) == 0)
                     send_udp_reply(src, reply, rlen);
                 free(mtu_payload);
             }
@@ -370,7 +370,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     if (is_capability_probe) {
         uint8_t reply[512]; size_t rlen = sizeof(reply);
         const uint8_t resp[] = "OK";
-        if (build_txt_reply_with_seq(reply, &rlen, query_id, qname, resp, sizeof(resp)-1, 512, 0, 0, 0, false) == 0)
+        if (build_txt_reply_with_seq(reply, &rlen, query_id, qname, resp, sizeof(resp)-1, 512, 0, 0, 0, false, false) == 0)
             send_udp_reply(src, reply, rlen);
         return;
     }
@@ -404,7 +404,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
          * Send a generic "OK" TXT reply so the client MTU test passes. */
         uint8_t reply[512]; size_t rlen = sizeof(reply);
         const uint8_t resp[] = "OK";
-        if (build_txt_reply_with_seq(reply, &rlen, query_id, qname, resp, sizeof(resp)-1, 512, 0, 0, 0, false) == 0)
+        if (build_txt_reply_with_seq(reply, &rlen, query_id, qname, resp, sizeof(resp)-1, 512, 0, 0, 0, false, false) == 0)
             send_udp_reply(src, reply, rlen);
         return;
     }
@@ -493,7 +493,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         int nfrags = 0;
         /* Echo the handshake back to the client as data to acknowledge sync.
          * Use the current sequence 'seq' for ACK to avoid over-ACKing seq+1. */
-        if (build_txt_reply_multi(reply, &rlen, query_id, qname, (uint8_t*)&hs, sizeof(hs), sess->cl_downstream_mtu, 0, seq, sess->session_id, true, &nfrags, NULL) == 0) {
+        if (build_txt_reply_multi(reply, &rlen, query_id, qname, (uint8_t*)&hs, sizeof(hs), sess->cl_downstream_mtu, 0, seq, sess->session_id, true, false, &nfrags, NULL) == 0) {
             LOG_DEBUG("Session %u: sending HANDSHAKE echo back to client (ack=%u)\n", sess->session_id, seq);
             send_udp_reply(src, reply, rlen);
         }

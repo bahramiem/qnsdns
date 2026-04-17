@@ -431,7 +431,8 @@ typedef struct session {
     uint8_t   session_id;    /* 8-bit session ID (0-255) */
     char      target_host[256];
     uint16_t  target_port;
-    bool      socks5_connected;
+    bool      established;      /* true if SOCKS5 session is active */
+    bool      socks5_connected; /* true once SOCKS5 success/handshake done */
     bool      fec_synced;       /* True once handshake echoed back by server */
     bool      fast_poll;        /* Server signaled 'MORE_DATA' flag */
     bool      socks5_pending_ok; /* True if server is ready but waiting for FEC sync */
@@ -467,7 +468,6 @@ typedef struct session {
     bool      closed;
     
     /* Client-specific: SOCKS5 handshake state */
-    bool      socks5_connected;  /* true once SOCKS5 success sent */
     bool      status_consumed;   /* true once server status byte is stripped */
     bool      first_seq_received; /* true once first seq=0 response received (used to clear stale buffer) */
     

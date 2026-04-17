@@ -288,7 +288,11 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
         if (num_symbols_total > 1) fl = (is_compressed?CHUNK_FLAG_COMPRESSED:0)|(g_cfg.encryption?CHUNK_FLAG_ENCRYPTED:0)|CHUNK_FLAG_FEC;
         for (int i=0; i<to_pack; i++) { if (num_symbols_total>1) pb[pl++]=(uint8_t)(cur_esi+i); memcpy(pb+pl, payloads[cur_esi+i], paylen); pl += paylen; }
     }
-    query_header_t qh = {0}; qh.session_id=(uint8_t)session_idx; qh.flags=fl; qh.seq=seq;
+    query_header_t qh = {0};
+    qh.sid = (uint8_t)session_idx;
+    qh.flags = fl | CHUNK_FLAG_IS_TUNNEL;
+    qh.seq = seq;
+
     uint8_t tp[1024]; size_t tl=0; memcpy(tp, &qh, sizeof(qh)); tl+=sizeof(qh); memcpy(tp+tl, pb, pl); tl+=pl;
     size_t bl = base32_encode((char *)q->sendbuf, tp, tl);
     inline_dotify((char *)q->sendbuf, sizeof(q->sendbuf), bl);
@@ -301,7 +305,10 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
     uv_timer_init(g_loop, &q->timer); q->timer.data = q; uv_timer_start(&q->timer, on_dns_timeout, 8000, 0); uv_udp_recv_start(&q->udp, on_dns_alloc, on_dns_recv);
     q->sent_ms = uv_hrtime()/1000000ULL; uv_buf_t b = uv_buf_init((char *)q->sendbuf, (unsigned)pktsz);
     if (uv_udp_send(&q->send_req, &q->udp, &b, 1, (const struct sockaddr *)&r->addr, on_dns_send) != 0) { uv_close((uv_handle_t *)&q->udp, on_dns_query_close); uv_close((uv_handle_t *)&q->timer, on_dns_query_close); continue; }
-    r->last_query_ms = q->sent_ms; symbols_sent_this_call += (to_pack > 0 ? to_pack : 1); cur_esi += to_pack; if (esi_progress) *esi_progress = (uint16_t)cur_esi;
+    r->last_query_ms = q->sent_ms; 
+    symbols_sent_this_call += (to_pack > 0 ? to_pack : 1); 
+    cur_esi += to_pack; 
+    if (esi_progress) *esi_progress = (uint16_t)cur_esi;
     if (num_symbols_total == 0) break;
   }
   return symbols_sent_this_call;

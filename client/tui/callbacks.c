@@ -84,16 +84,13 @@ void on_poll_timer(uv_timer_t *t) {
             int N = (s->cl_fec_n > 0) ? (int)s->cl_fec_n : 15;
             size_t sym_size = DNSTUN_CHUNK_PAYLOAD;
 
-            codec_result_t fec = codec_fec_encode(s->send_buf, take, K, N-K, sym_size);
-            if (fec.error || !fec.data) { LOG_ERROR("Session %u: FEC fail\n", s->session_id); continue; }
-
-            uint8_t *syms[256];
-            for (int j=0; j<N; j++) syms[j] = (uint8_t *)fec.data + (j * sym_size);
+            fec_encoded_t fec = codec_fec_encode(s->send_buf, take, K, N - K);
+            if (fec.total_count == 0 || !fec.symbols) { LOG_ERR("Session %u: FEC fail\n", s->session_id); continue; }
 
             if (s->tx_burst_esi == 0) s->tx_burst_total = (uint16_t)N;
             
             int prev_esi = s->tx_burst_esi;
-            fire_dns_multi_symbols(i, s->tx_next, (const uint8_t **)syms, sym_size, N, (int *)&s->tx_burst_esi, false);
+            int sent_count = fire_dns_multi_symbols(i, s->tx_next, (const uint8_t **)fec.symbols, sym_size, N, (int *)&s->tx_burst_esi, false);
 
             if (s->tx_burst_esi > prev_esi || prev_esi > 0) {
                 LOG_DEBUG("[UPSTREAM] Session %u: burst %u progress %d/%d symbols\n", 
@@ -106,7 +103,7 @@ void on_poll_timer(uv_timer_t *t) {
                 if (take < s->send_len) memmove(s->send_buf, s->send_buf + take, s->send_len - take);
                 s->send_len -= take;
             }
-            codec_free_result(&fec);
+            codec_fec_free(&fec);
             last_poll[i] = now_ms;
         }
     }
