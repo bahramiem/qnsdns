@@ -26,6 +26,11 @@ typedef struct {
     int      server_connected;   /* 1 = client has connected to server */
     char     mode[32];           /* "CLIENT" or "SERVER" */
     
+    /* Network Identity (per-mode) */
+    char     local_ip[48];
+    char     outside_ip[48];
+    char     socks_bind[64];     /* display string "host:port" */
+    
     /* SOCKS5 Telemetry */
     uint32_t socks5_total_conns;
     uint32_t socks5_total_errors;

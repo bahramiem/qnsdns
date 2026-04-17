@@ -206,6 +206,42 @@ void on_poll_timer(uv_timer_t *t) {
 }
 
 /* ────────────────────────────────────────────── */
+/*  Outside IP Detection (DNS-friendly)           */
+/* ────────────────────────────────────────────── */
+
+static void on_outside_ip_resolved(uv_getaddrinfo_t *req, int status, struct addrinfo *res) {
+    if (status == 0 && res) {
+        char addr[46];
+        uv_ip4_name((struct sockaddr_in *)res->ai_addr, addr, sizeof(addr));
+        strncpy(g_stats.outside_ip, addr, sizeof(g_stats.outside_ip)-1);
+    }
+    if (res) uv_freeaddrinfo(res);
+    free(req);
+}
+
+void detect_outside_ip(void) {
+    static uint64_t last_check = 0;
+    uint64_t now = uv_hrtime() / 1000000ULL;
+    
+    /* Detect every 5 minutes, or immediately if still "detecting..." */
+    if (g_stats.outside_ip[0] == 'd' || now - last_check > 300000) {
+        last_check = now;
+        uv_getaddrinfo_t *req = malloc(sizeof(uv_getaddrinfo_t));
+        if (req) {
+            struct addrinfo hints;
+            memset(&hints, 0, sizeof(hints));
+            hints.ai_family = AF_INET;
+            hints.ai_socktype = SOCK_STREAM;
+            /* whoami.akamai.net returns the query's source IP as an A record response.
+               This is perfect for DNS-transparent IP detection. */
+            if (uv_getaddrinfo(g_loop, req, on_outside_ip_resolved, "whoami.akamai.net", NULL, &hints) != 0) {
+                free(req);
+            }
+        }
+    }
+}
+
+/* ────────────────────────────────────────────── */
 /*  Idle Timer                                    */
 /* ────────────────────────────────────────────── */
 
@@ -228,6 +264,11 @@ void on_idle_timer(uv_timer_t *t) {
 
     g_stats.tx_bytes_sec = 0;
     g_stats.rx_bytes_sec = 0;
+
+    if (strcmp(g_stats.mode, "CLIENT") == 0) {
+        void detect_outside_ip(void);
+        detect_outside_ip();
+    }
 }
 
 /* ────────────────────────────────────────────── */

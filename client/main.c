@@ -91,11 +91,25 @@ uv_tty_t   g_tty;
 /* SOCKS5 listener */
 uv_tcp_t g_socks5_server;
 
-int log_level(void) { return g_cfg.log_level; }
+void detect_local_ip(char *out, size_t out_len) {
+    uv_interface_address_t *info;
+    int count, i;
+    char addr[46];
 
-/* ────────────────────────────────────────────── */
-/*  Persistence                                   */
-/* ────────────────────────────────────────────── */
+    strncpy(out, "unknown", out_len);
+    if (uv_interface_addresses(&info, &count) != 0) return;
+
+    for (i = 0; i < count; i++) {
+        uv_interface_address_t interface = info[i];
+        if (interface.address.address4.sin_family == AF_INET && !interface.is_internal) {
+            uv_ip4_name(&interface.address.address4, addr, sizeof(addr));
+            strncpy(out, addr, out_len-1);
+            out[out_len-1] = '\0';
+            break;
+        }
+    }
+    uv_free_interface_addresses(info, count);
+}
 
 void resolvers_save(void) {
     if (!g_resolvers_file[0]) return;
@@ -268,6 +282,12 @@ int main(int argc, char *argv[]) {
     /* Initialize TUI and TTY FIRST so it can show progress during init phase */
     tui_init(&g_tui, &g_stats, &g_pool, &g_cfg, "CLIENT", config_path);
     g_tui.get_clients_cb = get_active_clients_client;
+
+    /* Populate network identity in stats */
+    detect_local_ip(g_stats.local_ip, sizeof(g_stats.local_ip));
+    strncpy(g_stats.outside_ip, "detecting...", sizeof(g_stats.outside_ip)-1);
+    strncpy(g_stats.socks_bind, g_cfg.socks5_bind, sizeof(g_stats.socks_bind)-1);
+    if (!g_stats.socks_bind[0]) strcpy(g_stats.socks_bind, "127.0.0.1:1080");
 
     uv_timer_init(g_loop, &g_idle_timer);
     uv_timer_start(&g_idle_timer, on_idle_timer, 1000, 1000);

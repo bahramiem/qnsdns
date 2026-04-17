@@ -450,36 +450,59 @@ static void render_dashboard(tui_ctx_t *t, int x, int y, int width, int height) 
     printf("\033[%d;%dH" ANSI_BOLD "Total RX:  " ANSI_RESET "%6.1f MB", session_y + 4, x + 2,
            t->stats->rx_total / (1024.0 * 1024.0));
     
-    /* Stats section */
-    printf("\033[%d;%dH" ANSI_DIM "─ Stats ──────────────" ANSI_RESET, session_y + 6, x + 2);
-    printf("\033[%d;%dH" ANSI_GREEN "▲ " ANSI_RESET "↑ %5.1f KB/s", session_y + 7, x + 2, t->stats->tx_bytes_sec);
-    printf("\033[%d;%dH" ANSI_CYAN "▼ " ANSI_RESET "↓ %5.1f KB/s", session_y + 8, x + 2, t->stats->rx_bytes_sec);
-    printf("\033[%d;%dH" ANSI_YELLOW "◆ " ANSI_RESET "Sessions: %d", session_y + 9, x + 2, t->stats->active_sessions);
-    printf("\033[%d;%dH" ANSI_MAGENTA "◇ " ANSI_RESET "Resolvers: %d", session_y + 10, x + 2, t->stats->active_resolvers);
+    /* Divider for second row */
+    draw_hline(x + 1, session_y + 5, panel_w - 2, ANSI_BR_YELLOW);
     
-    /* Query Stats */
-    printf("\033[%d;%dH" ANSI_DIM "Queries ─────────────" ANSI_RESET, session_y + 12, x + 2);
-    printf("\033[%d;%dH" ANSI_BOLD "Sent:     " ANSI_RESET "%6llu", session_y + 13, x + 2,
+    /* Second row: SOCKS and IP info (Client mode only) */
+    if (strcmp(t->stats->mode, "CLIENT") == 0) {
+        printf("\033[%d;%dH" ANSI_BOLD "SOCKS Server: " ANSI_RESET ANSI_BR_CYAN "%s" ANSI_RESET, session_y + 6, x + 2,
+               t->stats->socks_bind);
+        printf("\033[%d;%dH" ANSI_BOLD "Local IP:     " ANSI_RESET "%s", session_y + 7, x + 2,
+               t->stats->local_ip[0] ? t->stats->local_ip : "unknown");
+        printf("\033[%d;%dH" ANSI_BOLD "Outside IP:   " ANSI_RESET ANSI_BR_MAGENTA "%s" ANSI_RESET, session_y + 8, x + 2,
+               t->stats->outside_ip[0] ? t->stats->outside_ip : "detecting...");
+        
+        /* Shift stats section down */
+        int stats_offset = 5;
+#define SESSION_STATS_ROW(row) (session_y + 6 + stats_offset + (row))
+        printf("\033[%d;%dH" ANSI_DIM "─ Stats ──────────────" ANSI_RESET, SESSION_STATS_ROW(0), x + 2);
+        printf("\033[%d;%dH" ANSI_GREEN "▲ " ANSI_RESET "↑ %5.1f KB/s", SESSION_STATS_ROW(1), x + 2, t->stats->tx_bytes_sec);
+        printf("\033[%d;%dH" ANSI_CYAN "▼ " ANSI_RESET "↓ %5.1f KB/s", SESSION_STATS_ROW(2), x + 2, t->stats->rx_bytes_sec);
+        printf("\033[%d;%dH" ANSI_YELLOW "◆ " ANSI_RESET "Sessions: %d", SESSION_STATS_ROW(3), x + 2, t->stats->active_sessions);
+        printf("\033[%d;%dH" ANSI_MAGENTA "◇ " ANSI_RESET "Resolvers: %d", SESSION_STATS_ROW(4), x + 2, t->stats->active_resolvers);
+    } else {
+        /* Stats section for Server mode (keep as is or adjust) */
+        printf("\033[%d;%dH" ANSI_DIM "─ Stats ──────────────" ANSI_RESET, session_y + 6, x + 2);
+        printf("\033[%d;%dH" ANSI_GREEN "▲ " ANSI_RESET "↑ %5.1f KB/s", session_y + 7, x + 2, t->stats->tx_bytes_sec);
+        printf("\033[%d;%dH" ANSI_CYAN "▼ " ANSI_RESET "↓ %5.1f KB/s", session_y + 8, x + 2, t->stats->rx_bytes_sec);
+        printf("\033[%d;%dH" ANSI_YELLOW "◆ " ANSI_RESET "Sessions: %d", session_y + 9, x + 2, t->stats->active_sessions);
+        printf("\033[%d;%dH" ANSI_MAGENTA "◇ " ANSI_RESET "Resolvers: %d", session_y + 10, x + 2, t->stats->active_resolvers);
+    }
+    
+    /* Query Stats - Adjusted offset if needed */
+    int q_offset = (strcmp(t->stats->mode, "CLIENT") == 0) ? 5 : 0;
+    printf("\033[%d;%dH" ANSI_DIM "Queries ─────────────" ANSI_RESET, session_y + 12 + q_offset, x + 2);
+    printf("\033[%d;%dH" ANSI_BOLD "Sent:     " ANSI_RESET "%6llu", session_y + 13 + q_offset, x + 2,
            (unsigned long long)t->stats->queries_sent);
-    printf("\033[%d;%dH" ANSI_BOLD "Received: " ANSI_RESET "%6llu", session_y + 14, x + 2,
+    printf("\033[%d;%dH" ANSI_BOLD "Received: " ANSI_RESET "%6llu", session_y + 14 + q_offset, x + 2,
            (unsigned long long)t->stats->queries_recv);
-    printf("\033[%d;%dH" ANSI_BOLD "Lost:     " ANSI_RESET "%6llu", session_y + 15, x + 2,
+    printf("\033[%d;%dH" ANSI_BOLD "Lost:     " ANSI_RESET "%6llu", session_y + 15 + q_offset, x + 2,
            (unsigned long long)t->stats->queries_lost);
     
-    /* SOCKS5 Activity */
+    /* SOCKS5 Activity - Adjusted offset */
     if (strcmp(t->stats->mode, "CLIENT") == 0) {
-        printf("\033[%d;%dH" ANSI_DIM "SOCKS5 Activity ──────" ANSI_RESET, session_y + 17, x + 2);
-        printf("\033[%d;%dH" ANSI_BOLD "Total:    " ANSI_RESET "%6u", session_y + 18, x + 2, t->stats->socks5_total_conns);
-        printf("\033[%d;%dH" ANSI_BOLD "Errors:   " ANSI_RESET ANSI_RED "%6u" ANSI_RESET, session_y + 19, x + 2, t->stats->socks5_total_errors);
+        printf("\033[%d;%dH" ANSI_DIM "SOCKS5 Activity ──────" ANSI_RESET, session_y + 17 + q_offset, x + 2);
+        printf("\033[%d;%dH" ANSI_BOLD "Total:    " ANSI_RESET "%6u", session_y + 18 + q_offset, x + 2, t->stats->socks5_total_conns);
+        printf("\033[%d;%dH" ANSI_BOLD "Errors:   " ANSI_RESET ANSI_RED "%6u" ANSI_RESET, session_y + 19 + q_offset, x + 2, t->stats->socks5_total_errors);
         
         if (t->stats->socks5_last_target[0]) {
-            printf("\033[%d;%dH" ANSI_DIM "Last target:" ANSI_RESET, session_y + 20, x + 2);
-            printf("\033[%d;%dH" ANSI_CYAN " %s" ANSI_RESET, session_y + 21, x + 2, t->stats->socks5_last_target);
+            printf("\033[%d;%dH" ANSI_DIM "Last target:" ANSI_RESET, session_y + 20 + q_offset, x + 2);
+            printf("\033[%d;%dH" ANSI_CYAN " %s" ANSI_RESET, session_y + 21 + q_offset, x + 2, t->stats->socks5_last_target);
             
             if (t->stats->socks5_last_error != 0) {
-                printf("\033[%d;%dH" ANSI_BR_RED " ! Error 0x%02x" ANSI_RESET, session_y + 22, x + 2, t->stats->socks5_last_error);
+                printf("\033[%d;%dH" ANSI_BR_RED " ! Error 0x%02x" ANSI_RESET, session_y + 22 + q_offset, x + 2, t->stats->socks5_last_error);
             } else {
-                printf("\033[%d;%dH" ANSI_BR_GREEN " ✓ Connected" ANSI_RESET, session_y + 22, x + 2);
+                printf("\033[%d;%dH" ANSI_BR_GREEN " ✓ Connected" ANSI_RESET, session_y + 22 + q_offset, x + 2);
             }
         }
     }
