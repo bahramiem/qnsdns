@@ -189,6 +189,10 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                 s->cl_fec_k = ntohs(echo->fec_k); 
                 s->cl_fec_n = ntohs(echo->fec_n); 
                 s->cl_symbol_size = ntohs(echo->symbol_size);
+                
+                LOG_INFO("Session %u: Handshake ECHO received (FEC K:%u N:%u SymbolSize:%u)\n", 
+                         s->session_id, s->cl_fec_k, s->cl_fec_n, s->cl_symbol_size);
+                         
                 if (s->socks5_pending_ok && s->client_ptr) {
                     socks5_client_t *c = (socks5_client_t *)s->client_ptr;
                     extern void socks5_send(socks5_client_t *, const uint8_t *, size_t);

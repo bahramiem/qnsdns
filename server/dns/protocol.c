@@ -402,6 +402,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     if (!(q_flags & CHUNK_FLAG_IS_TUNNEL)) {
         /* This is either a random MTU Phase 1/3 label or an Upload MTU probe.
          * Send a generic "OK" TXT reply so the client MTU test passes. */
+        LOG_DEBUG("  [PROBE] Identified non-tunnel probe (flags=%02x). Sending OK.\n", q_flags);
         uint8_t reply[512]; size_t rlen = sizeof(reply);
         const uint8_t resp[] = "OK";
         if (build_txt_reply_with_seq(reply, &rlen, query_id, qname, resp, sizeof(resp)-1, 512, 0, 0, 0, false, false) == 0)
@@ -468,8 +469,16 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
 
     if (is_handshake) {
         handshake_packet_t hs;
-        if (payload_len < sizeof(hs)) return;
+        if (payload_len < sizeof(hs)) {
+            LOG_DEBUG("  [HANDSHAKE] Error: payload too short (%zu < %zu)\n", payload_len, sizeof(hs));
+            return;
+        }
         memcpy(&hs, payload, sizeof(hs));
+        
+        if (hs.version != DNSTUN_VERSION) {
+            LOG_DEBUG("  [HANDSHAKE] Error: protocol version mismatch (recv:%u expected:%u)\n", hs.version, DNSTUN_VERSION);
+            return;
+        }
         
         uint16_t umtu = ntohs(hs.upstream_mtu);
         uint16_t dmtu = ntohs(hs.downstream_mtu);
@@ -512,7 +521,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
 
     /* REJECT data packets if FEC not yet synced via Handshake */
     if (cur_rem > 0 && !is_poll && !is_sync && sess->cl_symbol_size == 0) {
-        LOG_DEBUG("  [IN] sid=%u: DROPPED data pkt (wait for FEC sync)\n", session_id);
+        LOG_DEBUG("  [IN] sid=%u: DROPPED data pkt (waiting for Handshake/FEC sync bits)\n", session_id);
         goto send_reply;
     }
 
