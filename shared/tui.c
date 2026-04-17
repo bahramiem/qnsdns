@@ -21,6 +21,7 @@ static FILE      *g_log_file  = NULL;
 #ifndef ENABLE_VIRTUAL_TERMINAL_PROCESSING
 #define ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004
 #endif
+#include <share.h>
 #else
 #include <sys/ioctl.h>
 #include <unistd.h>
@@ -1082,7 +1083,14 @@ void tui_debug_set_level(tui_ctx_t *t, int level) {
 void dnstun_log_open(const char *path) {
     if (g_log_file) { fclose(g_log_file); g_log_file = NULL; }
     if (!path || !path[0]) return;
+#ifdef _WIN32
+    g_log_file = _fsopen(path, "w", _SH_DENYNO);
+#else
     g_log_file = fopen(path, "w");
+#endif
+    if (g_log_file) {
+        setvbuf(g_log_file, NULL, _IOLBF, 0);
+    }
     if (!g_log_file) {
         fprintf(stderr, "[WARN] Cannot open log file: %s\n", path);
     }
@@ -1107,6 +1115,10 @@ void dnstun_log(int level, const char *fmt, ...) {
                           (level == 1) ? "WRN" :
                           (level == 2) ? "INF" : "DBG";
         fprintf(g_log_file, "[%s] %s %s", ts, lvl, buf);
+        fflush(g_log_file);
+#ifndef _WIN32
+        fsync(fileno(g_log_file));
+#endif
     }
 
     /* Feed into TUI debug panel if active, else stderr */
