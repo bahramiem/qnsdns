@@ -360,9 +360,9 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                           LOG_INFO("Session %u: HANDSHAKE synced (FEC Parameters: K=%u N=%u SymbolSize=%u)\n",
                                    s->session_id, echo->fec_k, echo->fec_n, echo->symbol_size);
                           s->fec_synced = true;
-                          s->fec_k = echo->fec_k;
-                          s->fec_n = echo->fec_n;
-                          s->fec_symbol_size = echo->symbol_size;
+                          s->cl_fec_k = echo->fec_k;
+                          s->cl_fec_n = echo->fec_n;
+                          s->cl_symbol_size = echo->symbol_size;
                       } else {
                           LOG_DEBUG("Session %u: duplicate HANDSHAKE echo ignored\n", s->session_id);
                       }
