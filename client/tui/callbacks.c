@@ -159,17 +159,16 @@ void on_poll_timer(uv_timer_t *t) {
                 }
             }
 
-            /* Update offset map for this sequence */
-            s->tx_offset_map[s->tx_next % 256] = (uint32_t)take;
-
             if (sym_ptrs && sym_count > 0) {
                 if (fire_dns_multi_symbols(i, burst_seq, (const uint8_t**)sym_ptrs, fenc.symbol_len, sym_count, sym_count, 0, is_compressed)) {
+                    s->tx_offset_map[s->tx_next % 256] = (uint32_t)take;
                     s->tx_next++; /* Increment sequence number only if actually sent */
                 }
             } else {
                 /* Non-FEC or encode failed: Send as 1-symbol burst */
                 const uint8_t *payload_ptr[1] = { raw_buf };
                 if (fire_dns_multi_symbols(i, burst_seq, payload_ptr, raw_len, 1, 1, 0, is_compressed)) {
+                    s->tx_offset_map[s->tx_next % 256] = (uint32_t)take;
                     s->tx_next++;
                 }
             }
