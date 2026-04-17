@@ -66,6 +66,7 @@ int build_txt_reply_multi(uint8_t *outbuf, size_t *outlen,
                           uint16_t query_id, const char *qname,
                           const uint8_t *data, size_t data_len,
                           uint16_t mtu, uint16_t start_seq,
+                          uint16_t ack_seq,
                           uint8_t session_id, bool has_seq,
                           int *num_frags, size_t *bytes_consumed) {
     if (num_frags) *num_frags = 0;
@@ -98,6 +99,7 @@ int build_txt_reply_multi(uint8_t *outbuf, size_t *outlen,
         hdr.flags = 0;
         if (has_seq) hdr.flags |= RESP_FLAG_HAS_SEQ;
         hdr.seq = current_seq;
+        hdr.ack_seq = ack_seq;
 
         uint8_t packet[1024];
         size_t packet_len = 0;
@@ -169,11 +171,12 @@ int build_txt_reply_with_seq(uint8_t *outbuf, size_t *outlen,
                              uint16_t query_id, const char *qname,
                              const uint8_t *data, size_t data_len,
                              uint16_t mtu, uint16_t seq,
+                             uint16_t ack_seq,
                              uint8_t session_id, bool has_seq) {
     int nf = 0;
     size_t bc = 0;
     return build_txt_reply_multi(outbuf, outlen, query_id, qname, data, data_len,
-                                 mtu, seq, session_id, has_seq, &nf, &bc);
+                                 mtu, seq, ack_seq, session_id, has_seq, &nf, &bc);
 }
 
 /* ────────────────────────────────────────────── */
@@ -333,7 +336,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
             if (mtu_payload) {
                 for (int i = 0; i < requested_mtu && i < 4096; i++) mtu_payload[i] = (uint8_t)(rand() & 0xFF);
                 uint8_t reply[5120]; size_t rlen = sizeof(reply);
-                if (build_txt_reply_with_seq(reply, &rlen, query_id, qname, mtu_payload, (size_t)requested_mtu, 4096, 0, 0, false) == 0)
+                if (build_txt_reply_with_seq(reply, &rlen, query_id, qname, mtu_payload, (size_t)requested_mtu, 4096, 0, 0, 0, false) == 0)
                     send_udp_reply(src, reply, rlen);
                 free(mtu_payload);
             }
@@ -344,7 +347,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     if (is_capability_probe) {
         uint8_t reply[512]; size_t rlen = sizeof(reply);
         const uint8_t resp[] = "OK";
-        if (build_txt_reply_with_seq(reply, &rlen, query_id, qname, resp, sizeof(resp)-1, 512, 0, 0, false) == 0)
+        if (build_txt_reply_with_seq(reply, &rlen, query_id, qname, resp, sizeof(resp)-1, 512, 0, 0, 0, false) == 0)
             send_udp_reply(src, reply, rlen);
         return;
     }
@@ -444,7 +447,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         
         uint8_t reply[512]; size_t rlen = sizeof(reply);
         int nfrags = 0;
-        if (build_txt_reply_multi(reply, &rlen, query_id, qname, NULL, 0, sess->cl_downstream_mtu, 0, sess->session_id, false, &nfrags, NULL) == 0)
+        if (build_txt_reply_multi(reply, &rlen, query_id, qname, NULL, 0, sess->cl_downstream_mtu, 0, sess->rx_next, sess->session_id, false, &nfrags, NULL) == 0)
             send_udp_reply(src, reply, rlen);
             
         session_handle_data(sidx, NULL, 0, seq, 1);
@@ -543,7 +546,7 @@ skip_fec_processing:
         size_t slen = swarm_build_sync_text(swarm_text, sizeof(swarm_text));
         uint8_t reply[4096]; size_t rlen = sizeof(reply);
         uint16_t swarm_seq = sess->handshake_done ? sess->downstream_seq++ : 0;
-        if (build_txt_reply_with_seq(reply, &rlen, query_id, qname, (const uint8_t *)swarm_text, slen, sess->cl_downstream_mtu, swarm_seq, sess->session_id, sess->handshake_done) == 0)
+        if (build_txt_reply_with_seq(reply, &rlen, query_id, qname, (const uint8_t *)swarm_text, slen, sess->cl_downstream_mtu, swarm_seq, sess->rx_next, sess->session_id, sess->handshake_done) == 0)
             send_udp_reply(src, reply, rlen);
         session_handle_data(sidx, NULL, 0, seq, 1);
         return;
@@ -580,7 +583,7 @@ send_reply:;
 
     if (can_send_new) {
         int nfrags = 0; size_t sz = 0;
-        if (build_txt_reply_multi(reply, &rlen, query_id, qname, sess->upstream_buf, sess->upstream_len, mtu, out_seq, sess->session_id, sess->handshake_done, &nfrags, &sz) == 0) {
+        if (build_txt_reply_multi(reply, &rlen, query_id, qname, sess->upstream_buf, sess->upstream_len, mtu, out_seq, sess->rx_next, sess->session_id, sess->handshake_done, &nfrags, &sz) == 0) {
             if (sess->handshake_done && sz > 0) sess->downstream_seq += nfrags;
             if (sz <= sizeof(sess->retx_buf)) {
                 memcpy(sess->retx_buf, sess->upstream_buf, sz);
@@ -595,13 +598,13 @@ send_reply:;
     } else if (client_needs_retx && sess->retx_len > 0) {
         if (client_ack_seq >= sess->retx_seq && client_ack_seq < sess->retx_seq + sess->retx_count) {
             int nfrags = 0;
-            if (build_txt_reply_multi(reply, &rlen, query_id, qname, sess->retx_buf, sess->retx_len, mtu, sess->retx_seq, sess->session_id, true, &nfrags, NULL) == 0)
+            if (build_txt_reply_multi(reply, &rlen, query_id, qname, sess->retx_buf, sess->retx_len, mtu, sess->retx_seq, sess->rx_next, sess->session_id, true, &nfrags, NULL) == 0)
                 send_udp_reply(src, reply, rlen);
         } else goto send_empty;
     } else {
 send_empty:;
         int nfrags = 0;
-        if (build_txt_reply_multi(reply, &rlen, query_id, qname, NULL, 0, mtu, out_seq, sess->session_id, false, &nfrags, NULL) == 0)
+        if (build_txt_reply_multi(reply, &rlen, query_id, qname, NULL, 0, mtu, out_seq, sess->rx_next, sess->session_id, false, &nfrags, NULL) == 0)
             send_udp_reply(src, reply, rlen);
     }
 }

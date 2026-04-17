@@ -175,7 +175,8 @@ typedef struct {
                               * bit 1: has_sequence (1 = seq field is valid)
                               * bits 2-7: reserved */
     uint16_t seq;            /* sequence number (2 bytes) */
-} server_response_header_t;   /* Total: 4 bytes */
+    uint16_t ack_seq;        /* cumulative ACK: next expected upstream seq (2 bytes) */
+} server_response_header_t;   /* Total: 6 bytes */
 #pragma pack(pop)
 
 /* Flag bit masks for server_response_header_t */
@@ -431,12 +432,14 @@ typedef struct session {
     size_t    recv_len;
     size_t    recv_cap;
 
-    /* sliding window */
+    /* sliding window / reliability */
     uint16_t  tx_next;    /* next seq to send */
-    uint16_t  tx_acked;   /* last acked seq */
-    uint16_t  rx_next;    /* expected receive seq */
+    uint16_t  tx_acked;   /* server's next expected seq (everything < tx_acked is confirmed) */
+    uint32_t  tx_offset_map[256]; /* map seq % 256 to send_buf cumulative offset at start of burst */
+    uint16_t  rx_next;    /* next expected receive seq from server */
 
     time_t    last_active;
+    time_t    last_ack_time; /* time when tx_acked last advanced */
     bool      closed;
     
     /* Client-specific: SOCKS5 handshake state */

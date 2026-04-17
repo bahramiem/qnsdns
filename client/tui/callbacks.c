@@ -61,6 +61,17 @@ void on_poll_timer(uv_timer_t *t) {
         session_t *s = &g_sessions[i];
         if (s->closed || !s->established) continue;
 
+        /* ── RETRANSMISSION LOGIC: Rewind tx_next if ACK stalled ── */
+        if (s->send_len > 0 && s->tx_next > s->tx_acked) {
+            time_t now = time(NULL);
+            if (s->last_ack_time > 0 && (now - s->last_ack_time > 5)) {
+                LOG_WARN("Session %u: ACK stalled (tx_next=%u tx_acked=%u), rewinding for retransmission...\n", 
+                         s->session_id, s->tx_next, s->tx_acked);
+                s->tx_next = s->tx_acked;
+                s->last_ack_time = now; /* Avoid immediate double rewind */
+            }
+        }
+
         if (s->send_len == 0) {
             uint64_t interval = (g_cfg.poll_interval_ms >= 50) ? (uint64_t)g_cfg.poll_interval_ms : 50;
             if (s->socks5_connected && (now_ms - last_poll[i] >= interval)) {
@@ -156,6 +167,9 @@ void on_poll_timer(uv_timer_t *t) {
                 }
             }
 
+            /* Update offset map for this sequence */
+            s->tx_offset_map[s->tx_next % 256] = (uint32_t)take;
+
             if (sym_ptrs && sym_count > 0) {
                 /* Aggregation check */
                 int syms_per_packet = calc_symbols_per_packet(avg_mtu, 
@@ -183,10 +197,8 @@ void on_poll_timer(uv_timer_t *t) {
             if (eres.data) codec_free_result(&eres);
             if (zres.data) codec_free_result(&zres);
 
-            /* Shift send buffer */
-            memmove(s->send_buf, s->send_buf + take, s->send_len - take);
-            s->send_len -= take;
-            DBGLOG("[POLL_DATA] sent %zu bytes, remaining %zu\n", take, s->send_len);
+            /* ── SLIDING WINDOW: Pruning is now handled in on_dns_recv via ACKs ── */
+            DBGLOG("[POLL_DATA] burst sent, waiting for ACK (current send_len: %zu)\n", s->send_len);
 
             last_poll[i] = uv_hrtime() / 1000000ULL;
         }

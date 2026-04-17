@@ -276,12 +276,39 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread,
                         uint16_t seq = 0;
                         bool has_seq = false;
 
-                        /* Parse response header */
+                        /* Parse response header (6 bytes) */
                         if (decoded_len >= (ptrdiff_t)sizeof(server_response_header_t)) {
                             server_response_header_t resp_hdr;
                             memcpy(&resp_hdr, raw_decoded, sizeof(resp_hdr));
 
                             if (resp_hdr.session_id != s->session_id) continue; /* Stale */
+
+                            /* Process Cumulative ACK (ack_seq) */
+                            uint16_t ack_seq = resp_hdr.ack_seq;
+                            if (ack_seq > s->tx_acked || (ack_seq < 100 && s->tx_acked > 60000)) {
+                                uint16_t diff = ack_seq - s->tx_acked;
+                                uint32_t prune_bytes = s->tx_offset_map[ack_seq % 256];
+                                if (prune_bytes > 0 && prune_bytes <= s->send_len) {
+                                    LOG_DEBUG("Session %u: ACK received for seq < %u, pruning %u bytes\n", 
+                                              s->session_id, ack_seq, prune_bytes);
+                                    memmove(s->send_buf, s->send_buf + prune_bytes, s->send_len - prune_bytes);
+                                    s->send_len -= prune_bytes;
+                                    s->tx_acked = ack_seq;
+                                    s->last_ack_time = time(NULL);
+                                    /* Adjust remaining offsets in the map */
+                                    for (int m = 0; m < 256; m++) {
+                                        if (s->tx_offset_map[m] >= prune_bytes)
+                                            s->tx_offset_map[m] -= prune_bytes;
+                                        else
+                                            s->tx_offset_map[m] = 0;
+                                    }
+                                } else if (ack_seq == s->tx_next) {
+                                    /* Special case: everything acked */
+                                    s->send_len = 0;
+                                    s->tx_acked = ack_seq;
+                                    memset(s->tx_offset_map, 0, sizeof(s->tx_offset_map));
+                                }
+                            }
 
                             has_seq = (resp_hdr.flags & RESP_FLAG_HAS_SEQ) != 0;
                             if (has_seq) {
