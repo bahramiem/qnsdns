@@ -599,6 +599,10 @@ void fire_dns_multi_symbols(int session_idx, uint16_t seq,
     q->session_idx = session_idx;
     q->seq = seq;
 
+    int didx = rpool_flux_domain(&g_cfg);
+    const char *domain =
+        (g_cfg.domain_count > 0) ? g_cfg.domains[didx] : "tun.example.com";
+
     /* Adaptive Packing: How many symbols fit? */
     int sym_size = (int)paylen;
     int max_pack = 10; /* Default */
@@ -677,10 +681,6 @@ void fire_dns_multi_symbols(int session_idx, uint16_t seq,
 
     hdr.sess_flags = PACK_SID_FLAGS(sess->session_id, q_flags);
     hdr.seq = seq;
-
-    int didx = rpool_flux_domain(&g_cfg);
-    const char *domain =
-        (g_cfg.domain_count > 0) ? g_cfg.domains[didx] : "tun.example.com";
 
     q->sendlen = sizeof(q->sendbuf);
     
