@@ -91,28 +91,38 @@ int build_txt_reply_multi(uint8_t *outbuf, size_t *outlen,
                           const uint8_t *data, size_t data_len,
                           uint16_t mtu, uint16_t start_seq,
                           uint8_t session_id, bool has_seq,
-                          int *num_frags) {
+                          int *num_frags, size_t *bytes_consumed) {
     if (num_frags) *num_frags = 0;
+    if (bytes_consumed) *bytes_consumed = 0;
 
-    /* Step 1: Compute safe capacity with 90% safety margin (Working Solution logic) */
-    size_t overhead = 12 + strlen(qname) + 6 + 11 + 20;
-    size_t safe_packet_size = (mtu > overhead + 64) ? ((mtu - overhead) * 90 / 100) : 64;
-
-    /* Binary equivalent (accounting for Base64 expansion 4/3) */
-    size_t binary_safe_total = (safe_packet_size * 3) / 4;
-    if (data_len > binary_safe_total) data_len = binary_safe_total;
+    /* Step 1: Compute safe capacity with 90% safety margin */
+    size_t base_overhead = 12 + strlen(qname) + 6 + 11 + 20;
+    if (mtu < base_overhead + 32) mtu = base_overhead + 32;
+    size_t safe_packet_budget = (mtu - base_overhead) * 90 / 100;
 
     /* Step 2: Split data into fragments (max 191 binary bytes each) */
     dns_answer_t ans[MAX_FRAGMENTS];
-    char encoded_chunks[MAX_FRAGMENTS][1024]; /* Base64 storage */
+    
+    /* Allocate Base64 storage on heap to avoid stack overflow */
+    char **encoded_chunks = malloc(MAX_FRAGMENTS * sizeof(char *));
+    for (int i = 0; i < MAX_FRAGMENTS; i++) encoded_chunks[i] = malloc(1024);
+
     uint16_t current_seq = start_seq;
     int frag_count = 0;
     size_t data_offset = 0;
+    size_t current_packet_size = 0;
 
-    /* Even if data_len is 0 (ACK), we send at least one fragment */
+    /* Loop until data is exhausted, fragmentation limit is reached, or MTU is full */
     do {
         int chunk_data_len = (int)(data_len - data_offset);
         if (chunk_data_len > MAX_CHUNK_BINARY) chunk_data_len = MAX_CHUNK_BINARY;
+
+        /* Check if this fragment's overhead + payload fits in budget */
+        /* Each TXT record adds name(2) + hdr(10) + len(1) + payload chars */
+        size_t frag_overhead = 13; 
+        size_t b64_chars = (chunk_data_len == 0) ? 8 : ((chunk_data_len + 5) / 3 * 4); // conservative estimate
+        if (current_packet_size + frag_overhead + b64_chars > safe_packet_budget && frag_count > 0)
+            break;
 
         /* Prepare fragment header + payload */
         server_response_header_t hdr = {0};
@@ -144,6 +154,7 @@ int build_txt_reply_multi(uint8_t *outbuf, size_t *outlen,
         ans[frag_count].txt.len = (uint16_t)elen;
         ans[frag_count].txt.text = encoded_chunks[frag_count];
 
+        current_packet_size += (frag_overhead + elen);
         frag_count++;
         current_seq++;
         data_offset += chunk_data_len;
@@ -151,6 +162,7 @@ int build_txt_reply_multi(uint8_t *outbuf, size_t *outlen,
     } while (data_offset < data_len && frag_count < MAX_FRAGMENTS);
 
     if (num_frags) *num_frags = frag_count;
+    if (bytes_consumed) *bytes_consumed = data_offset;
 
     /* Step 3: Global OPT record (EDNS0) */
     dns_answer_t edns = {0};
@@ -175,15 +187,32 @@ int build_txt_reply_multi(uint8_t *outbuf, size_t *outlen,
     resp.ancount = frag_count;
     resp.arcount = 1;
     resp.questions = &q;
-    resp.answers = ans; /* Pointer to array */
+    resp.answers = ans;
     resp.additional = &edns;
 
     size_t sz = *outlen;
     dns_rcode_t rc = dns_encode((dns_packet_t *)outbuf, &sz, &resp);
+    
+    /* Cleanup heap-allocated buffers */
+    for (int i = 0; i < MAX_FRAGMENTS; i++) free(encoded_chunks[i]);
+    free(encoded_chunks);
+
     if (rc != RCODE_OKAY) return -1;
 
     *outlen = sz;
     return 0;
+}
+
+/* Compatibility wrapper */
+int build_txt_reply_with_seq(uint8_t *outbuf, size_t *outlen,
+                             uint16_t query_id, const char *qname,
+                             const uint8_t *data, size_t data_len,
+                             uint16_t mtu, uint16_t seq,
+                             uint8_t session_id, bool has_seq) {
+    int nf = 0;
+    size_t bc = 0;
+    return build_txt_reply_multi(outbuf, outlen, query_id, qname, data, data_len,
+                                 mtu, seq, session_id, has_seq, &nf, &bc);
 }
 
 /* Compatibility wrapper for single-fragment cases if needed (optional) */
@@ -352,15 +381,19 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     if (is_mtu_probe && parts[0] != NULL) {
         int requested_mtu = atoi(parts[0] + 8);
         if (requested_mtu > 0 && requested_mtu <= 4096) {
-            uint8_t mtu_payload[4096];
-            for (int i = 0; i < requested_mtu && i < (int)sizeof(mtu_payload); i++)
-                mtu_payload[i] = (uint8_t)(rand() & 0xFF);
-            uint8_t reply[5120]; size_t rlen = sizeof(reply);
-            /* For MTU tests, use a high MTU cap (4096) to allow large responses */
-            if (build_txt_reply_with_seq(reply, &rlen, query_id, qname,
-                                         mtu_payload, (size_t)requested_mtu,
-                                         4096, 0, 0, false) == 0)
-                send_udp_reply(src, reply, rlen);
+            uint8_t *mtu_payload = malloc(4096);
+            if (mtu_payload) {
+                for (int i = 0; i < requested_mtu && i < 4096; i++)
+                    mtu_payload[i] = (uint8_t)(rand() & 0xFF);
+                
+                uint8_t reply[5120]; size_t rlen = sizeof(reply);
+                /* For MTU tests, use a high MTU cap (4096) to allow large responses */
+                if (build_txt_reply_with_seq(reply, &rlen, query_id, qname,
+                                             mtu_payload, (size_t)requested_mtu,
+                                             4096, 0, 0, false) == 0)
+                    send_udp_reply(src, reply, rlen);
+                free(mtu_payload);
+            }
         }
         return;
     }
@@ -501,6 +534,13 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
 
     /* ── 15. FEC Burst Reassembly ────────────────────────────── */
     if (chunk_total > 1) {
+        /* Guardrails: Reject implausible FEC headers to prevent corruption crashes */
+        if (chunk_total > 128 || payload_len > 1500) {
+            LOG_ERR("Session %u: Implausible FEC header ignored (total=%u len=%zu)\n", 
+                    session_id, chunk_total, payload_len);
+            goto skip_fec_processing;
+        }
+
         uint16_t esi           = (uint16_t)(seq % (uint16_t)chunk_total);
         uint16_t burst_base    = (uint16_t)(seq - esi);
         bool     is_new_burst  = (sess->burst_count_needed == 0) ||
@@ -703,27 +743,14 @@ send_reply:
 
     if (sess->upstream_len > 0) {
         int nfrags = 0;
+        size_t sz = 0;
         uint16_t out_seq = sess->handshake_done ? sess->downstream_seq : 0;
 
         if (build_txt_reply_multi(reply, &rlen, query_id, qname,
                                  sess->upstream_buf, sess->upstream_len,
                                  mtu, out_seq, sess->session_id, 
-                                 sess->handshake_done, &nfrags) == 0) {
+                                 sess->handshake_done, &nfrags, &sz) == 0) {
             
-            /* Calculate how much data was actually consumed by the fragments */
-            size_t sz = 0;
-            int frags_to_count = nfrags;
-            size_t remaining = sess->upstream_len;
-            uint16_t seq_iter = out_seq;
-
-            /* Repeat fragmentation logic to find total consumed size */
-            for (int i = 0; i < nfrags; i++) {
-                int chunk = (int)remaining;
-                if (chunk > MAX_CHUNK_BINARY) chunk = MAX_CHUNK_BINARY;
-                sz += chunk;
-                remaining -= chunk;
-            }
-
             LOG_DEBUG("Server sending burst: session=%u seq=%u..%u frags=%d bytes=%zu/%zu mtu=%u\n",
                     sess->session_id, out_seq, out_seq + nfrags - 1, nfrags, sz, sess->upstream_len, mtu);
 
@@ -738,10 +765,12 @@ send_reply:
             }
 
             /* Consume from upstream buffer */
-            if (sz < sess->upstream_len) {
-                memmove(sess->upstream_buf, sess->upstream_buf + sz, sess->upstream_len - sz);
+            if (sz > 0) {
+                if (sz < sess->upstream_len) {
+                    memmove(sess->upstream_buf, sess->upstream_buf + sz, sess->upstream_len - sz);
+                }
+                sess->upstream_len -= sz;
             }
-            sess->upstream_len -= sz;
             
             send_udp_reply(src, reply, rlen);
         }
