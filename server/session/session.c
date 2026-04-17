@@ -278,18 +278,25 @@ void on_upstream_resolve(uv_getaddrinfo_t *resolver, int status, struct addrinfo
         return;
     }
 
-    char addr_str[INET6_ADDRSTRLEN];
-    if (res->ai_family == AF_INET)
-        inet_ntop(AF_INET, &((struct sockaddr_in *)res->ai_addr)->sin_addr,
-                  addr_str, sizeof(addr_str));
-    else
-        inet_ntop(AF_INET6, &((struct sockaddr_in6 *)res->ai_addr)->sin6_addr,
-                  addr_str, sizeof(addr_str));
+    char ip[INET6_ADDRSTRLEN];
+    if (res->ai_family == AF_INET) {
+        inet_ntop(AF_INET, &((struct sockaddr_in*)res->ai_addr)->sin_addr, ip, sizeof(ip));
+    } else {
+        inet_ntop(AF_INET6, &((struct sockaddr_in6*)res->ai_addr)->sin6_addr, ip, sizeof(ip));
+    }
 
-    LOG_INFO("DNS resolved %s:%d to %s for session %d\n",
-             cr->target_host, cr->target_port, addr_str, sidx);
+    LOG_INFO("Session %d: resolved %s to %s\n", sidx, cr->target_host, ip);
+    
+    uv_tcp_init(g_loop, &sess->upstream_tcp);
+    uv_tcp_nodelay(&sess->upstream_tcp, 1);
+    sess->upstream_tcp.data = (void*)(uintptr_t)sidx;
 
-    uv_tcp_connect(&cr->connect, &sess->upstream_tcp, res->ai_addr, on_upstream_connect);
+    int r = uv_tcp_connect(&cr->connect, &sess->upstream_tcp, res->ai_addr, on_upstream_connect);
+    if (r != 0) {
+        LOG_ERR("Session %d: uv_tcp_connect failed: %s\n", sidx, uv_strerror(r));
+        session_send_status(sidx, 0x01);
+        free(cr->payload); free(cr);
+    }
 
     uv_freeaddrinfo(res);
     free(resolver);
@@ -362,31 +369,9 @@ void session_handle_data(int sidx, const uint8_t *data, size_t len) {
             return;
         }
 
-        /* Handle SOCKS5 greeting when not connected */
-        if (l >= 3 && p[0] == 0x05) {
-            /* Basic SOCKS5 greeting (ver 5, nmethods, methods...) */
-            uint8_t nmethods = p[1];
-            if (l >= (size_t)(2 + nmethods)) {
-                bool has_no_auth = false;
-                for (uint8_t i = 0; i < nmethods; i++) {
-                    if (p[2 + i] == 0x00) { has_no_auth = true; break; }
-                }
-
-                LOG_DEBUG("Session %d: SOCKS greeting detected nmethods=%u has_no_auth=%d\n",
-                          sidx, nmethods, has_no_auth ? 1 : 0);
-                if (has_no_auth) {
-                    session_send_status(sidx, 0x00);
-                    consumed += 2 + nmethods;
-                    continue; /* Look for more messages */
-                } else {
-                    session_send_status(sidx, 0xFF);
-                    return;
-                }
-            }
-        }
-
         /* Handle SOCKS5 CONNECT when not connected */
         if (l >= 10 && p[0] == 0x05 && p[1] == 0x01) {
+            LOG_DEBUG("Session %d: SOCKS5 CONNECT header detected, atype=0x%02x\n", sidx, p[3]);
             char     target_host[256] = {0};
             uint16_t target_port      = 0;
             uint8_t  atype            = p[3];
