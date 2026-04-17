@@ -468,6 +468,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     bool    is_sync      = false;
     uint8_t session_id   = chunk_get_session_id(&hdr);
     uint16_t seq         = hdr.seq;
+    LOG_DEBUG("DNS Query: id=%u sess=%u seq=%u qname=%s\n", query_id, session_id, seq, qname);
     uint16_t chunk_total = chunk_get_total(hdr.chunk_info);
     if (chunk_total == 0) chunk_total = 1; /* DIVZERO safety */
     uint16_t esi         = chunk_get_esi(hdr.chunk_info);
@@ -599,7 +600,8 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
             sess->burst_oti_common   = hdr.oti_common;
             sess->burst_oti_scheme   = hdr.oti_scheme;
             sess->burst_has_oti      = (hdr.oti_common != 0 && hdr.oti_scheme != 0);
-            sess->burst_decoded      = false;
+            LOG_DEBUG("Session %u: Starting new FEC burst reassembly (seq_start=%u total=%u symbol_len=%zu)\n",
+                      session_id, burst_base, chunk_total, payload_len);
         }
 
         if (esi < (uint16_t)sess->burst_count_needed &&
@@ -667,8 +669,8 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                         goto reset_burst;
                     }
 
-                    LOG_DEBUG("Session %u: FEC decoded burst, len %zu\n", session_id, l);
-                    if (l > 0) session_handle_data(sidx, p, l);
+                    LOG_DEBUG("Session %u: FEC decoded burst, len %zu seq=%u\n", session_id, l, sess->burst_seq_start);
+                    if (l > 0) session_handle_data(sidx, p, l, sess->burst_seq_start);
                     codec_free_result(&zdec);
                 } else {
                     codec_free_result(&zdec);
@@ -769,7 +771,7 @@ skip_fec_processing:
                   (hdr.flags & CHUNK_FLAG_ENCRYPTED) ? 1 : 0,
                   (hdr.flags & CHUNK_FLAG_COMPRESSED) ? 1 : 0,
                   b0, b1, b2, b3); */
-        session_handle_data(sidx, decode_ptr, decode_len);
+        session_handle_data(sidx, decode_ptr, decode_len, seq);
 
         if (hdr.flags & CHUNK_FLAG_COMPRESSED) {
             codec_free_result(&zret);

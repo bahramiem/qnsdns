@@ -93,6 +93,12 @@ typedef struct srv_session {
     /** Next sequence number to assign for downstream packets (server → client) */
     uint16_t downstream_seq;
 
+    /** Next expected sequence number for upstream packets (client → server) */
+    uint16_t rx_next;
+
+    /** Upstream reordering buffer for handling out-of-order client bursts */
+    reorder_buffer_t upstream_reorder_buf;
+
     bool      status_sent;
     time_t    last_active;
 
@@ -146,7 +152,7 @@ void session_send_status(int sidx, uint8_t status);
  */
 void session_clear_burst(srv_session_t *s);
 
-void session_handle_data(int sidx, const uint8_t *data, size_t len);
+void session_handle_data(int sidx, const uint8_t *data, size_t len, uint16_t seq);
 
 /* ── Upstream TCP helpers ─────────────────────────────── */
 

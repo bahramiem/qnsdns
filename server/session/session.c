@@ -73,6 +73,8 @@ int session_alloc_by_id(uint8_t id) {
             g_sessions[i].pending_tx_len = 0;
             g_sessions[i].pending_tx_cap = 0;
             g_sessions[i].tcp_connecting = false;
+            g_sessions[i].rx_next = 0;
+            memset(&g_sessions[i].upstream_reorder_buf, 0, sizeof(g_sessions[i].upstream_reorder_buf));
             g_stats.active_sessions++;
             return i;
         }
@@ -96,6 +98,16 @@ void session_close(int idx) {
         for (int i = 0; i < s->burst_count_needed; i++)
             free(s->burst_symbols[i]);
         free(s->burst_symbols);
+        s->burst_symbols = NULL;
+    }
+
+    /* Free upstream reorder buffer slots */
+    for (int i = 0; i < RX_REORDER_WINDOW; i++) {
+        if (s->upstream_reorder_buf.slots[i].data) {
+            free(s->upstream_reorder_buf.slots[i].data);
+            s->upstream_reorder_buf.slots[i].data = NULL;
+            s->upstream_reorder_buf.slots[i].valid = false;
+        }
     }
 
     s->used = false;
@@ -207,9 +219,7 @@ void on_upstream_read(uv_stream_t *s, ssize_t nread, const uv_buf_t *buf) {
 
     if (nread <= 0) {
         free(buf->base);
-        /* Upstream TCP closed. Queue a SOCKS5 failure reply so curl knows
-         * the connection is gone. Do NOT call session_close() — any remaining
-         * data in upstream_buf must still be polled and delivered. */
+        /* Upstream TCP closed. Queue a SOCKS5 failure reply. */
         if (sess->tcp_connected) {
             uint8_t socks5_fail[10] = {0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0};
             size_t new_len = sess->upstream_len + sizeof(socks5_fail);
@@ -229,42 +239,20 @@ void on_upstream_read(uv_stream_t *s, ssize_t nread, const uv_buf_t *buf) {
         return;
     }
 
-    /* Skip SOCKS5 reply header (VER=0x05 REP=0x00 RSV=0x00 ATYP=0x01) */
-    if (nread >= 4 && buf->base[0] == 0x05 && buf->base[1] == 0x00 &&
-        buf->base[2] == 0x00 && buf->base[3] == 0x01) {
-        LOG_DEBUG("Session %d: Received SOCKS5 reply (%zd bytes) — skipping\n",
-                  sidx, nread);
-        /* If there's HTTP data after the SOCKS5 reply, buffer only that part */
-        if (nread > 10) {
-            size_t http_len = (size_t)nread - 10;
-            size_t need = sess->upstream_len + http_len;
-            if (need > sess->upstream_cap) {
-                sess->upstream_buf = realloc(sess->upstream_buf, need + 8192);
-                sess->upstream_cap = need + 8192;
-            }
-            if (sess->upstream_buf) {
-                memcpy(sess->upstream_buf + sess->upstream_len,
-                       buf->base + 10, http_len);
-                sess->upstream_len += http_len;
-            }
-        }
-        free(buf->base);
-        g_stats.rx_total     += (size_t)nread;
-        g_stats.rx_bytes_sec += (size_t)nread;
-        return;
-    }
-
-    /* Normal path: append HTTP response data */
+    /* Normal path: append target response data to the upstream polling buffer */
+    LOG_DEBUG("Session %d: received %zd bytes from target host\n", sidx, nread);
     size_t need = sess->upstream_len + (size_t)nread;
     if (need > sess->upstream_cap) {
-        sess->upstream_buf = realloc(sess->upstream_buf, need + 8192);
-        sess->upstream_cap = need + 8192;
+        size_t new_cap = need + 8192;
+        sess->upstream_buf = realloc(sess->upstream_buf, new_cap);
+        sess->upstream_cap = new_cap;
     }
-    memcpy(sess->upstream_buf + sess->upstream_len, buf->base, (size_t)nread);
-    sess->upstream_len += (size_t)nread;
+    if (sess->upstream_buf) {
+        memcpy(sess->upstream_buf + sess->upstream_len, buf->base, (size_t)nread);
+        sess->upstream_len += (size_t)nread;
+    }
 
     free(buf->base);
-
     g_stats.rx_total     += (size_t)nread;
     g_stats.rx_bytes_sec += (size_t)nread;
 }
@@ -360,7 +348,13 @@ void on_upstream_connect(uv_connect_t *req, int status) {
 
     uv_read_start((uv_stream_t *)&sess->upstream_tcp, on_upstream_alloc, on_upstream_read);
 
-    /* Flush any data that arrived while we were connecting */
+    /* 1. Flush initial data from the SOCKS CONNECT chunk handled at connection start */
+    if (cr->payload && cr->payload_len > 0) {
+        LOG_INFO("Session %d: flushing %zu initial payload bytes\n", sidx, cr->payload_len);
+        upstream_write_and_read(sidx, cr->payload, cr->payload_len);
+    }
+
+    /* 2. Flush any data that arrived in subsequent chunks while we were connecting */
     if (sess->pending_tx_buf && sess->pending_tx_len > 0) {
         LOG_INFO("Session %d: flushing %zu buffered bytes to upstream\n",
                  sidx, sess->pending_tx_len);
@@ -371,18 +365,13 @@ void on_upstream_connect(uv_connect_t *req, int status) {
         sess->pending_tx_cap = 0;
     }
 
-    if (cr->payload && cr->payload_len > 0)
-        upstream_write_and_read(sidx, cr->payload, cr->payload_len);
-
     session_send_status(sidx, 0x00); /* SOCKS5 success */
 
     free(cr->payload);
     free(cr);
 }
 
-void session_handle_data(int sidx, const uint8_t *data, size_t len) {
-    if (!data || len == 0) return;
-    
+void session_process_data_direct(int sidx, const uint8_t *data, size_t len) {
     srv_session_t *sess = &g_sessions[sidx];
     size_t consumed = 0;
 
@@ -390,22 +379,16 @@ void session_handle_data(int sidx, const uint8_t *data, size_t len) {
         const uint8_t *p = data + consumed;
         size_t l = len - consumed;
 
-        uint8_t b0 = l > 0 ? p[0] : 0;
-        uint8_t b1 = l > 1 ? p[1] : 0;
-        uint8_t b2 = l > 2 ? p[2] : 0;
-        uint8_t b3 = l > 3 ? p[3] : 0;
-
-        LOG_DEBUG("Session %d: handle_data len %zu conn=%d %02x%02x%02x%02x\n",
-                  sidx, l, sess->tcp_connected ? 1 : 0, b0, b1, b2, b3);
+        LOG_DEBUG("Session %d: process_direct len=%zu connected=%d connecting=%d hex=%02x%02x%02x%02x\n",
+                  sidx, l, sess->tcp_connected, sess->tcp_connecting,
+                  l > 0 ? p[0] : 0, l > 1 ? p[1] : 0, l > 2 ? p[2] : 0, l > 3 ? p[3] : 0);
 
         if (sess->tcp_connected) {
-            /* LOG_DEBUG("Session %d: forwarding %zu bytes to upstream\n", sidx, l); */
             upstream_write_and_read(sidx, p, l);
             return;
         }
 
         if (sess->tcp_connecting) {
-            /* Buffer data until connection is established */
             size_t need = sess->pending_tx_len + l;
             if (need > sess->pending_tx_cap) {
                 size_t new_cap = need + 8192;
@@ -424,16 +407,14 @@ void session_handle_data(int sidx, const uint8_t *data, size_t len) {
             return;
         }
 
-        /* Handle SOCKS5 CONNECT when not connected and not connecting */
         if (l >= 10 && p[0] == 0x05 && p[1] == 0x01) {
-            LOG_DEBUG("Session %d: SOCKS5 CONNECT header detected, atype=0x%02x\n", sidx, p[3]);
+            /* ... SOCKS5 CONNECT logic ... */
             char     target_host[256] = {0};
             uint16_t target_port      = 0;
             uint8_t  atype            = p[3];
 
             if (atype == 0x01) {
-                snprintf(target_host, sizeof(target_host),
-                         "%d.%d.%d.%d", p[4], p[5], p[6], p[7]);
+                snprintf(target_host, sizeof(target_host), "%d.%d.%d.%d", p[4], p[5], p[6], p[7]);
                 target_port = (uint16_t)((p[8] << 8) | p[9]);
             } else if (atype == 0x03) {
                 uint8_t dlen = p[4];
@@ -448,10 +429,8 @@ void session_handle_data(int sidx, const uint8_t *data, size_t len) {
             }
 
             if (target_host[0] && target_port > 0) {
-                LOG_INFO("Session %d: SOCKS CONNECT request target=%s:%u atype=0x%02x len=%zu\n",
-                         sidx, target_host, target_port, atype, l);
-                
-                sess->tcp_connecting = true; /* CRITICAL: Prevent dropping subsequent data */
+                LOG_INFO("Session %d: SOCKS CONNECT request target=%s:%u\n", sidx, target_host, target_port);
+                sess->tcp_connecting = true;
 
                 connect_req_t *cr = calloc(1, sizeof(*cr));
                 if (!cr) { sess->tcp_connecting = false; return; }
@@ -459,9 +438,7 @@ void session_handle_data(int sidx, const uint8_t *data, size_t len) {
                 strncpy(cr->target_host, target_host, sizeof(cr->target_host) - 1);
                 cr->target_port = target_port;
 
-                size_t hdr_sz = (atype == 0x01) ? 10 :
-                                (atype == 0x03) ? (size_t)(7 + p[4]) :
-                                (atype == 0x04) ? 22 : l;
+                size_t hdr_sz = (atype == 0x01) ? 10 : (atype == 0x03) ? (size_t)(7 + p[4]) : (atype == 0x04) ? 22 : l;
                 if (l > hdr_sz) {
                     cr->payload_len = l - hdr_sz;
                     cr->payload = malloc(cr->payload_len);
@@ -470,30 +447,79 @@ void session_handle_data(int sidx, const uint8_t *data, size_t len) {
 
                 uv_tcp_init(g_loop, &sess->upstream_tcp);
                 uv_tcp_nodelay(&sess->upstream_tcp, 1);
-
                 struct addrinfo hints = {0};
                 hints.ai_socktype = SOCK_STREAM;
-                hints.ai_family   = (atype == 0x04) ? AF_INET6 :
-                                    (atype == 0x01) ? AF_INET  : AF_UNSPEC;
-                char port_str[6];
-                snprintf(port_str, sizeof(port_str), "%d", target_port);
-                uv_getaddrinfo_t *resolver_req = malloc(sizeof(*resolver_req));
-                if (resolver_req) {
-                    resolver_req->data = cr;
-                    if (uv_getaddrinfo(g_loop, resolver_req, on_upstream_resolve,
-                                       target_host, port_str, &hints) != 0) {
-                        free(resolver_req); free(cr->payload); free(cr);
-                        sess->tcp_connecting = false;
+                hints.ai_family   = (atype == 0x04) ? AF_INET6 : (atype == 0x01) ? AF_INET : AF_UNSPEC;
+                char port_str[6]; snprintf(port_str, sizeof(port_str), "%d", target_port);
+                uv_getaddrinfo_t *rr = malloc(sizeof(*rr));
+                if (rr) {
+                    rr->data = cr;
+                    if (uv_getaddrinfo(g_loop, rr, on_upstream_resolve, target_host, port_str, &hints) != 0) {
+                        free(rr); free(cr->payload); free(cr); sess->tcp_connecting = false;
                     }
-                } else {
-                    free(cr->payload); free(cr);
-                    sess->tcp_connecting = false;
-                }
-                return; /* Async connect started, return and wait for on_upstream_connect */
+                } else { free(cr->payload); free(cr); sess->tcp_connecting = false; }
+                return;
             }
         }
-
-        /* If we reached here without consuming anything, break to avoid infinite loop */
         break;
+    }
+}
+
+void session_handle_data(int sidx, const uint8_t *data, size_t len, uint16_t seq) {
+    if (!data || len == 0) return;
+    
+    srv_session_t *sess = &g_sessions[sidx];
+
+    /* 1. Sequence check */
+    LOG_DEBUG("Session %d: handle_data seq=%u (expected=%u) len=%zu\n", 
+              sidx, seq, sess->rx_next, len);
+
+    if (seq < sess->rx_next) {
+        LOG_DEBUG("Session %d: ignoring duplicate upstream seq=%u (expected=%u)\n", 
+                  sidx, seq, sess->rx_next);
+        return;
+    }
+
+    if (seq > sess->rx_next) {
+        /* Store in reorder buffer */
+        int slot = seq % RX_REORDER_WINDOW;
+        if (sess->upstream_reorder_buf.slots[slot].valid) {
+            LOG_DEBUG("Session %d: upstream reorder buffer collision at seq=%u\n", sidx, seq);
+            return;
+        }
+        sess->upstream_reorder_buf.slots[slot].data = malloc(len);
+        if (sess->upstream_reorder_buf.slots[slot].data) {
+            memcpy(sess->upstream_reorder_buf.slots[slot].data, data, len);
+            sess->upstream_reorder_buf.slots[slot].len = len;
+            sess->upstream_reorder_buf.slots[slot].seq = seq;
+            sess->upstream_reorder_buf.slots[slot].valid = true;
+            LOG_DEBUG("Session %d: buffered out-of-order upstream seq=%u (expected=%u)\n", 
+                      sidx, seq, sess->rx_next);
+        }
+        return;
+    }
+
+    /* seq == rx_next: process it */
+    session_process_data_direct(sidx, data, len);
+    sess->rx_next++;
+
+    /* 2. Drain reorder buffer */
+    while (true) {
+        int slot = sess->rx_next % RX_REORDER_WINDOW;
+        if (!sess->upstream_reorder_buf.slots[slot].valid || 
+            sess->upstream_reorder_buf.slots[slot].seq != sess->rx_next) {
+            break;
+        }
+
+        LOG_DEBUG("Session %d: draining sequential upstream seq=%u from reorder buffer\n", 
+                  sidx, sess->rx_next);
+        session_process_data_direct(sidx, 
+                                   sess->upstream_reorder_buf.slots[slot].data, 
+                                   sess->upstream_reorder_buf.slots[slot].len);
+        
+        free(sess->upstream_reorder_buf.slots[slot].data);
+        sess->upstream_reorder_buf.slots[slot].data = NULL;
+        sess->upstream_reorder_buf.slots[slot].valid = false;
+        sess->rx_next++;
     }
 }
