@@ -431,9 +431,8 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                 payload_len -= sizeof(capability_header_t);
             }
         }
-    } else if (q_flags == 0 && payload_len == 13 && payload[0] == DNSTUN_VERSION) {
+    } else if ((q_flags & ~CHUNK_FLAG_IS_TUNNEL) == 0 && payload_len == 13 && payload[0] == DNSTUN_VERSION) {
         /* Handshake: No extra metadata prepended, payload IS the handshake struct */
-        /* Handshake detection continues below... */
     } else if (payload_len >= 2) {
         /* DATA/FEC: Expect 2-byte compact ACK */
         client_ack_seq = (uint16_t)((payload[0] << 8) | payload[1]);
@@ -443,7 +442,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     }
 
     if (payload_len >= 4 && memcmp(payload, "SYNC", 4) == 0) is_sync = true;
-    bool is_handshake = (q_flags == 0 && payload_len == 13 && payload[0] == DNSTUN_VERSION);
+    bool is_handshake = ((q_flags & ~CHUNK_FLAG_IS_TUNNEL) == 0 && payload_len == 13 && payload[0] == DNSTUN_VERSION);
 
     int sidx = session_find_by_id(session_id);
     if (sidx < 0) {
