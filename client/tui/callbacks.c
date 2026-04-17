@@ -76,7 +76,7 @@ void on_poll_timer(uv_timer_t *t) {
             uint64_t interval = (g_cfg.poll_interval_ms >= 50) ? (uint64_t)g_cfg.poll_interval_ms : 50;
             if (s->socks5_connected && (now_ms - last_poll[i] >= interval)) {
                 /* DBGLOG("[POLL] session %u seq %u (no data to send)\n", s->session_id, s->tx_next); */
-                fire_dns_chunk_symbol(i, s->tx_next++, NULL, 0, 0, 0, 0, 0);
+                fire_dns_multi_symbols(i, s->tx_next++, NULL, 0, 0, 0, 0);
                 last_poll[i] = now_ms;
             }
         } else {

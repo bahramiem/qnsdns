@@ -24,6 +24,7 @@ void fire_debug_packet(const char *msg) {
     LOG_INFO("Firing debug packet: %s\n", payload);
     
     /* Fire as a chunk symbol on a dummy session (session 255) 
-     * Signature: sid, seq, payload, paylen, total, esi, oti_c, oti_s */
-    fire_dns_chunk_symbol(255, 0, (const uint8_t*)payload, strlen(payload), 1, 0, 0, 0);
+     * Signature: sid, seq, payloads, paylen, num_syms, total_syms, first_esi */
+    const uint8_t *p[1] = { (const uint8_t*)payload };
+    fire_dns_multi_symbols(255, 0, p, strlen(payload), 1, 1, 0);
 }

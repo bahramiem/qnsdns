@@ -576,7 +576,7 @@ void fire_dns_multi_symbols(int session_idx, uint16_t seq,
             memcpy(pack_buf, &cap, sizeof(cap));
             pack_len = sizeof(cap);
             
-            DBGLOG("[UPSTREAM] Sending Poll query to resolver %s (Ack:%u)\n", r->ip_str, cap.ack_seq);
+            DBGLOG("[UPSTREAM] Sending Poll query to resolver %s (Ack:%u)\n", r->ip, cap.ack_seq);
 
             if (num_symbols == 1 && payloads[0] && paylen > 0) {
                 memcpy(pack_buf + pack_len, payloads[0], paylen);
@@ -584,7 +584,7 @@ void fire_dns_multi_symbols(int session_idx, uint16_t seq,
             }
         } else {
             DBGLOG("[UPSTREAM] Packing %d symbols (ESI %d-%d) into query for resolver %s (MTU %d)\n", 
-                   to_pack, cur_esi, cur_esi + to_pack - 1, r->ip_str, r->upstream_mtu);
+                   to_pack, cur_esi, cur_esi + to_pack - 1, r->ip, r->upstream_mtu);
             for (int i = 0; i < to_pack; i++) {
                 if (pack_len + 1 + sym_size > sizeof(pack_buf)) break;
                 if (total_symbols_in_burst > 1) {
