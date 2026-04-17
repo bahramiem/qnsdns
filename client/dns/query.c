@@ -528,7 +528,13 @@ void fire_dns_chunk_symbol(int session_idx, uint16_t seq,
     chunk_set_session_id(&hdr, sess->session_id);
     hdr.seq = seq;
 
-    uint8_t chunk_total = (uint8_t)(total_symbols > 0 ? total_symbols : 1);
+    uint8_t chunk_total = (uint8_t)total_symbols;
+    if (chunk_total == 0 && paylen > 0) {
+        /* Handshake - leave it as 0 */
+    } else if (chunk_total == 0 && paylen == 0) {
+        /* Poll - set to 1 for compatibility */
+        chunk_total = 1;
+    }
     uint8_t fec_k_val   = (uint8_t)(r->fec_k > 15 ? 15 : r->fec_k);
     if (fec_k_val == 0 && chunk_total > 1) fec_k_val = chunk_total - 1;
     chunk_set_info(&hdr.chunk_info, chunk_total, fec_k_val);

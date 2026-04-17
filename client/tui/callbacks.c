@@ -192,8 +192,8 @@ void on_poll_timer(uv_timer_t *t) {
             if (sym_ptrs) {
                 codec_fec_free(&fenc);
             }
-            if (eres.data) free(eres.data);
-            if (zres.data) free(zres.data);
+            if (eres.data) codec_free_result(&eres);
+            if (zres.data) codec_free_result(&zres);
 
             /* Shift send buffer */
             memmove(s->send_buf, s->send_buf + take, s->send_len - take);

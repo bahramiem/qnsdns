@@ -455,13 +455,15 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     uint8_t chunk_total  = chunk_get_total(hdr.chunk_info);
     uint8_t fec_k        = chunk_get_fec_k(hdr.chunk_info);
 
-    /* 10. Parse capability header (non-FEC packets only) */
+    /* 10. Parse capability header */
     uint16_t client_upstream_mtu = 220; /* default */
     uint16_t client_downstream_mtu = g_cfg.downstream_mtu;
     bool     has_capability_header = false;
     uint16_t client_ack_seq   = 0;
     bool     has_ack          = false;
-    if (chunk_total == 1 && payload_len >= sizeof(capability_header_t)) {
+
+    /* New clients send chunk_total = 0 for internal handshakes. Standalone data = 1. */
+    if ((chunk_total == 0 || chunk_total == 1) && payload_len >= sizeof(capability_header_t)) {
         capability_header_t cap;
         memcpy(&cap, payload, sizeof(cap));
         if (cap.version == DNSTUN_VERSION) {
@@ -469,11 +471,14 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
             client_downstream_mtu = cap.downstream_mtu;
             client_ack_seq         = cap.ack_seq;
             has_ack               = true;
-            LOG_DEBUG("Session %u: CapHdr ack=%u up_mtu=%u dn_mtu=%u enc=%u\n",
-                      session_id, client_ack_seq, client_upstream_mtu, client_downstream_mtu, cap.encoding);
+            has_capability_header = true;
+            
+            /* STRIP header from data stream */
             payload     += sizeof(capability_header_t);
             payload_len -= sizeof(capability_header_t);
-            has_capability_header = true;
+            
+            LOG_DEBUG("Session %u: CapHdr stripped, ack=%u up_mtu=%u dn_mtu=%u\n",
+                      session_id, client_ack_seq, client_upstream_mtu, client_downstream_mtu);
         }
     }
 
