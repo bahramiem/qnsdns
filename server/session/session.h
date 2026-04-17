@@ -97,6 +97,7 @@ typedef struct srv_session {
     uint8_t  retx_buf[4096];
     size_t   retx_len;
     uint16_t retx_seq;
+    int      retx_count; /* Number of fragments in the burst */
 } srv_session_t;
 
 /* ── Session table (extern — defined in session.c) ── */
