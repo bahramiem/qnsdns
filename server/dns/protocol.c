@@ -375,31 +375,43 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     bool    is_fec       = (q_flags & CHUNK_FLAG_FEC) != 0;
     bool    is_sync      = false;
 
-    /* ... MTU and Capability parsing ... */
+    /* ── Tiered Metadata Parsing ──────────────────────────────── */
     uint16_t client_upstream_mtu = 220;
     uint16_t client_downstream_mtu = g_cfg.downstream_mtu;
     uint16_t client_ack_seq   = 0;
     bool     has_ack          = false;
     bool     has_capability_header = false;
 
-    if (payload_len >= sizeof(capability_header_t)) {
-        capability_header_t cap;
-        memcpy(&cap, payload, sizeof(cap));
-        if (cap.version == DNSTUN_VERSION) {
-            client_upstream_mtu   = cap.upstream_mtu;
-            client_downstream_mtu = cap.downstream_mtu;
-            client_ack_seq         = cap.ack_seq;
-            has_ack               = true;
-            has_capability_header = true;
-            payload     += sizeof(capability_header_t);
-            payload_len -= sizeof(capability_header_t);
-            LOG_DEBUG("Sess %u: Cap header found (UpMTU:%u DownMTU:%u Ack:%u)\n", 
-                      session_id, client_upstream_mtu, client_downstream_mtu, client_ack_seq);
+    if (is_poll) {
+        /* POLL/SYNC: Expect full 9-byte capability header */
+        if (payload_len >= sizeof(capability_header_t)) {
+            capability_header_t cap;
+            memcpy(&cap, payload, sizeof(cap));
+            if (cap.version == DNSTUN_VERSION) {
+                client_upstream_mtu   = cap.upstream_mtu;
+                client_downstream_mtu = cap.downstream_mtu;
+                client_ack_seq         = cap.ack_seq;
+                has_ack               = true;
+                has_capability_header = true;
+                payload     += sizeof(capability_header_t);
+                payload_len -= sizeof(capability_header_t);
+                LOG_DEBUG("Sess %u: Poll metadata found (Ack:%u)\n", session_id, client_ack_seq);
+            }
         }
+    } else if (q_flags == 0 && payload_len == 13 && payload[0] == DNSTUN_VERSION) {
+        /* Handshake: No extra metadata prepended, payload IS the handshake struct */
+        /* Handshake detection continues below... */
+    } else if (payload_len >= 2) {
+        /* DATA/FEC: Expect 2-byte compact ACK */
+        client_ack_seq = (uint16_t)((payload[0] << 8) | payload[1]);
+        has_ack = true;
+        payload     += 2;
+        payload_len -= 2;
+        LOG_DEBUG("Sess %u: Compact ACK found (Ack:%u)\n", session_id, client_ack_seq);
     }
 
     if (payload_len >= 4 && memcmp(payload, "SYNC", 4) == 0) is_sync = true;
-    bool is_handshake = (payload_len == 13 && payload[0] == DNSTUN_VERSION);
+    bool is_handshake = (q_flags == 0 && payload_len == 13 && payload[0] == DNSTUN_VERSION);
 
     int sidx = session_find_by_id(session_id);
     if (sidx < 0) {

@@ -506,7 +506,7 @@ void send_mtu_handshake(int session_idx) {
     hs.downstream_mtu = (uint16_t)downstream_mtu;
     hs.fec_k          = (uint16_t)fec_k;
     hs.fec_n          = (uint16_t)fec_n;
-    hs.symbol_size    = 40; /* Standard granular size for this tunnel */
+    hs.symbol_size    = DNSTUN_CHUNK_PAYLOAD; /* Use standard granular size */
     hs.encoding       = DNSTUN_ENC_BASE64; 
     hs.loss_pct       = 0;
 
@@ -551,7 +551,8 @@ void fire_dns_multi_symbols(int session_idx, uint16_t seq,
         int sym_size = (int)paylen;
         int max_pack = 10; /* Default */
         if (sym_size > 0) {
-            max_pack = (r->upstream_mtu - 5) / (sym_size + 1);
+            /* -12 accounting for headers (3 for query_header, 2 for compact ACK, some buffer) */
+            max_pack = (r->upstream_mtu - 12) / (sym_size + 1);
             if (max_pack < 1) max_pack = 1;
             if (max_pack > 16) max_pack = 16;
         }
@@ -565,7 +566,9 @@ void fire_dns_multi_symbols(int session_idx, uint16_t seq,
 
         session_t *sess = &g_sessions[session_idx];
 
+        /* Prepend tiered metadata based on packet type to minimize overhead */
         if (num_symbols == 0) {
+            /* POLL/SYNC: Prepend full 9-byte capability header (MTU/loss sync) */
             capability_header_t cap = {0};
             cap.version       = DNSTUN_VERSION;
             cap.upstream_mtu  = r->upstream_mtu;
@@ -575,16 +578,20 @@ void fire_dns_multi_symbols(int session_idx, uint16_t seq,
             cap.ack_seq       = sess->reorder_buf.expected_seq;
             memcpy(pack_buf, &cap, sizeof(cap));
             pack_len = sizeof(cap);
-            
             DBGLOG("[UPSTREAM] Sending Poll query to resolver %s (Ack:%u)\n", r->ip, cap.ack_seq);
-
-            if (num_symbols == 1 && payloads[0] && paylen > 0) {
-                memcpy(pack_buf + pack_len, payloads[0], paylen);
-                pack_len += paylen;
-            }
+        } else if (num_symbols == 1 && total_symbols_in_burst == 0) {
+            /* HANDSHAKE: Prepend NOTHING. Payload will be the bare 13-byte handshake struct. */
+            DBGLOG("[UPSTREAM] Sending Handshake to resolver %s\n", r->ip);
         } else {
-            DBGLOG("[UPSTREAM] Packing %d symbols (ESI %d-%d) into query for resolver %s (MTU %d)\n", 
-                   to_pack, cur_esi, cur_esi + to_pack - 1, r->ip, r->upstream_mtu);
+            /* DATA/FEC: Prepend ONLY 2-byte compact ACK to save precious DNS payload space */
+            uint16_t ack_seq = sess->reorder_buf.expected_seq;
+            pack_buf[pack_len++] = (uint8_t)((ack_seq >> 8) & 0xFF);
+            pack_buf[pack_len++] = (uint8_t)(ack_seq & 0xFF);
+            DBGLOG("[UPSTREAM] Packing %d symbols (ESI %d-%d) into query for resolver %s (Ack:%u)\n", 
+                   to_pack, cur_esi, cur_esi + to_pack - 1, r->ip, ack_seq);
+        }
+
+        if (num_symbols > 0) {
             for (int i = 0; i < to_pack; i++) {
                 if (pack_len + 1 + sym_size > sizeof(pack_buf)) break;
                 if (total_symbols_in_burst > 1) {
