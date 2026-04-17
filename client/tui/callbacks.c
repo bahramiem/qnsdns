@@ -100,24 +100,29 @@ void on_poll_timer(uv_timer_t *t) {
 
             DBGLOG("[POLL_DATA] taking %zu bytes from send_buf (total %zu)\n", take, s->send_len);
 
-            /* ANTI-CACHE NONCE: Prepend 4 random bytes before compression so
-             * each FEC burst produces a unique QNAME that bypasses DNS resolver
-             * caching (Cloudflare caches identical QNAMEs regardless of TTL=0). */
-            size_t nonce_len = take + 4;
-            uint8_t *nonce_buf = malloc(nonce_len);
-            if (!nonce_buf) {
-                LOG_ERR("OOM for nonce_buf in session %u\n", s->session_id);
-                continue;
+            /* ANTI-CACHE NONCE: Only needed if encryption is OFF. 
+             * If encryption is ON, the ChaCha20 random nonce already makes every packet unique. */
+            uint8_t *comp_buf = s->send_buf;
+            size_t   comp_len = take;
+            uint8_t *nonce_buf = NULL;
+
+            if (!g_cfg.encryption) {
+                size_t nlen = take + 4;
+                nonce_buf = malloc(nlen);
+                if (nonce_buf) {
+                    nonce_buf[0] = (uint8_t)(rand() & 0xFF);
+                    nonce_buf[1] = (uint8_t)(rand() & 0xFF);
+                    nonce_buf[2] = (uint8_t)(rand() & 0xFF);
+                    nonce_buf[3] = (uint8_t)(rand() & 0xFF);
+                    memcpy(nonce_buf + 4, s->send_buf, take);
+                    comp_buf = nonce_buf;
+                    comp_len = nlen;
+                }
             }
-            nonce_buf[0] = (uint8_t)(rand() & 0xFF);
-            nonce_buf[1] = (uint8_t)(rand() & 0xFF);
-            nonce_buf[2] = (uint8_t)(rand() & 0xFF);
-            nonce_buf[3] = (uint8_t)(rand() & 0xFF);
-            memcpy(nonce_buf + 4, s->send_buf, take);
 
             /* Compress */
-            codec_result_t zres = codec_compress(nonce_buf, nonce_len, 0);
-            free(nonce_buf);
+            codec_result_t zres = codec_compress(comp_buf, comp_len, 0);
+            if (nonce_buf) free(nonce_buf);
 
             if (!zres.error && zres.data) {
                 raw_buf = zres.data;

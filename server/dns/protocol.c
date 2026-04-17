@@ -517,13 +517,11 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                 codec_result_t zdec = codec_decompress(dec_in, dec_len, 0);
                 if (!zdec.error) {
                     const uint8_t *p = zdec.data; size_t l = zdec.len;
-                    if (l >= 4) { p += 4; l -= 4; }
-                    else {
-                        codec_free_result(&zdec);
-                        if (!dret.error && dret.data) codec_free_result(&dret);
-                        codec_free_result(&fdec);
-                        session_clear_fec_slot(slot);
-                        return;
+                    /* Skip 4-byte nonce only if it wasn't encrypted (client only adds it when encryption is off) */
+                    if (l >= 4 && !is_encrypted) { p += 4; l -= 4; }
+                    else if (l < 4 && !is_encrypted) {
+                        /* This shouldn't happen with valid packets */
+                        l = 0;
                     }
                     LOG_DEBUG("Session %u: FEC burst %u decoded, len %zu\n", session_id, burst_id, l);
                     session_handle_data(sidx, p, l, burst_id, slot->count_needed);
@@ -564,7 +562,8 @@ skip_fec_processing:
             zret = codec_decompress(dec_ptr, dec_len, 0);
             if (zret.error) { if (is_encrypted) codec_free_result(&dcret); goto send_reply; }
             const uint8_t *p = zret.data; size_t l = zret.len;
-            if (l >= 4) { p += 4; l -= 4; } else l = 0;
+            if (!is_encrypted && l >= 4) { p += 4; l -= 4; }
+            else if (!is_encrypted && l < 4) l = 0;
             dec_ptr = p; dec_len = l;
         }
         session_handle_data(sidx, dec_ptr, dec_len, seq, 1);
