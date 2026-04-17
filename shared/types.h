@@ -433,6 +433,7 @@ typedef struct session {
     bool      established;
     bool      fec_synced;   /* True once handshake echoed back by server */
     bool      socks5_pending_ok; /* True if server is ready but waiting for FEC sync */
+    time_t    last_handshake; /* Timestamp of last handshake attempt */
 
     /* send/recv ring buffers */
     uint8_t  *send_buf;

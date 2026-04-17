@@ -78,7 +78,6 @@ void run_event_loop_ms(int timeout_ms) {
 }
 
 void resolver_init_phase(void) {
-  LOG_INFO("=== Resolver Initialization Phase (Scanner.py style) ===\n");
 
   /* Step 1: Add seed resolvers */
   for (int i = 0; i < g_cfg.seed_count; i++)
@@ -104,7 +103,6 @@ void resolver_init_phase(void) {
       (g_cfg.test_timeout_ms > 0) ? g_cfg.test_timeout_ms + 1000 : 5000;
 
   /* ─── Phase 1: Long QNAME Test ─── */
-  LOG_INFO("--- Phase 1: Testing Long QNAME support ---\n");
   int phase1_count = 0;
   for (int i = 0; i < g_pool.count; i++) {
     if (g_pool.resolvers[i].state == RSV_DEAD) {
@@ -128,12 +126,7 @@ void resolver_init_phase(void) {
       results[i].longname_supported = true;
     }
   }
-  LOG_INFO("Phase 1 complete: %d/%d resolvers passed or relaxed\n", longname_ok,
-           g_pool.count);
 
-  /* ─── Phase 2: NXDOMAIN Test ─── */
-  LOG_INFO(
-      "--- Phase 2: Testing NXDOMAIN behavior (fake resolver filter) ---\n");
   int phase2_count = 0;
   for (int i = 0; i < g_pool.count; i++) {
     if (results[i].longname_supported) {
@@ -158,11 +151,7 @@ void resolver_init_phase(void) {
       nxdomain_ok++;
     }
   }
-  LOG_INFO("Phase 2 complete: %d/%d resolvers passed or relaxed\n", nxdomain_ok,
-           g_pool.count);
 
-  /* ─── Phase 3: EDNS + TXT Quality Test ─── */
-  LOG_INFO("--- Phase 3: Testing EDNS + TXT support and MTU detection ---\n");
   int phase3_count = 0;
   for (int i = 0; i < g_pool.count; i++) {
     if (results[i].longname_supported && results[i].nxdomain_correct) {
@@ -179,7 +168,6 @@ void resolver_init_phase(void) {
   run_event_loop_ms(wait_ms);
 
   /* ─── Phase 4: MTU Binary Search Testing ─── */
-  LOG_INFO("--- Phase 4: Binary search MTU testing ---\n");
   int phase4_count = 0;
   for (int i = 0; i < g_pool.count; i++) {
     if (results[i].longname_supported && results[i].nxdomain_correct &&
@@ -221,14 +209,6 @@ void resolver_init_phase(void) {
       }
     }
   }
-  if (phase4_count > 0) {
-    LOG_INFO("Started %d MTU binary search tests\n", phase4_count);
-    int mtu_wait_ms = (g_cfg.mtu_test_timeout_ms > 0)
-                          ? g_cfg.mtu_test_timeout_ms * 20
-                          : 20000;
-    run_event_loop_ms(mtu_wait_ms);
-  }
-  LOG_INFO("Phase 4 complete: MTU binary search testing finished\n");
 
   /* Final filter */
   int active = 0;
@@ -281,33 +261,6 @@ void resolver_init_phase(void) {
     free_mtu_binary_search(&results[i].down_mtu_search);
   }
 
-  LOG_INFO("=== Init complete: %d/%d resolvers active ===\n", active,
-           g_pool.count);
-
-  /* MTU stats */
-  int up_mtu_min = 9999, up_mtu_max = 0;
-  int down_mtu_min = 9999, down_mtu_max = 0;
-  for (int i = 0; i < g_pool.count; i++) {
-    resolver_t *r = &g_pool.resolvers[i];
-    if (r->state == RSV_ACTIVE) {
-      if (r->true_upstream_mtu > 0) {
-        if (r->true_upstream_mtu < up_mtu_min)
-          up_mtu_min = r->true_upstream_mtu;
-        if (r->true_upstream_mtu > up_mtu_max)
-          up_mtu_max = r->true_upstream_mtu;
-      }
-      if (r->true_downstream_mtu > 0) {
-        if (r->true_downstream_mtu < down_mtu_min)
-          down_mtu_min = r->true_downstream_mtu;
-        if (r->true_downstream_mtu > down_mtu_max)
-          down_mtu_max = r->true_downstream_mtu;
-      }
-    }
-  }
-  if (up_mtu_min < 9999)
-    LOG_INFO("Upstream MTU range: %d - %d\n", up_mtu_min, up_mtu_max);
-  if (down_mtu_min < 9999)
-    LOG_INFO("Downstream MTU range: %d - %d\n", down_mtu_min, down_mtu_max);
 
   log_aggregation_stats();
   free(results);

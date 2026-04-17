@@ -255,8 +255,6 @@ int main(int argc, char *argv[]) {
     }
 
     LOG_INFO("dnstun-server listening on %s:%d\n", bind_ip, bind_port);
-    LOG_INFO("Workers  : %d\n", g_cfg.workers);
-    LOG_INFO("Swarm    : %d known resolvers\n", g_swarm_count);
 
     /* ── Bind STDIN for TUI ── */
     static uv_tty_t g_tty;

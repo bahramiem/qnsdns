@@ -56,9 +56,6 @@ void init_mtu_binary_search(mtu_binary_search_t *search, int current, int max_mt
     /* Allocate cache for tested values */
     search->cache_size = (effective_max / 8) + 1;
     search->tested_cache = calloc(search->cache_size, sizeof(int));
-    
-    LOG_INFO("[%s MTU] Starting binary search: low=%d, high=%d, target max=%d\n", 
-             is_upload ? "Up" : "Down", search->low, search->high, effective_max);
 }
 
 void free_mtu_binary_search(mtu_binary_search_t *search) {
@@ -81,8 +78,6 @@ int get_next_mtu_to_test(mtu_binary_search_t *search) {
     
     if (search->low > search->high) {
         search->active = false;
-        LOG_INFO("[%s MTU] Search complete, optimal MTU: %d\n", 
-                 search->is_upload ? "Up" : "Down", search->optimal);
         return -1;
     }
     
@@ -103,8 +98,6 @@ int get_next_mtu_to_test(mtu_binary_search_t *search) {
     
     if (mid > search->high || mid < search->low || is_mtu_tested(search, mid)) {
         search->active = false;
-        LOG_INFO("[%s MTU] Search complete, optimal MTU: %d\n", 
-                 search->is_upload ? "Up" : "Down", search->optimal);
         return -1;
     }
     

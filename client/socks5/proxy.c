@@ -232,9 +232,10 @@ static size_t socks5_handle_data(socks5_client_t *c, const uint8_t *data, size_t
             }
         }
 
-        uint8_t reply[10] = {0x05, 0x00, 0x00, 0x01, 0,0,0,0,0,0};
-        socks5_send(c, reply, 10);
-        sess->socks5_connected = true;
+        /* Delay SOCKS5 Success until FEC sync echo arrives from server */
+        sess->socks5_pending_ok = true;
+        sess->socks5_connected  = false;
+        LOG_DEBUG("Session %u: SOCKS5 SUCCESS pended (waiting for FEC sync)\n", sess->session_id);
         
         return min_len;
     }

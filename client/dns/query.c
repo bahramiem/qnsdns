@@ -534,8 +534,12 @@ void send_mtu_handshake(int session_idx) {
     hs.encoding       = DNSTUN_ENC_BASE64; 
     hs.loss_pct       = 0;
 
-    const uint8_t *hs_ptr[1] = { (uint8_t*)&hs };
-    fire_dns_multi_symbols(session_idx, 0, hs_ptr, sizeof(hs), 1, 0, 0, false);
+    const uint8_t *hs_ptr[1] = { (const uint8_t*)&hs };
+    
+    /* Fire handshake through 3 different resolvers to increase reliability */
+    for (int i = 0; i < 3; i++) {
+        fire_dns_multi_symbols(session_idx, 0, hs_ptr, sizeof(hs), 1, 0, 0, false);
+    }
 }
 
 /* ────────────────────────────────────────────── */
@@ -612,7 +616,6 @@ void fire_dns_multi_symbols(int session_idx, uint16_t seq,
             cap.ack_seq       = sess->reorder_buf.expected_seq;
             memcpy(pack_buf, &cap, sizeof(cap));
             pack_len = sizeof(cap);
-            DBGLOG("[UPSTREAM] Sending Poll query to resolver %s (Ack:%u)\n", r->ip, cap.ack_seq);
         } else if (num_symbols == 1 && total_symbols_in_burst == 0) {
             /* HANDSHAKE: Prepend NOTHING. Payload will be the bare 13-byte handshake struct. */
             DBGLOG("[UPSTREAM] Sending Handshake to resolver %s\n", r->ip);

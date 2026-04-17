@@ -424,8 +424,6 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     sess->last_active   = time(NULL);
     sess->client_addr   = *src;
 
-    sess->client_addr   = *src;
-
     if (has_capability_header) {
         sess->cl_upstream_mtu = client_upstream_mtu;
         sess->cl_downstream_mtu = client_downstream_mtu;
@@ -481,6 +479,10 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
 
         if (is_fec) {
             /* FEC Aggregation: query payload is [ESI(1)][Data(T)] ... */
+            if (sess->cl_symbol_size == 0) {
+                LOG_DEBUG("  [FEC] Error: cl_symbol_size is 0, cannot extract symbols. Dropping packet.\n");
+                break;
+            }
             if (cur_rem < (size_t)(1 + sess->cl_symbol_size)) break;
             sym_esi = *cur_ptr++;
             sym_data = cur_ptr;

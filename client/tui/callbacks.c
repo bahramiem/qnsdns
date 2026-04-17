@@ -72,6 +72,16 @@ void on_poll_timer(uv_timer_t *t) {
             }
         }
 
+        /* RETRANSMIT HANDSHAKE if not yet synced */
+        time_t now = time(NULL);
+        if (s->established && !s->fec_synced) {
+            if (now - s->last_handshake >= 2) {
+                LOG_DEBUG("[UPSTREAM] Session %u: Retransmitting Handshake (waiting for sync)\n", s->session_id);
+                send_mtu_handshake(i);
+                s->last_handshake = now;
+            }
+        }
+
         if (s->send_len == 0) {
             uint64_t interval = (g_cfg.poll_interval_ms >= 50) ? (uint64_t)g_cfg.poll_interval_ms : 50;
             if (s->socks5_connected && (now_ms - last_poll[i] >= interval)) {
