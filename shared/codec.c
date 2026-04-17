@@ -448,7 +448,16 @@ codec_result_t codec_fec_decode_oti(fec_encoded_t *encoded) {
             (size_t)encoded->symbol_len,
             encoded->k_source);
     LOG_DEBUG("FEC OTI: host_oti=0x%016llx => T=%u F=%llu\n",
-            (unsigned long long)host_oti_common, T, (unsigned long long)F);
+            (unsigned long long)host_oti_common, T, (unsigned long long) host_oti_common >> 24);
+
+    /* Guardrails: Reject implausible F (Object Size) or T (Symbol Size) */
+    /* MTU is usually < 1500, and a single burst shouldn't exceed 256KB for DNS tunnel */
+    if (T == 0 || T > 1500 || F > 262144) {
+        LOG_WARN("FEC OTI: F (%llu) or T (%u) implausible, rejecting burst\n", 
+                (unsigned long long)F, T);
+        res.error = true;
+        return res;
+    }
 
     /* Fallback: use received payload size if T from OTI is implausible */
     if (T == 0 || T > 1500) {
