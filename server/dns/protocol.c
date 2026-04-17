@@ -120,8 +120,8 @@ int build_txt_reply_multi(uint8_t *outbuf, size_t *outlen,
         if (chunk_data_len > MAX_CHUNK_BINARY) chunk_data_len = MAX_CHUNK_BINARY;
 
         /* Check if this fragment's overhead + payload fits in budget */
-        /* Each TXT record adds name(2) + hdr(10) + len(1) + payload chars */
-        size_t frag_overhead = 13; 
+        /* Each TXT record adds qname(len) + hdr(10) + txt_len(1) + payload chars */
+        size_t frag_overhead = strlen(qname) + 11; 
         size_t b64_chars = (chunk_data_len == 0) ? 8 : ((chunk_data_len + 5) / 3 * 4); // conservative estimate
         if (current_packet_size + frag_overhead + b64_chars > safe_packet_budget && frag_count > 0)
             break;
@@ -199,7 +199,12 @@ int build_txt_reply_multi(uint8_t *outbuf, size_t *outlen,
     for (int i = 0; i < MAX_FRAGMENTS; i++) free(encoded_chunks[i]);
     free(encoded_chunks);
 
-    if (rc != RCODE_OKAY) return -1;
+    if (rc != RCODE_OKAY) {
+        LOG_ERR("[DNS_ENCODE] Failed to encode multi-fragment reply: rcode=%d\n", rc);
+        return -1;
+    }
+    
+    LOG_DEBUG("[DNS_ENCODE] Multi-fragment reply sent: id=%u RRs=%d total_bytes=%zu\n", query_id, frag_count, sz);
 
     *outlen = sz;
     return 0;
@@ -527,8 +532,16 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         sess->retx_seq        = 0;
         sess->upstream_len    = 0;
         LOG_INFO("Session %d: handshake done, downstream_seq=0\n", sidx);
-        /* Return early. Handshake query should only trigger its own ACK. */
-        goto send_reply; 
+        /* 15. Handshake query triggers its own response (NON-sequenced ACK) */
+        uint8_t reply[512]; size_t rlen = sizeof(reply);
+        int nfrags = 0;
+        LOG_DEBUG("Session %u: Sending handshake ACK (non-sequenced)\n", sess->session_id);
+        if (build_txt_reply_multi(reply, &rlen, query_id, qname,
+                                 NULL, 0, sess->cl_downstream_mtu, 0,
+                                 sess->session_id, false, &nfrags, NULL) == 0) {
+            send_udp_reply(src, reply, rlen);
+        }
+        return;
     }
 
     /* ── 15. FEC Burst Reassembly ────────────────────────────── */
@@ -762,7 +775,8 @@ send_reply:
             LOG_DEBUG("Server sending burst: session=%u seq=%u..%u frags=%d bytes=%zu/%zu mtu=%u\n",
                     sess->session_id, out_seq, out_seq + nfrags - 1, nfrags, sz, sess->upstream_len, mtu);
 
-            if (sess->handshake_done) sess->downstream_seq += nfrags;
+            /* Increment sequence only if we actually consumed data */
+            if (sess->handshake_done && sz > 0) sess->downstream_seq += nfrags;
 
             /* Update retransmission buffer with the entire binary burst */
             if (sz <= sizeof(sess->retx_buf)) {
@@ -803,9 +817,10 @@ send_reply:
     } else {
 send_empty:;
         int nfrags = 0;
+        /* Empty data polls do NOT advance the sequence and are NOT sequenced */
         if (build_txt_reply_multi(reply, &rlen, query_id, qname,
                                  NULL, 0, mtu, out_seq,
-                                 sess->session_id, sess->handshake_done, &nfrags, NULL) == 0) {
+                                 sess->session_id, false, &nfrags, NULL) == 0) {
             send_udp_reply(src, reply, rlen);
         }
     }
