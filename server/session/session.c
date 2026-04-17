@@ -94,11 +94,9 @@ void session_close(int idx) {
     free(s->pending_tx_buf);
     s->pending_tx_buf = NULL;
 
-    if (s->burst_symbols) {
-        for (int i = 0; i < s->burst_count_needed; i++)
-            free(s->burst_symbols[i]);
-        free(s->burst_symbols);
-        s->burst_symbols = NULL;
+    /* Free all FEC reassembly slots */
+    for (int i = 0; i < SRV_MAX_FEC_SLOTS; i++) {
+        session_clear_fec_slot(&s->fec_slots[i]);
     }
 
     /* Free upstream reorder buffer slots */
@@ -115,18 +113,74 @@ void session_close(int idx) {
         g_stats.active_sessions--;
 }
 
-void session_clear_burst(srv_session_t *s) {
-    if (s->burst_symbols) {
-        for (int i = 0; i < s->burst_count_needed; i++) {
-            if (s->burst_symbols[i]) free(s->burst_symbols[i]);
+void session_clear_fec_slot(fec_burst_t *slot) {
+    if (!slot) return;
+    if (slot->symbols) {
+        for (int i = 0; i < slot->count_needed; i++) {
+            if (slot->symbols[i]) free(slot->symbols[i]);
         }
-        free(s->burst_symbols);
-        s->burst_symbols = NULL;
+        free(slot->symbols);
+        slot->symbols = NULL;
     }
-    s->burst_count_needed = 0;
-    s->burst_received     = 0;
-    s->burst_decoded      = false;
-    s->burst_has_oti      = false;
+    slot->count_needed   = 0;
+    slot->count_received = 0;
+    slot->decoded        = false;
+    slot->has_oti        = false;
+    slot->used           = false;
+    slot->last_active    = 0;
+}
+
+void session_clear_burst(srv_session_t *s) {
+    /* For legacy reasons; now clears ALL slots for a session reset */
+    for (int i = 0; i < SRV_MAX_FEC_SLOTS; i++) {
+        session_clear_fec_slot(&s->fec_slots[i]);
+    }
+}
+
+fec_burst_t* session_get_fec_burst(srv_session_t *s, uint16_t burst_id) {
+    time_t now = time(NULL);
+    int oldest_idx = -1;
+    time_t oldest_time = now + 1000;
+
+    /* 1. Try to find existing slot for this burst */
+    for (int i = 0; i < SRV_MAX_FEC_SLOTS; i++) {
+        if (s->fec_slots[i].used) {
+            /* Check for timeout/stale bursts while we're at it */
+            if (now - s->fec_slots[i].last_active > FEC_BURST_TIMEOUT_SEC) {
+                LOG_DEBUG("Session %u: timing out stale FEC slot %d (burst %u)\n", 
+                          s->session_id, i, s->fec_slots[i].burst_id);
+                session_clear_fec_slot(&s->fec_slots[i]);
+                continue;
+            }
+            if (s->fec_slots[i].burst_id == burst_id) {
+                s->fec_slots[i].last_active = now;
+                return &s->fec_slots[i];
+            }
+            if (s->fec_slots[i].last_active < oldest_time) {
+                oldest_time = s->fec_slots[i].last_active;
+                oldest_idx = i;
+            }
+        } else if (oldest_idx == -1) {
+            oldest_idx = i; /* Use first empty slot */
+            oldest_time = 0;
+        }
+    }
+
+    /* 2. Allocate new slot if not found */
+    if (oldest_idx != -1) {
+        fec_burst_t *slot = &s->fec_slots[oldest_idx];
+        if (slot->used) {
+            LOG_DEBUG("Session %u: evicting unfinished FEC burst %u from slot %d for new burst %u\n", 
+                      s->session_id, slot->burst_id, oldest_idx, burst_id);
+            session_clear_fec_slot(slot);
+        }
+        slot->burst_id    = burst_id;
+        slot->used        = true;
+        slot->last_active = now;
+        return slot;
+    }
+
+    return NULL;
 }
 
 /* ────────────────────────────────────────────── */

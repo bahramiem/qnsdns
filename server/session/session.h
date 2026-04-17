@@ -72,16 +72,8 @@ typedef struct srv_session {
     uint8_t  cl_fec_k;
     char     user_id[16];
 
-    /* FEC burst reassembly state */
-    uint16_t  burst_seq_start;
-    int       burst_count_needed;
-    int       burst_received;
-    uint8_t **burst_symbols;
-    size_t    burst_symbol_len;
-    uint64_t  burst_oti_common;
-    uint32_t  burst_oti_scheme;
-    bool      burst_has_oti;
-    bool      burst_decoded;
+    /* FEC burst reassembly slots (multi-slot tracking for interleaved bursts) */
+    fec_burst_t fec_slots[SRV_MAX_FEC_SLOTS];
 
     /**
      * Set true once the client sends a capability/MTU handshake.
@@ -151,6 +143,9 @@ void session_send_status(int sidx, uint8_t status);
  * @brief Clear pending FEC burst reassembly state.
  */
 void session_clear_burst(srv_session_t *s);
+void session_clear_fec_slot(fec_burst_t *slot);
+
+fec_burst_t* session_get_fec_burst(srv_session_t *s, uint16_t burst_id);
 
 void session_handle_data(int sidx, const uint8_t *data, size_t len, uint16_t seq, int num_seqs);
 

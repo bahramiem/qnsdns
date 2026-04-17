@@ -393,6 +393,26 @@ typedef struct {
 } symbol_encoder_t;
 
 /* ──────────────────────────────────────────────
+   FEC Burst Reassembly State (Server only)
+────────────────────────────────────────────── */
+#define SRV_MAX_FEC_SLOTS     16     /* Concurrent bursts per session */
+#define FEC_BURST_TIMEOUT_SEC 10     /* Evict bursts older than 10s */
+
+typedef struct {
+    uint16_t  burst_id;         /* Sequence number (identifies the burst) */
+    int       count_needed;     /* Total symbols in burst (N) */
+    int       count_received;   /* Symbols received so far */
+    uint8_t **symbols;          /* Array of received symbols [count_needed] */
+    size_t    symbol_len;       /* Length of each symbol */
+    uint64_t  oti_common;       /* FEC decoder info */
+    uint32_t  oti_scheme;       /* FEC decoder info */
+    bool      has_oti;          /* True if OTI was sent in header */
+    bool      decoded;          /* True once successfully decoded */
+    time_t    last_active;      /* Timestamp for eviction logic */
+    bool      used;             /* True if this slot is active */
+} fec_burst_t;
+
+/* ──────────────────────────────────────────────
    Active SOCKS5 session
 ────────────────────────────────────────────── */
 /* Resource limits to prevent memory exhaustion (10MB max per session buffer) */
