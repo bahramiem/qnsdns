@@ -253,17 +253,14 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         if (ans->txt.len > 7 && strchr(ans->txt.text, ',')) {
           char first_part[16] = {0};
           const char *comma = strchr(ans->txt.text, ',');
-          size_t first_len =
-              comma ? (size_t)(comma - ans->txt.text) : ans->txt.len;
+          size_t first_len = comma ? (size_t)(comma - ans->txt.text) : ans->txt.len;
           if (first_len < sizeof(first_part)) {
             memcpy(first_part, ans->txt.text, first_len);
             int dots = 0;
             bool has_digit = false;
             for (size_t k = 0; k < first_len; k++) {
-              if (first_part[k] == '.')
-                dots++;
-              if (first_part[k] >= '0' && first_part[k] <= '9')
-                has_digit = true;
+              if (first_part[k] == '.') dots++;
+              if (first_part[k] >= '0' && first_part[k] <= '9') has_digit = true;
             }
             is_sync = (dots >= 3 && has_digit);
           }
@@ -278,53 +275,39 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
           }
           free(ips);
         } else {
-          /* Base64 decode TXT payload */
           uint8_t raw_decoded[4096];
-          ptrdiff_t decoded_len =
-              base64_decode(raw_decoded, ans->txt.text, ans->txt.len);
-          if (decoded_len < 0)
-            continue;
+          ptrdiff_t decoded_len = base64_decode(raw_decoded, ans->txt.text, ans->txt.len);
+          if (decoded_len < 0) continue;
 
           int sidx = q->session_idx;
-          if (sidx >= 0 && sidx < DNSTUN_MAX_SESSIONS &&
-              !g_sessions[sidx].closed) {
+          if (sidx >= 0 && sidx < DNSTUN_MAX_SESSIONS && !g_sessions[sidx].closed) {
             session_t *s = &g_sessions[sidx];
             const uint8_t *payload_ptr = raw_decoded;
             size_t payload_len = (size_t)decoded_len;
             bool has_seq = false;
             uint16_t seq = 0;
 
-            /* Parse response header (6 bytes) */
+            /* 1. Header Handling (Standard 6-byte header) */
             if (decoded_len >= (ptrdiff_t)sizeof(server_response_header_t)) {
               server_response_header_t resp_hdr;
               memcpy(&resp_hdr, raw_decoded, sizeof(resp_hdr));
 
-              if (resp_hdr.session_id != s->session_id)
-                continue; /* Stale */
+              if (resp_hdr.session_id != s->session_id) continue;
 
-              /* ALWAYS strip the 6-byte header to point to payload */
               payload_ptr = raw_decoded + sizeof(resp_hdr);
               payload_len = (size_t)(decoded_len - sizeof(resp_hdr));
 
-              /* Process Cumulative ACK (ack_seq) */
               uint16_t ack_seq = resp_hdr.ack_seq;
-              if (ack_seq > s->tx_acked ||
-                  (ack_seq < 100 && s->tx_acked > 60000)) {
+              if (ack_seq > s->tx_acked || (ack_seq < 100 && s->tx_acked > 60000)) {
                 uint32_t prune_bytes = s->tx_offset_map[ack_seq % 256];
                 if (prune_bytes > 0 && prune_bytes <= s->send_len) {
-                  LOG_DEBUG("Session %u: ACK received for seq < %u, pruning %u "
-                            "bytes\n",
-                            s->session_id, ack_seq, prune_bytes);
-                  memmove(s->send_buf, s->send_buf + prune_bytes,
-                          s->send_len - prune_bytes);
+                  memmove(s->send_buf, s->send_buf + prune_bytes, s->send_len - prune_bytes);
                   s->send_len -= prune_bytes;
                   s->tx_acked = ack_seq;
                   s->last_ack_time = time(NULL);
                   for (int m = 0; m < 256; m++) {
-                    if (s->tx_offset_map[m] >= prune_bytes)
-                      s->tx_offset_map[m] -= prune_bytes;
-                    else
-                      s->tx_offset_map[m] = 0;
+                    if (s->tx_offset_map[m] >= prune_bytes) s->tx_offset_map[m] -= prune_bytes;
+                    else s->tx_offset_map[m] = 0;
                   }
                 } else if (ack_seq == s->tx_next) {
                   s->send_len = 0;
@@ -334,15 +317,11 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
               }
 
               has_seq = (resp_hdr.flags & RESP_FLAG_HAS_SEQ) != 0;
-              if (has_seq)
-                seq = resp_hdr.seq;
+              if (has_seq) seq = resp_hdr.seq;
 
-              /* DOWNSTREAM DECOMPRESSION */
               if (resp_hdr.flags & RESP_FLAG_COMPRESSED) {
-                codec_result_t zdec =
-                    codec_decompress(payload_ptr, payload_len, 0);
+                codec_result_t zdec = codec_decompress(payload_ptr, payload_len, 0);
                 if (!zdec.error && zdec.data) {
-                  /* Use static buffer for decompressed fragment */
                   static uint8_t decomp_buf[4096];
                   size_t dlen = (zdec.len > 4096) ? 4096 : zdec.len;
                   memcpy(decomp_buf, zdec.data, dlen);
@@ -352,68 +331,56 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                 codec_free_result(&zdec);
               }
 
-              /* Check for Handshake Echo Sync */
+              /* 2. Handshake Detection (Sync ACK) */
               if (payload_len == sizeof(handshake_packet_t)) {
-                  LOG_DEBUG("Session %u: received 13-byte packet, first 4 bytes: %02x %02x %02x %02x (expected version %02x)\n",
-                            s->session_id, payload_ptr[0], payload_ptr[1], payload_ptr[2], payload_ptr[3], DNSTUN_VERSION);
-                  handshake_packet_t *echo = (handshake_packet_t *)payload_ptr;
-                  if (echo->version == DNSTUN_VERSION) {
-                      if (!s->fec_synced) {
-                          LOG_INFO("Session %u: HANDSHAKE synced (FEC Parameters: K=%u N=%u SymbolSize=%u)\n",
-                                   s->session_id, echo->fec_k, echo->fec_n, echo->symbol_size);
-                          s->fec_synced = true;
-                          s->cl_fec_k = echo->fec_k;
-                          s->cl_fec_n = echo->fec_n;
-                          s->cl_symbol_size = echo->symbol_size;
-                      } else {
-                          LOG_DEBUG("Session %u: duplicate HANDSHAKE echo ignored\n", s->session_id);
-                      }
-                      /* Handshake echo is consumed here, don't pass to reorder buffer or SOCKS5 */
-                      continue;
+                handshake_packet_t *echo = (handshake_packet_t *)payload_ptr;
+                if (echo->version == DNSTUN_VERSION) {
+                  if (!s->fec_synced) {
+                    LOG_INFO("Session %u: HANDSHAKE synced (FEC: K=%u N=%u SymbolSize=%u)\n",
+                             s->session_id, echo->fec_k, echo->fec_n, echo->symbol_size);
+                    s->fec_synced = true;
+                    s->cl_fec_k = echo->fec_k;
+                    s->cl_fec_n = echo->fec_n;
+                    s->cl_symbol_size = echo->symbol_size;
+
+                    if (s->socks5_pending_ok && s->client_ptr) {
+                      socks5_client_t *c = (socks5_client_t *)s->client_ptr;
+                      extern void socks5_send(socks5_client_t *, const uint8_t *, size_t);
+                      uint8_t ok[10] = {0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0};
+                      socks5_send(c, ok, 10);
+                      s->socks5_connected = true;
+                      s->socks5_pending_ok = false;
+                      LOG_INFO("Session %u: SOCKS5 SUCCESS sent after FEC sync\n", s->session_id);
+                    }
                   }
-              } else if (!s->fec_synced) {
-                  LOG_DEBUG("Session %u: received non-handshake data (%zu bytes) while waiting for sync, buffering anyway\n", 
-                            s->session_id, payload_len);
+                  continue;
+                }
               }
             }
 
-            /* ACK byte check */
+            /* 3. Data Processing */
             bool is_ack = (payload_len == 1 && payload_ptr[0] == '\0');
-            if (is_ack && !has_seq) {
-              seq = 0;
-              has_seq = true;
-            }
+            if (is_ack && !has_seq) { seq = 0; has_seq = true; }
 
-            if (has_seq || (!s->fec_synced && payload_len == 13 &&
-                            payload_ptr[0] == DNSTUN_VERSION)) {
-              /* On first seq=0, clear stale reorder entries */
-              if (seq == 0 && s->reorder_buf.expected_seq == 0 &&
-                  !s->first_seq_received) {
+            if (has_seq) {
+              if (seq == 0 && s->reorder_buf.expected_seq == 0 && !s->first_seq_received) {
                 reorder_buffer_free(&s->reorder_buf);
                 s->reorder_buf.expected_seq = 0;
                 s->first_seq_received = true;
               }
 
-              LOG_DEBUG("[DOWNSTREAM_RX] sid=%u seq=%u has_seq=%d "
-                        "payload_len=%zu recv_len_before=%zu expected_seq=%u\n",
-                        s->session_id, seq, has_seq ? 1 : 0, payload_len,
-                        s->recv_len, s->reorder_buf.expected_seq);
-              reorder_buffer_insert(&s->reorder_buf, seq, payload_ptr,
-                                    payload_len);
+              reorder_buffer_insert(&s->reorder_buf, seq, payload_ptr, payload_len);
 
               uint8_t flush_buf[16384];
               size_t flush_len = 0;
-              while (reorder_buffer_flush(&s->reorder_buf, flush_buf,
-                                          sizeof(flush_buf), &flush_len) > 0) {
+              while (reorder_buffer_flush(&s->reorder_buf, flush_buf, sizeof(flush_buf), &flush_len) > 0) {
                 size_t data_start = 0;
 
-                /* Detect status byte (first byte of first non-empty flushed
-                 * packet) */
                 if (flush_len >= 1 && !s->status_consumed) {
                   uint8_t status_byte = flush_buf[0];
                   s->status_consumed = true;
                   data_start = 1;
-                  LOG_INFO("Session %u: SOCKS5 status byte 0x%02x consumed (fec_synced=%d)\n",
+                  LOG_INFO("Session %u: SOCKS5 status byte 0x%02x received (fec_synced=%d)\n",
                             s->session_id, status_byte, s->fec_synced);
 
                   if (s->client_ptr) {
@@ -421,96 +388,43 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                     if (!s->socks5_connected) {
                       if (status_byte == 0x00) {
                         if (s->fec_synced) {
-                          /* Success - send OK now if already synced */
-                          extern void socks5_send(socks5_client_t *,
-                                                  const uint8_t *, size_t);
-                          uint8_t ok[10] = {0x05, 0x00, 0x00, 0x01, 0,
-                                            0,    0,    0,    0,    0};
+                          extern void socks5_send(socks5_client_t *, const uint8_t *, size_t);
+                          uint8_t ok[10] = {0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0};
                           socks5_send(c, ok, 10);
                           s->socks5_connected = true;
-                          LOG_DEBUG("Session %u: SOCKS5 SUCCESS sent (already "
-                                    "synced)\n",
-                                    s->session_id);
                         } else {
-                          /* Delay OK until FEC sync echo arrives */
                           s->socks5_pending_ok = true;
-                          LOG_DEBUG("Session %u: SOCKS5 SUCCESS pended, "
-                                    "waiting for FEC sync...\n",
-                                    s->session_id);
                         }
                       } else {
-                        extern void socks5_send(socks5_client_t *,
-                                                const uint8_t *, size_t);
-                        uint8_t err[10] = {0x05, status_byte, 0x00, 0x01, 0,
-                                           0,    0,           0,    0,    0};
+                        extern void socks5_send(socks5_client_t *, const uint8_t *, size_t);
+                        uint8_t err[10] = {0x05, status_byte, 0x00, 0x01, 0, 0, 0, 0, 0, 0};
                         socks5_send(c, err, 10);
                         g_stats.socks5_total_errors++;
-                        uv_close((uv_handle_t *)&((struct { uv_tcp_t tcp; } *)c)
-                                     ->tcp,
-                                 on_socks5_close);
+                        uv_close((uv_handle_t *)&((struct { uv_tcp_t tcp; } *)c)->tcp, on_socks5_close);
                       }
-                    } else {
-                      if (status_byte != 0x00) {
-                        g_stats.socks5_total_errors++;
-                        uv_close((uv_handle_t *)&((struct { uv_tcp_t tcp; } *)c)
-                                     ->tcp,
-                                 on_socks5_close);
-                      }
+                    } else if (status_byte != 0x00) {
+                      uv_close((uv_handle_t *)&((struct { uv_tcp_t tcp; } *)c)->tcp, on_socks5_close);
                     }
                   }
                 }
 
                 size_t data_len = flush_len - data_start;
-
-                /* ── HANDSHAKE SYNC ECHO DETECTION ── */
-                if (!s->fec_synced && data_len == 13 &&
-                    flush_buf[data_start] == DNSTUN_VERSION) {
-                  LOG_INFO("[UPSTREAM] Session %u: HANDSHAKE ECHO RECEIVED "
-                           "(FEC Synced!)\n",
-                           s->session_id);
-                  s->fec_synced = true;
-
-                  if (s->socks5_pending_ok && s->client_ptr) {
-                    socks5_client_t *c = (socks5_client_t *)s->client_ptr;
-                    extern void socks5_send(socks5_client_t *, const uint8_t *,
-                                            size_t);
-                    uint8_t ok[10] = {0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0};
-                    socks5_send(c, ok, 10);
-                    s->socks5_connected = true;
-                    s->socks5_pending_ok = false;
-                    LOG_INFO("Session %u: SOCKS5 SUCCESS sent after FEC sync\n",
-                             s->session_id);
-                  }
-                }
-
-                LOG_DEBUG("[DOWNSTREAM_FLUSH] sid=%u seq=%u flushed=%zu "
-                          "data_start=%zu data_len=%zu recv_len_before=%zu\n",
-                          s->session_id, seq, flush_len, data_start, data_len,
-                          s->recv_len);
                 if (data_len > 0) {
                   size_t need = s->recv_len + data_len;
                   if (need > s->recv_cap) {
                     size_t new_cap = (need + 8191) & ~4095;
-                    if (new_cap > MAX_SESSION_BUFFER)
-                      new_cap = MAX_SESSION_BUFFER;
+                    if (new_cap > MAX_SESSION_BUFFER) new_cap = MAX_SESSION_BUFFER;
                     uint8_t *new_buf = realloc(s->recv_buf, new_cap);
-                    if (new_buf) {
-                      s->recv_buf = new_buf;
-                      s->recv_cap = new_cap;
-                    }
+                    if (new_buf) { s->recv_buf = new_buf; s->recv_cap = new_cap; }
                   }
                   if (s->recv_cap >= s->recv_len + data_len) {
-                    memcpy(s->recv_buf + s->recv_len, flush_buf + data_start,
-                           data_len);
+                    memcpy(s->recv_buf + s->recv_len, flush_buf + data_start, data_len);
                     s->recv_len += data_len;
                     g_stats.rx_total += data_len;
                     g_stats.rx_bytes_sec += data_len;
                   }
                 }
                 if (s->client_ptr) {
-                  LOG_DEBUG("[SOCKS5_FLUSH_TRIGGER] sid=%u data_len=%zu "
-                            "recv_total=%zu\n",
-                            s->session_id, data_len, s->recv_len);
                   socks5_flush_recv_buf((socks5_client_t *)s->client_ptr);
                 }
               }
@@ -519,9 +433,7 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         }
         g_stats.queries_recv++;
         g_stats.last_server_rx_ms = uv_hrtime() / 1000000ULL;
-        if (!g_stats.server_connected) {
-          g_stats.server_connected = 1;
-        }
+        if (!g_stats.server_connected) g_stats.server_connected = 1;
       }
     } else {
       rpool_on_loss(&g_pool, ridx);
