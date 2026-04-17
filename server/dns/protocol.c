@@ -371,6 +371,9 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     uint8_t session_id   = chunk_get_session_id(&hdr);
     uint16_t seq         = hdr.seq;
     
+    LOG_DEBUG("Incoming Query: id=%u sess=%u seq=%u flags=0x%02x rawlen=%zd\n", 
+              query_id, session_id, seq, hdr.flags, rawlen);
+    
     uint16_t chunk_total = chunk_get_total(hdr.chunk_info);
     if (chunk_total == 0) chunk_total = 1;
     uint16_t esi         = chunk_get_esi(hdr.chunk_info);
@@ -395,6 +398,8 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
             has_capability_header = true;
             payload     += sizeof(capability_header_t);
             payload_len -= sizeof(capability_header_t);
+            LOG_DEBUG("Sess %u: Cap header found (UpMTU:%u DownMTU:%u Ack:%u)\n", 
+                      session_id, client_upstream_mtu, client_downstream_mtu, client_ack_seq);
         }
     }
 
@@ -588,7 +593,7 @@ send_reply:;
     } else if (client_needs_retx && sess->retx_len > 0) {
         if (client_ack_seq >= sess->retx_seq && client_ack_seq < sess->retx_seq + sess->retx_count) {
             int nfrags = 0;
-            if (build_txt_reply_multi(reply, &rlen, query_id, qname, sess->retx_buf, sess->retx_len, mtu, sess->retx_seq, sess->session_id, true, &nf, NULL) == 0)
+            if (build_txt_reply_multi(reply, &rlen, query_id, qname, sess->retx_buf, sess->retx_len, mtu, sess->retx_seq, sess->session_id, true, &nfrags, NULL) == 0)
                 send_udp_reply(src, reply, rlen);
         } else goto send_empty;
     } else {

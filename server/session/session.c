@@ -438,6 +438,7 @@ void session_process_data_direct(int sidx, const uint8_t *data, size_t len) {
                   l > 0 ? p[0] : 0, l > 1 ? p[1] : 0, l > 2 ? p[2] : 0, l > 3 ? p[3] : 0);
 
         if (sess->tcp_connected) {
+            LOG_DEBUG("Session %d: forwarding %zu bytes to upstream TCP\n", sidx, l);
             upstream_write_and_read(sidx, p, l);
             return;
         }
@@ -462,6 +463,7 @@ void session_process_data_direct(int sidx, const uint8_t *data, size_t len) {
         }
 
         if (l >= 10 && p[0] == 0x05 && p[1] == 0x01) {
+            LOG_DEBUG("Session %d: SOCKS5 CONNECT candidate detected (len=%zu)\n", sidx, l);
             /* ... SOCKS5 CONNECT logic ... */
             char     target_host[256] = {0};
             uint16_t target_port      = 0;
