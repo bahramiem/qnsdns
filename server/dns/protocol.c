@@ -376,25 +376,30 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     size_t  b32_len = strlen(b32_payload);
     ssize_t rawlen  = base32_decode(raw, b32_payload, b32_len);
 
-    if (rawlen < 3) {
+    if (rawlen < (ssize_t)sizeof(query_header_t)) {
         LOG_DEBUG("  [IN] sid=? rawlen=%zd (too short)\n", rawlen);
         return;
     }
 
     query_header_t *q_hdr = (query_header_t *)raw;
-    uint8_t session_id = GET_SID(q_hdr->sess_flags);
-    uint8_t q_flags     = GET_FLAGS(q_hdr->sess_flags);
+    uint8_t session_id = q_hdr->sid;
+    uint8_t q_flags     = q_hdr->flags;
     uint16_t seq       = q_hdr->seq;
     
-    const uint8_t *payload     = raw + 3;
-    size_t         payload_len = (size_t)(rawlen - 3);
+    const uint8_t *payload     = raw + sizeof(query_header_t);
+    size_t         payload_len = (size_t)(rawlen - sizeof(query_header_t));
 
     LOG_DEBUG("  [IN] sid=%u flags=%02x seq=%u rawlen=%zd payload_len=%zu\n", 
               session_id, q_flags, seq, rawlen, payload_len);
     
     /* ── Traffic Isolation ─────────────────────────────────────── */
     if (!(q_flags & CHUNK_FLAG_IS_TUNNEL)) {
-        /* Discard random MTU Phase 3 labels or other non-tunnel traffic */
+        /* This is either a random MTU Phase 1/3 label or an Upload MTU probe.
+         * Send a generic "OK" TXT reply so the client MTU test passes. */
+        uint8_t reply[512]; size_t rlen = sizeof(reply);
+        const uint8_t resp[] = "OK";
+        if (build_txt_reply_with_seq(reply, &rlen, query_id, qname, resp, sizeof(resp)-1, 512, 0, 0, 0, false) == 0)
+            send_udp_reply(src, reply, rlen);
         return;
     }
     

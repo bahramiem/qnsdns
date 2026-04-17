@@ -156,17 +156,14 @@ typedef struct resolver {
   ────────────────────────────────────────────── */
 #pragma pack(push, 1)
 typedef struct {
-    uint8_t  sess_flags;     /* session_id(low 4 bits) | flags(high 4 bits) */
+    uint8_t  sid;            /* full 8-bit session ID (0 - 255) */
+    uint8_t  flags;          /* full 8-bit flags (includes CHUNK_FLAG_IS_TUNNEL) */
     uint16_t seq;            /* burst id / sequence number (2 bytes) */
-} query_header_t;            /* Common Query Header: 3 bytes */
+} query_header_t;            /* Common Query Header: 4 bytes */
 #pragma pack(pop)
 
-typedef query_header_t chunk_header_t; /* Compatibility alias */
-
-/* Helper macros for packed header */
-#define GET_SID(sf) ((sf) & 0x0F)
-#define GET_FLAGS(sf) (((sf) >> 4) & 0x0F)
-#define PACK_SID_FLAGS(sid, f) (((sid) & 0x0F) | (((f) & 0x0F) << 4))
+/* Helper defines for compatibility and clarity */
+typedef query_header_t chunk_header_t; 
 
 /* ──────────────────────────────────────────────
    Server response header (4 bytes)
