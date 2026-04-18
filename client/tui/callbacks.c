@@ -27,6 +27,7 @@
 #include "client/session/session.h"
 #include "client/dns/query.h"
 #include "client/aggregation/packet.h"
+#include "client/socks5/proxy.h"
 #include "client/tui/callbacks.h"
 
 extern uv_loop_t       *g_loop;

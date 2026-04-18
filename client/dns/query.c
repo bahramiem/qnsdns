@@ -91,7 +91,7 @@ int build_dns_query(uint8_t *outbuf, size_t *outlen, const query_header_t *hdr,
   char b32_dotted[2048];
   size_t b32_len = base32_encode((uint8_t *)b32_dotted, raw, rawlen);
   size_t dotted_len = inline_dotify(b32_dotted, sizeof(b32_dotted), b32_len);
-  char qname[512];
+  char qname[2560];
   snprintf(qname, sizeof(qname), "%s.%s", b32_dotted, domain);
   dns_question_t question = {0};
   question.name = qname; question.type = RR_TXT; question.class = CLASS_IN;

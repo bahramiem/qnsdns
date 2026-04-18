@@ -479,7 +479,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                   query_id, q_flags, rawlen);
         uint8_t reply[512]; size_t rlen = sizeof(reply);
         char resp[32];
-        int resp_len = snprintf(resp, sizeof(resp), "OK:%zd", rawlen);
+        int resp_len = snprintf(resp, sizeof(resp), "OK:%zd", (size_t)rawlen);
         if (build_txt_reply_naked(reply, &rlen, query_id, qname, (const uint8_t*)resp, (size_t)resp_len) == 0)
             send_udp_reply(src, reply, rlen);
         return;
@@ -625,7 +625,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                 break;
             }
             if (cur_rem < (size_t)(sess->cl_symbol_size)) {
-                LOG_DEBUG("    [EXTR] ERROR: cur_rem=%zu too small for symbol (ESI + needed %zu)\n", cur_rem, sess->cl_symbol_size);
+                LOG_DEBUG("    [EXTR] ERROR: cur_rem=%zu too small for symbol (ESI + needed %zu)\n", cur_rem, (size_t)sess->cl_symbol_size);
                 break;
             }
             sym_esi = *cur_ptr++;
