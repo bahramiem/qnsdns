@@ -588,8 +588,10 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         /* Echo the handshake back to the client as data to acknowledge sync.
          * Use the current sequence 'seq' for ACK to avoid over-ACKing seq+1. */
         if (build_txt_reply_multi(reply, &rlen, query_id, qname, (uint8_t*)&hs, sizeof(hs), sess->cl_downstream_mtu, 0, seq, sess->session_id, true, false, &nfrags, NULL) == 0) {
-            LOG_DEBUG("Session %u: sending HANDSHAKE echo back to client (ack=%u, rlen=%zu, qid=%u)\n", 
-                      sess->session_id, seq, rlen, query_id);
+            if (g_cfg.log_level >= 3) {
+                LOG_DEBUG("Session %u: sending HANDSHAKE echo back to client (ack=%u, rlen=%zu, qid=%u)\n", 
+                          sess->session_id, seq, rlen, query_id);
+            }
             send_udp_reply(src, reply, rlen);
         } else {
             LOG_WARN("Session %u: FAILED to build HANDSHAKE echo reply\n", sess->session_id);

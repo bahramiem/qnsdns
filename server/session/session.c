@@ -544,8 +544,10 @@ void session_handle_data(int sidx, const uint8_t *data, size_t len, uint16_t seq
     }
 
     if (seq < sess->rx_next) {
-        LOG_DEBUG("Session %d: ignoring duplicate upstream seq=%u (expected=%u)\n", 
-                  sidx, seq, sess->rx_next);
+        if (g_cfg.log_level >= 3) {
+            LOG_DEBUG("Session %u: ignoring duplicate upstream seq=%u (expected=%u)\n", 
+                      sess->session_id, seq, sess->rx_next);
+        }
         return;
     }
 

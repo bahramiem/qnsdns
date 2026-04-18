@@ -83,9 +83,11 @@ static void on_socks5_write_done(uv_write_t *w, int status) {
 }
 
 void socks5_send(socks5_client_t *c, const uint8_t *data, size_t len) {
-    uint8_t first = (len > 0) ? data[0] : 0;
-    DBGLOG("[SOCKS5_SEND] state=%d session_idx=%d len=%zu first=0x%02x\n",
-           c ? c->state : -1, c ? c->session_idx : -1, len, first);
+    if (g_cfg.log_level >= 3) {
+        uint8_t first = (len > 0) ? data[0] : 0;
+        LOG_DEBUG("[SOCKS5_SEND] state=%d session_idx=%d len=%zu first=0x%02x\n",
+                  c ? c->state : -1, c ? c->session_idx : -1, len, first);
+    }
     uv_write_t *w = malloc(sizeof(*w) + len);
     if (!w) return;
     uint8_t *copy = (uint8_t*)(w + 1);
@@ -237,8 +239,10 @@ static size_t socks5_handle_data(socks5_client_t *c, const uint8_t *data, size_t
         sess->socks5_pending_ok = true;
         sess->socks5_connected  = false;
         sess->last_handshake = time(NULL);
-        LOG_INFO("Session %u: SOCKS5 SUCCESS pended (waiting for FEC sync, target=%s:%u)\n", 
-                 sess->session_id, sess->target_host, sess->target_port);
+        if (g_cfg.log_level >= 2) {
+            LOG_INFO("Session %u: SOCKS5 SUCCESS pended (waiting for FEC sync, target=%s:%u)\n", 
+                     sess->session_id, sess->target_host, sess->target_port);
+        }
         
         return min_len;
     }
@@ -267,8 +271,10 @@ static size_t socks5_handle_data(socks5_client_t *c, const uint8_t *data, size_t
         }
         memcpy(sess->send_buf + sess->send_len, data, len);
         sess->send_len += len;
-        LOG_DEBUG("[SOCKS5_BUF] sid=%u state=2 added=%zu total=%zu\n",
-                  sess->session_id, len, sess->send_len);
+        if (g_cfg.log_level >= 3) {
+            LOG_DEBUG("[SOCKS5_BUF] sid=%u state=2 added=%zu total=%zu\n",
+                      sess->session_id, len, sess->send_len);
+        }
         g_stats.tx_total += len;
         g_stats.tx_bytes_sec += len;
         return len;
@@ -300,8 +306,10 @@ static void on_socks5_read(uv_stream_t *s, ssize_t nread, const uv_buf_t *buf) {
                incoming, c->buf_len);
         c->buf_len = 0;
     } else {
-        DBGLOG("[SOCKS5_READ] incoming=%zd buf_len before=%zu after=%zu",
-               incoming, c->buf_len, c->buf_len + incoming);
+        if (g_cfg.log_level >= 3) {
+            LOG_DEBUG("[SOCKS5_READ] incoming=%zd buf_len before=%zu after=%zu",
+                      incoming, c->buf_len, c->buf_len + incoming);
+        }
         c->buf_len += incoming;
     }
 
