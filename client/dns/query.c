@@ -181,6 +181,12 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         const uint8_t *payload = raw_decoded + sizeof(resp_hdr);
         size_t paylen = (size_t)(decoded_len - sizeof(resp_hdr));
 
+        if (decoded_len > 0) {
+            LOG_DEBUG("  [IN] sid=%u recv_len=%zu header_flags=%02x paylen=%zu first_bytes=%02x%02x\n",
+                      q->session_idx, decoded_len, resp_hdr.flags, paylen, 
+                      paylen > 0 ? payload[0] : 0, paylen > 1 ? payload[1] : 0);
+        }
+
         /* Handshake Echo */
         if (paylen == sizeof(handshake_packet_t)) {
             handshake_packet_t *echo = (handshake_packet_t *)payload;
@@ -189,18 +195,25 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                 s->cl_fec_k = ntohs(echo->fec_k); 
                 s->cl_fec_n = ntohs(echo->fec_n); 
                 s->cl_symbol_size = ntohs(echo->symbol_size);
+                s->cl_loss_pct = echo->loss_pct;
                 
-                LOG_INFO("Session %u: Handshake ECHO received (FEC K:%u N:%u SymbolSize:%u)\n", 
-                         s->session_id, s->cl_fec_k, s->cl_fec_n, s->cl_symbol_size);
-                         
+                LOG_INFO("Session %u: Handshake ECHO received (FEC K:%u N:%u SymbolSize:%u MTU Up:%u Down:%u)\n", 
+                         s->session_id, s->cl_fec_k, s->cl_fec_n, s->cl_symbol_size,
+                         ntohs(echo->upstream_mtu), ntohs(echo->downstream_mtu));
+
                 if (s->socks5_pending_ok && s->client_ptr) {
                     socks5_client_t *c = (socks5_client_t *)s->client_ptr;
                     extern void socks5_send(socks5_client_t *, const uint8_t *, size_t);
                     uint8_t ok[10] = {0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0};
-                    socks5_send(c, ok, 10); s->socks5_connected = true; s->socks5_pending_ok = false;
+                    socks5_send(c, ok, 10);
+                    s->socks5_connected = true;
+                    s->socks5_pending_ok = false;
                 }
+                return;
+            } else {
+                LOG_DEBUG("  [HANDSHAKE] Potential echo rejected: version mismatch (recv %u, expected %u)\n",
+                          echo->version, DNSTUN_VERSION);
             }
-            continue;
         }
 
         /* Data Processing */

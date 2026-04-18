@@ -55,9 +55,41 @@ static size_t encode_downstream_data(char *out, const uint8_t *in, size_t inlen)
     return base64_encode(out, in, inlen);
 }
 
-/* ────────────────────────────────────────────── */
-/*  Build DNS TXT Reply with Sequence Number      */
-/* ────────────────────────────────────────────── */
+/* ── DNS Reply Builders ─────────────────────────────────────────── */
+
+int build_txt_reply_naked(uint8_t *outbuf, size_t *outlen,
+                          uint16_t query_id, const char *qname,
+                          const uint8_t *data, size_t data_len) {
+    dns_answer_t ans = {0};
+    ans.txt.name = (char *)qname;
+    ans.txt.type = RR_TXT;
+    ans.txt.class = CLASS_IN;
+    ans.txt.ttl = 0;
+    ans.txt.len = (uint16_t)data_len;
+    ans.txt.text = (uint8_t *)data;
+
+    dns_question_t q = {0};
+    q.name = (char *)qname;
+    q.type = RR_TXT;
+    q.class = CLASS_IN;
+
+    dns_query_t resp = {0};
+    resp.id = query_id;
+    resp.query = false;
+    resp.rd = true;
+    resp.ra = true;
+    resp.qdcount = 1;
+    resp.ancount = 1;
+    resp.arcount = 0;
+    resp.questions = &q;
+    resp.answers = &ans;
+
+    size_t sz = *outlen;
+    dns_rcode_t rc = dns_encode((dns_packet_t *)outbuf, &sz, &resp);
+    if (rc != RCODE_OKAY) return -1;
+    *outlen = sz;
+    return 0;
+}
 
 #define MAX_FRAGMENTS 8
 #define MAX_CHUNK_BINARY 191 
@@ -359,7 +391,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
             if (mtu_payload) {
                 for (int i = 0; i < requested_mtu && i < 4096; i++) mtu_payload[i] = (uint8_t)(rand() & 0xFF);
                 uint8_t reply[5120]; size_t rlen = sizeof(reply);
-                if (build_txt_reply_with_seq(reply, &rlen, query_id, qname, mtu_payload, (size_t)requested_mtu, 4096, 0, 0, 0, false, false) == 0)
+                if (build_txt_reply_naked(reply, &rlen, query_id, qname, mtu_payload, (size_t)requested_mtu) == 0)
                     send_udp_reply(src, reply, rlen);
                 free(mtu_payload);
             }
@@ -370,7 +402,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     if (is_capability_probe) {
         uint8_t reply[512]; size_t rlen = sizeof(reply);
         const uint8_t resp[] = "OK";
-        if (build_txt_reply_with_seq(reply, &rlen, query_id, qname, resp, sizeof(resp)-1, 512, 0, 0, 0, false, false) == 0)
+        if (build_txt_reply_naked(reply, &rlen, query_id, qname, resp, sizeof(resp)-1) == 0)
             send_udp_reply(src, reply, rlen);
         return;
     }
@@ -405,7 +437,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         LOG_DEBUG("  [PROBE] Identified non-tunnel probe (flags=%02x). Sending OK.\n", q_flags);
         uint8_t reply[512]; size_t rlen = sizeof(reply);
         const uint8_t resp[] = "OK";
-        if (build_txt_reply_with_seq(reply, &rlen, query_id, qname, resp, sizeof(resp)-1, 512, 0, 0, 0, false, false) == 0)
+        if (build_txt_reply_naked(reply, &rlen, query_id, qname, resp, sizeof(resp)-1) == 0)
             send_udp_reply(src, reply, rlen);
         return;
     }
