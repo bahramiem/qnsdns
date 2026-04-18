@@ -161,7 +161,11 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         if (ans->generic.type != RR_TXT || ans->txt.len == 0) continue;
         uint8_t raw_decoded[4096];
         ptrdiff_t decoded_len = base64_decode(raw_decoded, ans->txt.text, ans->txt.len);
-        if (decoded_len < (ptrdiff_t)sizeof(server_response_header_t)) continue;
+        if (decoded_len < (ptrdiff_t)sizeof(server_response_header_t)) {
+            LOG_DEBUG("  [IN] REJECTED (dec_len=%zd, expected >=%zu) from %s\n", 
+                      decoded_len, sizeof(server_response_header_t), g_pool.resolvers[ridx].ip);
+            continue;
+        }
         session_t *s = &g_sessions[q->session_idx];
         server_response_header_t resp_hdr;
         memcpy(&resp_hdr, raw_decoded, sizeof(resp_hdr));
@@ -177,10 +181,14 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         if (ack_seq > s->tx_acked || (ack_seq < 100 && s->tx_acked > 60000)) {
             uint32_t prune = s->tx_offset_map[ack_seq % 256];
             if (prune > 0 && prune <= s->send_len) {
+                if (g_cfg.log_level >= 3) LOG_DEBUG("  [PRUNE] ack=%u offset=%u len=%zu\n", ack_seq, (uint32_t)prune, s->send_len);
                 memmove(s->send_buf, s->send_buf + prune, s->send_len - prune);
                 s->send_len -= prune; s->tx_acked = ack_seq; s->last_ack_time = time(NULL);
                 for(int m=0;m<256;m++) { if(s->tx_offset_map[m]>=prune) s->tx_offset_map[m]-=prune; else s->tx_offset_map[m]=0; }
-            } else if (ack_seq == s->tx_next) { s->send_len = 0; s->tx_acked = ack_seq; memset(s->tx_offset_map, 0, sizeof(s->tx_offset_map)); }
+            } else if (ack_seq == s->tx_next) { 
+                if (g_cfg.log_level >= 3 && s->send_len > 0) LOG_DEBUG("  [PRUNE] full clear at seq %u\n", ack_seq);
+                s->send_len = 0; s->tx_acked = ack_seq; memset(s->tx_offset_map, 0, sizeof(s->tx_offset_map)); 
+            }
         }
 
         const uint8_t *payload = raw_decoded + sizeof(resp_hdr);

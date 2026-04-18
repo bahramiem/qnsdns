@@ -422,14 +422,18 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     }
 
     char b32_payload[4096] = {0};
-    for (int i = 0; i < payload_start_idx; i++)
+    for (int i = 0; i < payload_start_idx; i++) {
+        /* Skip the "x" separator if it's the last label before the domain */
+        if (i == payload_start_idx - 1 && strcmp(parts[i], "x") == 0) continue;
         strncat(b32_payload, parts[i], sizeof(b32_payload) - strlen(b32_payload) - 1);
+    }
+    size_t b32_len = strlen(b32_payload);
+
     uint8_t raw[4096];
-    size_t  b32_len = strlen(b32_payload);
     ssize_t rawlen  = base32_decode(raw, b32_payload, b32_len);
 
     if (rawlen < 0) {
-        LOG_DEBUG("  [RAW] sid=N/A: Base32 decode failed for payload\n");
+        LOG_DEBUG("  [RAW] sid=N/A: Base32 decode failed for payload: %s\n", b32_payload);
         return;
     }
 
@@ -503,6 +507,9 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         /* DATA/FEC: Expect 2-byte compact ACK */
         client_ack_seq = (uint16_t)((payload[0] << 8) | payload[1]);
         has_ack = true;
+        if (g_cfg.log_level >= 3) {
+            LOG_DEBUG("  [ACK] sid=%u: Client expects next seq %u\n", session_id, client_ack_seq);
+        }
         payload     += 2;
         payload_len -= 2;
     }
