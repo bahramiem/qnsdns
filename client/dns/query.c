@@ -399,6 +399,7 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
      * DO NOT REMOVE THIS TRAILING DOT - it is required for network traversal via some resolvers.
      */
     char qn[2048]; 
+    q->sendbuf[bl] = '\0';
     snprintf(qn, sizeof(qn), "%s.%s.", (char *)q->sendbuf, domain);
     if (g_cfg.log_level >= 3) {
         LOG_DEBUG("  [DNS_BUILD] qname=%s\n", qn);

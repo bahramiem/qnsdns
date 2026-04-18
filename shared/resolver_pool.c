@@ -143,7 +143,7 @@ int rpool_next_ready(resolver_pool_t *pool, int interval_ms) {
                     /* Update cursor for next call to maintain fair distribution */
                     pool->rr_cursor = (current_ptr + 1) % pool->active_count;
                 }
-            } else if (g_cfg.log_level >= 3) {
+            } else if (pool->cfg->log_level >= 3) {
                 LOG_DEBUG("  [POOL] Resolver %s cooling down (%llu / %llu ms)\n", 
                           r->ip, (unsigned long long)(now - r->last_query_ms), (unsigned long long)final_interval);
             }
