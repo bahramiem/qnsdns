@@ -69,6 +69,10 @@ void on_socks5_close(uv_handle_t *h) {
                c->session_idx, s->session_id,
                s->target_host, s->target_port, s->tx_next,
                (long)(time(NULL) - s->last_active));
+        if (s->tx_fec_active) {
+            codec_fec_free(&s->tx_fec);
+            s->tx_fec_active = false;
+        }
         s->closed    = true;
         s->client_ptr = NULL;
         if (g_stats.active_sessions > 0)

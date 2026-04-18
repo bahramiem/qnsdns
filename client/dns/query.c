@@ -307,9 +307,9 @@ void send_mtu_handshake(int session_idx) {
      * - sizeof(query_header_t) : 4 bytes (SID, Flags, SEQ)
      * - 2 bytes : compact ACK prepended to DATA/FEC
      * - 1 byte  : ESI prepended to FEC symbol
-     * - 30 bytes: Safety margin for Base32 dotify and resolver wire-format quirks
+     * Note: Headroom for dots and domains is already accounted for by the MTU probe test.
      */
-    size_t overhead = sizeof(query_header_t) + 2 + 1 + 30;
+    size_t overhead = sizeof(query_header_t) + 2 + 1;
     
     int best_symbol = (int)min_mtu - (int)overhead;
     
