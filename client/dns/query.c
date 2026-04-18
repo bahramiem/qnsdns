@@ -314,7 +314,7 @@ void send_mtu_handshake(int session_idx) {
      * - 1 byte  : ESI prepended to FEC symbol
      * - 30 bytes: Safety margin for Base32 dotify and resolver wire-format quirks
      */
-    size_t overhead = sizeof(query_header_t) + 2 + 1 + 30;
+    size_t overhead = sizeof(query_header_t) + 2 + 1;
     
     int best_symbol = (int)min_mtu - (int)overhead;
     
@@ -434,7 +434,7 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
     }
 
     size_t bl = base32_encode((char *)q->sendbuf, tp, tl);
-    inline_dotify((char *)q->sendbuf, sizeof(q->sendbuf), bl);
+    size_t dl = inline_dotify((char *)q->sendbuf, sizeof(q->sendbuf), bl);
     
     /* 
      * CRITICAL: Reverting to old working QNAME format. 
@@ -445,7 +445,7 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
     char qn[2048]; 
     q->sendbuf[bl] = '\0';
     memset(qn, 0, sizeof(qn));
-    int n = snprintf(qn, sizeof(qn), "%.*s.%s.", (int)bl, (char *)q->sendbuf, domain);
+    int n = snprintf(qn, sizeof(qn), "%.*s.%s.", (int)dl, (char *)q->sendbuf, domain);
     if (n < 0 || (size_t)n >= sizeof(qn)) {
         uv_close((uv_handle_t *)&q->udp, on_dns_query_close);
         return symbols_sent_this_call;

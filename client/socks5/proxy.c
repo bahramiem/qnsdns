@@ -71,6 +71,13 @@ void on_socks5_close(uv_handle_t *h) {
                (long)(time(NULL) - s->last_active));
         s->closed    = true;
         s->client_ptr = NULL;
+
+        /* Clean up any active persistent FEC symbols */
+        if (s->tx_fec_active) {
+            codec_fec_free(&s->tx_fec);
+            s->tx_fec_active = false;
+        }
+
         if (g_stats.active_sessions > 0)
             g_stats.active_sessions--;
     }

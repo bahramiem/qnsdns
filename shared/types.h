@@ -430,6 +430,8 @@ typedef struct {
 /* Resource limits to prevent memory exhaustion (10MB max per session buffer) */
 #define MAX_SESSION_BUFFER (10 * 1024 * 1024)
 
+#include "codec.h"
+
 typedef struct session {
     uint8_t   session_id;    /* 8-bit session ID (0-255) */
     char      target_host[256];
@@ -444,6 +446,11 @@ typedef struct session {
     /* Partial burst tracking (Resume logic) */
     uint16_t  tx_burst_esi;     /* Next ESI to send in current burst */
     uint16_t  tx_burst_total;   /* Total symbols needed for current burst */
+
+    /* Persistent FEC Stage (Resume instead of Re-encode) */
+    fec_encoded_t tx_fec;       /* Cached FEC symbols for active burst */
+    bool          tx_fec_active; /* True if tx_fec contains valid symbols */
+    size_t        tx_fec_len;   /* Original data length for this burst */
 
     /* send/recv ring buffers */
     uint8_t  *send_buf;
