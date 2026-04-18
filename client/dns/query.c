@@ -300,28 +300,33 @@ void send_mtu_handshake(int session_idx) {
     session_t *s = &g_sessions[session_idx];
     
     /* 
-     * Dynamic Symbol Size Calculation:
-     * 1. Get the minimum upstream MTU across all active resolvers.
-     * 2. Programmatically calculate protocol overhead:
-     *    - sizeof(query_header_t) : common query header (sid, flags, seq)
-     *    - 2 bytes : compact ACK header prepended to DATA/FEC
-     *    - 1 byte  : ESI (encoding symbol ID) prepended to each FEC symbol
-     *    - 8 bytes : Safe margin for Base32 dotify and resolver quirks
+     * PROGRAMMATIC OVERHEAD CALCULATION:
+     * - sizeof(query_header_t) : 4 bytes (SID, Flags, SEQ)
+     * - 2 bytes : compact ACK prepended to DATA/FEC
+     * - 1 byte  : ESI prepended to FEC symbol
+     * - 22 bytes: Safety padding for Base32 dotify and resolver wire-format quirks
      */
     uint16_t min_mtu = rpool_get_min_upstream_mtu(&g_pool);
-    size_t overhead = sizeof(query_header_t) + 2 + 1 + 11;
+    /* 
+     * PROGRAMMATIC OVERHEAD CALCULATION:
+     * - sizeof(query_header_t) : 4 bytes (SID, Flags, SEQ)
+     * - 2 bytes : compact ACK prepended to DATA/FEC
+     * - 1 byte  : ESI prepended to FEC symbol
+     * - 30 bytes: Safety margin for Base32 dotify and resolver wire-format quirks
+     */
+    size_t overhead = sizeof(query_header_t) + 2 + 1 + 30;
     
     int best_symbol = (int)min_mtu - (int)overhead;
     
     if (g_cfg.log_level >= 2) {
         LOG_DEBUG("Scaling: bottleneck_mtu=%u overhead=%zu predicted_symbol=%d\n", min_mtu, overhead, best_symbol);
     }
+    
     /* ADAPTIVE BOOTSTRAP:
-     * If any active resolvers are still unverified (searching for MTU),
-     * we use a hyper-safe 32-byte symbol size to guarantee connection boot.
+     * We use a hyper-safe 32-byte symbol size until MTU discovery is verified.
      */
     if (rpool_any_unverified(&g_pool) && best_symbol > 32) {
-        LOG_INFO("Session %d: Bootstrapping with conservative symbols (32 bytes) until MTU verified\n", session_idx);
+        LOG_INFO("Session %d: Bootstrapping with conservative symbols (32 bytes) until verified\n", session_idx);
         best_symbol = 32;
     }
     
