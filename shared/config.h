@@ -102,6 +102,9 @@ typedef struct dnstun_config {
 /* Load config from INI file. Returns 0 on success. */
 int  config_load(dnstun_config_t *cfg, const char *path);
 
+/* Create a default, commented INI file. Returns 0 on success. */
+int  config_create_default(const char *path, bool is_server);
+
 /* Apply defaults to an uninitialised config struct. */
 void config_defaults(dnstun_config_t *cfg, bool is_server);
 

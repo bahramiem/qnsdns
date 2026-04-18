@@ -237,6 +237,45 @@ int config_set_key(dnstun_config_t *cfg,
     return 0;
 }
 
+int config_create_default(const char *path, bool is_server) {
+    FILE *f = fopen(path, "w");
+    if (!f) return -1;
+
+    if (is_server) {
+        fprintf(f, "# dnstun-server configuration\n\n");
+        fprintf(f, "[core]\n");
+        fprintf(f, "server_bind = 0.0.0.0:53\n");
+        fprintf(f, "workers     = 4\n");
+        fprintf(f, "log_level   = info\n\n");
+        fprintf(f, "[domains]\n");
+        fprintf(f, "list        = tun.example.com\n\n");
+        fprintf(f, "[tuning]\n");
+        fprintf(f, "downstream_mtu = 220\n");
+        fprintf(f, "fec_k          = 10\n");
+        fprintf(f, "fec_n          = 15\n\n");
+        fprintf(f, "[swarm]\n");
+        fprintf(f, "serve        = true\n");
+        fprintf(f, "save_to_disk = true\n");
+    } else {
+        fprintf(f, "# dnstun-client configuration\n\n");
+        fprintf(f, "[core]\n");
+        fprintf(f, "socks5_bind = 127.0.0.1:1080\n");
+        fprintf(f, "workers     = 4\n");
+        fprintf(f, "log_level   = info\n\n");
+        fprintf(f, "[domains]\n");
+        fprintf(f, "list        = tun.example.com\n\n");
+        fprintf(f, "[resolvers]\n");
+        fprintf(f, "seed_list   = 8.8.8.8,1.1.1.1\n");
+        fprintf(f, "swarm_sync  = true\n\n");
+        fprintf(f, "[tuning]\n");
+        fprintf(f, "poll_interval_ms = 50\n");
+        fprintf(f, "idle_timeout_sec = 120\n");
+    }
+
+    fclose(f);
+    return 0;
+}
+
 /* ── INI File loader ────────────────────────────────────────────────────────*/
 int config_load(dnstun_config_t *cfg, const char *path) {
     FILE *f = fopen(path, "r");

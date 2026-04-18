@@ -242,8 +242,19 @@ int main(int argc, char *argv[]) {
     }
 
     config_defaults(&g_cfg, false);
-    if (config_load(&g_cfg, config_path) != 0) {
-        LOG_WARN("Could not load '%s', using defaults. Create client.ini to configure.\n", config_path);
+    FILE *cf = fopen(config_path, "r");
+    if (cf) {
+        fclose(cf);
+        if (config_load(&g_cfg, config_path) != 0) {
+            LOG_WARN("Could not load '%s', using defaults. Check file format.\n", config_path);
+        }
+    } else {
+        if (config_create_default(config_path, false) == 0) {
+            LOG_INFO("Created default configuration file: %s\n", config_path);
+            config_load(&g_cfg, config_path);
+        } else {
+            LOG_WARN("Could not create '%s', using hardcoded defaults.\n", config_path);
+        }
     }
     dnstun_log_open("qnsdns_client.log");
     LOG_INFO("=== Client started ===\n");
