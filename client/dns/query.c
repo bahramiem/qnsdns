@@ -363,8 +363,8 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
     dns_query_ctx_t *q = calloc(1, sizeof(*q));
     if (!q) return symbols_sent_this_call;
     uv_udp_init(g_loop, &q->udp); q->udp.data = q;
-    /* Use 10ms minimum interval for data to allow bursts while preventing flooding */
-    int ridx = rpool_next_ready(&g_pool, 10); 
+    /* Use 1ms minimum interval for bursts to allow rapid completion of parity symbols */
+    int ridx = rpool_next_ready(&g_pool, 1); 
     if (ridx < 0) {
         static uint32_t last_warn_tick = 0;
         if (uv_hrtime() / 1000000000ULL > last_warn_tick) {

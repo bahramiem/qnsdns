@@ -294,21 +294,18 @@ static void on_socks5_read(uv_stream_t *s, ssize_t nread, const uv_buf_t *buf) {
     socks5_client_t *c = s->data;
 
     if (nread < 0) {
-        /* DBGLOG("[SOCKS5_READ] error nread=%zd state=%d session_idx=%d\n",
-               nread, c ? c->state : -1, c ? c->session_idx : -1); */
         if (!uv_is_closing((uv_handle_t*)s))
             uv_close((uv_handle_t*)s, on_socks5_close);
         return;
     }
 
-    if (nread == 0) {
-        LOG_INFO("AUDIT: Silence detected (nread == 0). Triggering premature CLOSE.\n");
-        if (c->state == 2 && !uv_is_closing((uv_handle_t*)s))
-            uv_close((uv_handle_t*)s, on_socks5_close);
-        return;
-    }
+    if (nread == 0) return;
 
     size_t incoming = (size_t)nread;
+    if (c->session_idx >= 0 && c->session_idx < DNSTUN_MAX_SESSIONS) {
+        g_sessions[c->session_idx].last_active = time(NULL);
+    }
+
     if (c->buf_len + incoming > sizeof(c->buf)) {
         DBGLOG("[SOCKS5_READ] buffer overflow incoming=%zd buf_len=%zu -> resetting\n",
                incoming, c->buf_len);

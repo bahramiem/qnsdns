@@ -179,6 +179,29 @@ void on_idle_timer(uv_timer_t *t) {
     }
     static int save_tick = 0; if (++save_tick >= 10) { save_tick = 0; if (g_cfg.swarm_save_disk) resolvers_save(); }
     g_stats.tx_bytes_sec = 0; g_stats.rx_bytes_sec = 0;
+    
+    /* Session Watchdog (SOCKS5 Idle Timeout) */
+    for (int i = 0; i < DNSTUN_MAX_SESSIONS; i++) {
+        session_t *s = &g_sessions[i];
+        if (s->closed || !s->established) continue;
+        
+        uint32_t idle_sec = (uint32_t)(now - s->last_active);
+        uint32_t timeout = (g_cfg.socks5_idle_timeout > 0) ? (uint32_t)g_cfg.socks5_idle_timeout : 60;
+        
+        if (idle_sec > timeout) {
+            LOG_INFO("Session %u: Idle timeout reached (%us > %us). Closing...\n", 
+                     s->session_id, idle_sec, timeout);
+            if (s->client_ptr) {
+                socks5_client_t *c = (socks5_client_t*)s->client_ptr;
+                if (!uv_is_closing((uv_handle_t*)&c->tcp)) {
+                    uv_close((uv_handle_t*)&c->tcp, on_socks5_close);
+                }
+            } else {
+                s->closed = true;
+            }
+        }
+    }
+
     if (strcmp(g_stats.mode, "CLIENT") == 0) detect_outside_ip();
 }
 

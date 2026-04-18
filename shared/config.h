@@ -41,6 +41,7 @@ typedef struct dnstun_config {
     int      fec_k;             /* Default FEC source symbols */
     int      fec_n;             /* Default FEC total symbols */
     int      chunk_payload;     /* Max raw bytes per upstream DNS query (default: 110) */
+    int      socks5_idle_timeout; /* SOCKS5 idle timeout in seconds (default: 60) */
 
     /* [mtu_testing] - Binary search MTU testing like client.py */
     int      max_upload_mtu;       /* Maximum upload MTU to test (default: 512) */
