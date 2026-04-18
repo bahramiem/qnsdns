@@ -349,6 +349,7 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
     size_t bl = base32_encode((char *)q->sendbuf, tp, tl);
     inline_dotify((char *)q->sendbuf, sizeof(q->sendbuf), bl);
     char qn[512]; snprintf(qn, sizeof(qn), "%s.%s", (char *)q->sendbuf, domain);
+    dns_question_t quest={0}; quest.name=qn; quest.type=RR_TXT; quest.class=CLASS_IN;
     dns_query_t query={0}; query.id=rand_u16(); query.query=true; query.rd=true; query.qdcount=1; query.questions=&quest;
     LOG_DEBUG("[DNS_FIRE] qid=%u sid=%u flags=%02x seq=%u qname=%s\n", query.id, qh.sid, qh.flags, qh.seq, qn);
     size_t pktsz = sizeof(q->recvbuf); /* temporary use of recvbuf for encoding */
