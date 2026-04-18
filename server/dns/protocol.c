@@ -437,6 +437,9 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         strncat(b32_payload, parts[i], sizeof(b32_payload) - strlen(b32_payload) - 1);
     }
     size_t b32_len = strlen(b32_payload);
+    if (g_cfg.log_level >= 3) {
+        LOG_DEBUG("  [B32] Payload string (len=%zu): %s\n", b32_len, b32_len > 128 ? "..." : b32_payload);
+    }
 
     uint8_t raw[4096];
     ssize_t rawlen  = base32_decode(raw, b32_payload, b32_len);
@@ -621,17 +624,19 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                 LOG_DEBUG("  [FEC] Error: cl_symbol_size is 0, cannot extract symbols. Dropping packet.\n");
                 break;
             }
-            if (cur_rem < (size_t)(1 + sess->cl_symbol_size)) {
-                LOG_DEBUG("    [EXTR] ERROR: cur_rem=%zu too small for symbol (ESI+Size=%zu)\n", 
-                          cur_rem, (size_t)(1 + sess->cl_symbol_size));
+            if (cur_rem < (size_t)(sess->cl_symbol_size)) {
+                LOG_DEBUG("    [EXTR] ERROR: cur_rem=%zu too small for symbol (ESI + needed %zu)\n", cur_rem, sess->cl_symbol_size);
                 break;
             }
             sym_esi = *cur_ptr++;
+            cur_rem--;
+            
+            size_t to_extract = (size_t)cur_rem < sess->cl_symbol_size ? (size_t)cur_rem : sess->cl_symbol_size;
             sym_data = cur_ptr;
-            sym_len = sess->cl_symbol_size;
+            sym_len = to_extract;
             sym_total = sess->cl_fec_n;
             cur_ptr += sym_len;
-            cur_rem -= (1 + sym_len);
+            cur_rem -= sym_len;
         } else if (!is_poll && !is_sync) {
             /* Single raw/compressed packet */
             sym_data = cur_ptr;

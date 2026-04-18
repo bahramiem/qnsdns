@@ -421,7 +421,7 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
     if (g_cfg.log_level >= 3) {
         char hex[128] = {0};
         for (size_t i = 0; i < (tl < 16 ? tl : 16); i++) sprintf(hex + i*2, "%02x", tp[i]);
-        LOG_DEBUG("[UPSTREAM] RAW HDR+PAYLOAD (len=%zu): %s%s\n", tl, hex, tl > 16 ? "..." : "");
+        LOG_INFO("DIAG: [UPSTREAM] PRE_B32 (len=%zu): %s%s\n", tl, hex, tl > 16 ? "..." : "");
     }
 
     size_t bl = base32_encode((char *)q->sendbuf, tp, tl);

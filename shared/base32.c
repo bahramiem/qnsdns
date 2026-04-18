@@ -1,6 +1,7 @@
 #include "base32.h"
 #include <string.h>
 #include <ctype.h>
+#include "mgmt.h"
 
 static const char B32_ALPHA[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 static const char HEX_ALPHA[] = "0123456789abcdef";
@@ -24,28 +25,28 @@ static void init_tables(void) {
     /* Initialize base32 table: 0-25 for A-Z, 26-31 for 2-7 */
     for (int i = 0; i < 256; i++) b32_table[i] = -1;
     for (int i = 0; i < 26; i++) {
-        b32_table[(unsigned char)('A' + i)] = i;
-        b32_table[(unsigned char)('a' + i)] = i;  /* lowercase handled inline */
+        b32_table[(unsigned char)('A' + i)] = (int8_t)i;
+        b32_table[(unsigned char)('a' + i)] = (int8_t)i;  /* lowercase handled inline */
     }
     for (int i = 0; i < 6; i++) {
-        b32_table[(unsigned char)('2' + i)] = 26 + i;
+        b32_table[(unsigned char)('2' + i)] = (int8_t)(26 + i);
     }
     
     /* Initialize hex table: 0-9 for digits, 10-15 for a-f/A-F */
     for (int i = 0; i < 256; i++) hex_table[i] = -1;
-    for (int i = 0; i < 10; i++) hex_table[(unsigned char)('0' + i)] = i;
+    for (int i = 0; i < 10; i++) hex_table[(unsigned char)('0' + i)] = (int8_t)i;
     for (int i = 0; i < 6; i++) {
-        hex_table[(unsigned char)('a' + i)] = 10 + i;
-        hex_table[(unsigned char)('A' + i)] = 10 + i;
+        hex_table[(unsigned char)('a' + i)] = (int8_t)(10 + i);
+        hex_table[(unsigned char)('A' + i)] = (int8_t)(10 + i);
     }
     
     /* Initialize base64 table: A-Z (0-25), a-z (26-51), 0-9 (52-61), - (62), _ (63) */
     for (int i = 0; i < 256; i++) b64_table[i] = -1;
     for (int i = 0; i < 26; i++) {
-        b64_table[(unsigned char)('A' + i)] = i;
-        b64_table[(unsigned char)('a' + i)] = 26 + i;
+        b64_table[(unsigned char)('A' + i)] = (int8_t)i;
+        b64_table[(unsigned char)('a' + i)] = (int8_t)(26 + i);
     }
-    for (int i = 0; i < 10; i++) b64_table[(unsigned char)('0' + i)] = 52 + i;
+    for (int i = 0; i < 10; i++) b64_table[(unsigned char)('0' + i)] = (int8_t)(52 + i);
     b64_table[(unsigned char)'-'] = 62;
     b64_table[(unsigned char)'+'] = 62;
     b64_table[(unsigned char)'_'] = 63;
@@ -116,6 +117,11 @@ ptrdiff_t base32_decode(uint8_t *out, const char *in, size_t inlen) {
             bits -= 8;
             out[o++] = (uint8_t)((buf >> bits) & 0xFF);
         }
+    }
+    
+    /* Diagnostic: Log remaining bits if they haven't formed a byte */
+    if (bits > 0 && bits < 8 && inlen > 10) {
+        LOG_DEBUG("  [B32] Decoded %zu bytes. Remaining bits: %d (buf=0x%llx)\n", o, bits, (unsigned long long)buf);
     }
     return (ptrdiff_t)o;
 }
