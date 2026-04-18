@@ -308,8 +308,9 @@ static void on_socks5_read(uv_stream_t *s, ssize_t nread, const uv_buf_t *buf) {
     } else {
         if (g_cfg.log_level >= 3) {
             LOG_DEBUG("[SOCKS5_READ] incoming=%zd buf_len before=%zu after=%zu",
-                      incoming, c->buf_len, c->buf_len + incoming);
+                      nread, c->buf_len, c->buf_len + incoming);
         }
+        memcpy(c->buf + c->buf_len, buf->base, nread);
         c->buf_len += incoming;
     }
 
