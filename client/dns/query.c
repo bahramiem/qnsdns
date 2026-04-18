@@ -325,8 +325,6 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
 
   if (num_symbols_total > 1 && !sess->fec_synced && !g_cfg.encryption) return 0;
 
-  if (g_cfg.log_level >= 1) LOG_INFO("  [TRACE A] cur_esi=%d num_total=%d synced=%d\n", cur_esi, num_symbols_total, sess->fec_synced);
-
   while (cur_esi < num_symbols_total || num_symbols_total == 0) {
     dns_query_ctx_t *q = calloc(1, sizeof(*q));
     if (!q) return symbols_sent_this_call;
@@ -334,7 +332,6 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
     /* Use 0ms interval (bypass cooldown) for Handshakes/Bursts to ensure immediate firing */
     int ridx = rpool_next_ready(&g_pool, 0); 
     if (ridx < 0) {
-        if (g_cfg.log_level >= 1) LOG_INFO("  [TRACE B] No resolver ready\n");
         static uint32_t last_warn_tick = 0;
         if (uv_hrtime() / 1000000000ULL > last_warn_tick) {
             LOG_WARN("Session %u: No resolver ready for burst (seq=%u esi=%d). Waiting...\n", 
@@ -344,7 +341,6 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
         uv_close((uv_handle_t *)&q->udp, on_dns_query_close); 
         return symbols_sent_this_call; 
     }
-    if (g_cfg.log_level >= 1) LOG_INFO("  [TRACE C] Resolver %d selected\n", ridx);
     resolver_t *r = &g_pool.resolvers[ridx];
     q->resolver_idx = ridx; q->session_idx = session_idx; q->seq = seq;
     int didx = rpool_flux_domain(&g_cfg);
