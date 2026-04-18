@@ -54,24 +54,28 @@ static uint16_t rand_u16(void) { return (uint16_t)(rand() & 0xFFFF); }
 /* ────────────────────────────────────────────── */
 
 size_t inline_dotify(char *buf, size_t buflen, size_t len) {
-  if (len == 0) return 0;
-  size_t dots = (len - 1) / 57;
-  size_t new_len = len + dots;
-  if (new_len + 1 > buflen) return (size_t)-1;
-
-  buf[new_len] = '\0';
-  
-  /* Use temporary buffer to guarantee correctness for all label boundaries */
-  char tmp[2048];
-  if (new_len >= sizeof(tmp)) return (size_t)-1;
-  
-  size_t s = 0, d = 0;
-  while (s < len) {
-    if (s > 0 && s % 57 == 0) tmp[d++] = '.';
-    tmp[d++] = buf[s++];
-  }
-  memcpy(buf, tmp, new_len);
-  return new_len;
+    if (len == 0) { if (buflen > 0) buf[0] = '\0'; return 0; }
+    size_t dots    = (len - 1) / 57;
+    size_t new_len = len + dots;
+    if (new_len + 1 > buflen) return (size_t)-1;
+    buf[new_len] = '\0';
+    char *src = buf + len - 1;
+    char *dst = buf + new_len - 1;
+    size_t next_dot   = len - (len % 57);
+    if (next_dot == len) next_dot = len - 57;
+    size_t current_pos = len;
+    while (current_pos > 0) {
+        if (current_pos == next_dot && dots > 0) {
+            *dst-- = '.';
+            next_dot -= 57;
+            current_pos--;
+            dots--;
+            continue;
+        }
+        *dst-- = *src--;
+        current_pos--;
+    }
+    return new_len;
 }
 
 /* ────────────────────────────────────────────── */
@@ -400,7 +404,7 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
     } else if (num_symbols_total == 1 && cur_esi == 0) {
         /* Handshake: No ACK prepend, matching handshake_packet_t layout on server */
         memcpy(pb, payloads[0], paylen); pl = paylen; fl = CHUNK_FLAG_HANDSHAKE;
-        LOG_DEBUG("[UPSTREAM] Sending HANDSHAKE for sid=%u (len=%zu)\n", session_idx, pl);
+        LOG_DEBUG("[UPSTREAM] Sending HANDSHAKE for sid=%u (len=%zu)\n", (uint32_t)sess->session_id, pl);
     } else {
         uint16_t ack = sess->reorder_buf.expected_seq; pb[pl++]=(uint8_t)(ack>>8); pb[pl++]=(uint8_t)ack;
         if (num_symbols_total > 1) fl = (is_compressed?CHUNK_FLAG_COMPRESSED:0)|(g_cfg.encryption?CHUNK_FLAG_ENCRYPTED:0)|CHUNK_FLAG_FEC;
@@ -426,13 +430,25 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
 
     size_t bl = base32_encode((char *)q->sendbuf, tp, tl);
     if (g_cfg.log_level >= 3) {
-        LOG_INFO("DIAG: [B32_ENCODE] raw=%zu -> b32=%zu chars: %s\n", tl, bl, (char*)q->sendbuf);
+        char hex[128] = {0};
+        for (size_t i = 0; i < (tl < 16 ? tl : 16); i++) sprintf(hex + i*2, "%02x", tp[i]);
+        LOG_DEBUG("  [B32_TX] RAW(len=%zu): %s%s -> B32: %s\n", tl, hex, tl > 16 ? "..." : "", (char *)q->sendbuf);
     }
     size_t dl = inline_dotify((char *)q->sendbuf, sizeof(q->sendbuf), bl);
     
-    char qn[2048]; 
+    char clean_domain[256];
+    size_t domain_len = strlen(domain);
+    if (domain_len > 0 && domain[domain_len - 1] == '.') {
+        strncpy(clean_domain, domain, domain_len - 1);
+        clean_domain[domain_len - 1] = '\0';
+    } else {
+        strncpy(clean_domain, domain, sizeof(clean_domain) - 1);
+        clean_domain[sizeof(clean_domain) - 1] = '\0';
+    }
+
+    char qn[2560]; 
     memset(qn, 0, sizeof(qn));
-    int n = snprintf(qn, sizeof(qn), "%.*s.%s.", (int)dl, (char *)q->sendbuf, domain);
+    int n = snprintf(qn, sizeof(qn), "%s.%s.", (char *)q->sendbuf, clean_domain);
     if (n < 0 || (size_t)n >= sizeof(qn)) {
         uv_close((uv_handle_t *)&q->udp, on_dns_query_close);
         return symbols_sent_this_call;
