@@ -205,7 +205,7 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         const uint8_t *payload = raw_decoded + sizeof(resp_hdr);
         size_t paylen = (size_t)(decoded_len - sizeof(resp_hdr));
 
-        if (g_cfg.log_level >= 3) {
+        if (g_cfg.log_level >= 2) {
             LOG_DEBUG("  [IN] sid=%u recv_len=%zu header_flags=%02x paylen=%zu\n",
                       q->session_idx, decoded_len, resp_hdr.flags, paylen);
         }
@@ -409,8 +409,8 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
     query.arcount = 1;
     query.additional = &edns;
 
-    LOG_DEBUG("[DNS_FIRE] qid=%u sid=%u flags=%02x seq=%u qname=%s to %s\n", 
-              query.id, qh.sid, qh.flags, qh.seq, qn, rpool_get_name(&g_pool, ridx));
+    LOG_INFO("[DNS_FIRE] qid=%u sid=%u flags=%02x seq=%u (payload=%zu bytes) to %s\n", 
+               query.id, qh.sid, qh.flags, qh.seq, pl, rpool_get_name(&g_pool, ridx));
     size_t pktsz = sizeof(q->recvbuf); /* temporary use of recvbuf for encoding */
     if (dns_encode((dns_packet_t *)q->recvbuf, &pktsz, &query) != RCODE_OKAY) { 
         uv_close((uv_handle_t *)&q->udp, on_dns_query_close); 

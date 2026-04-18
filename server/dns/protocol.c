@@ -147,10 +147,8 @@ int build_txt_reply_multi(uint8_t *outbuf, size_t *outlen,
 
         uint8_t packet[1024];
         size_t packet_len = 0;
-        if (g_cfg.log_level >= 3) {
-            LOG_DEBUG("  [BUILD] Frag %d: chunk=%d b64=%zu overhead=%zu budget=%zu\n", 
-                      frag_count, chunk_data_len, b64_chars, frag_overhead, safe_packet_budget);
-        }
+        LOG_INFO("  [BUILD] Frag %d: chunk=%d b64=%zu overhead=%zu budget=%zu\n", 
+                 frag_count, chunk_data_len, b64_chars, frag_overhead, safe_packet_budget);
         memcpy(packet, &hdr, sizeof(hdr));
         packet_len += sizeof(hdr);
 
@@ -588,10 +586,8 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         /* Echo the handshake back to the client as data to acknowledge sync.
          * Use the current sequence 'seq' for ACK to avoid over-ACKing seq+1. */
         if (build_txt_reply_multi(reply, &rlen, query_id, qname, (uint8_t*)&hs, sizeof(hs), sess->cl_downstream_mtu, 0, seq, sess->session_id, true, false, &nfrags, NULL) == 0) {
-            if (g_cfg.log_level >= 3) {
-                LOG_DEBUG("Session %u: sending HANDSHAKE echo back to client (ack=%u, rlen=%zu, qid=%u)\n", 
-                          sess->session_id, seq, rlen, query_id);
-            }
+            LOG_INFO("Session %u: sending HANDSHAKE echo back to client (ack=%u, rlen=%zu, qid=%u)\n", 
+                      sess->session_id, seq, rlen, query_id);
             send_udp_reply(src, reply, rlen);
         } else {
             LOG_WARN("Session %u: FAILED to build HANDSHAKE echo reply\n", sess->session_id);

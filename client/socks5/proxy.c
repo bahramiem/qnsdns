@@ -239,10 +239,8 @@ static size_t socks5_handle_data(socks5_client_t *c, const uint8_t *data, size_t
         sess->socks5_pending_ok = true;
         sess->socks5_connected  = false;
         sess->last_handshake = time(NULL);
-        if (g_cfg.log_level >= 2) {
-            LOG_INFO("Session %u: SOCKS5 SUCCESS pended (waiting for FEC sync, target=%s:%u)\n", 
-                     sess->session_id, sess->target_host, sess->target_port);
-        }
+        LOG_INFO("Session %u: SOCKS5 SUCCESS pended (waiting for FEC sync, target=%s:%u)\n", 
+                 sess->session_id, sess->target_host, sess->target_port);
         
         return min_len;
     }
@@ -271,10 +269,8 @@ static size_t socks5_handle_data(socks5_client_t *c, const uint8_t *data, size_t
         }
         memcpy(sess->send_buf + sess->send_len, data, len);
         sess->send_len += len;
-        if (g_cfg.log_level >= 3) {
-            LOG_DEBUG("[SOCKS5_BUF] sid=%u state=2 added=%zu total=%zu\n",
-                      sess->session_id, len, sess->send_len);
-        }
+        LOG_INFO("Session %u: SOCKS5 Recv %zu bytes (total_buffered=%zu)\n",
+                 sess->session_id, len, sess->send_len);
         g_stats.tx_total += len;
         g_stats.tx_bytes_sec += len;
         return len;
@@ -310,7 +306,7 @@ static void on_socks5_read(uv_stream_t *s, ssize_t nread, const uv_buf_t *buf) {
             LOG_DEBUG("[SOCKS5_READ] incoming=%zd buf_len before=%zu after=%zu",
                       nread, c->buf_len, c->buf_len + incoming);
         }
-        memcpy(c->buf + c->buf_len, buf->base, nread);
+        /* Skip memcpy! on_socks5_alloc already pointed buf->base to c->buf + c->buf_len */
         c->buf_len += incoming;
     }
 

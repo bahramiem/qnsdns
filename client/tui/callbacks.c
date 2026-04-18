@@ -92,9 +92,9 @@ void on_poll_timer(uv_timer_t *t) {
             int prev_esi = s->tx_burst_esi;
             int sent_count = fire_dns_multi_symbols(i, s->tx_next, (const uint8_t **)fec.symbols, sym_size, N, (int *)&s->tx_burst_esi, false);
 
-            if (s->tx_burst_esi > prev_esi || prev_esi > 0) {
-                LOG_DEBUG("[UPSTREAM] Session %u: burst %u progress %d/%d symbols\n", 
-                          s->session_id, s->tx_next, s->tx_burst_esi, s->tx_burst_total);
+            if (sent_count > 0) {
+                LOG_INFO("Session %u: Initiating Data Burst (seq=%u symbols=%d/%d payload_chunk=%zu)\n",
+                         s->session_id, s->tx_next, s->tx_burst_esi, N, take);
             }
 
             if (s->tx_burst_esi >= s->tx_burst_total) {
