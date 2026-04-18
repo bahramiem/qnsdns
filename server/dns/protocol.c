@@ -471,12 +471,13 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     /* ── Traffic Isolation ─────────────────────────────────────── */
     if (!(q_flags & CHUNK_FLAG_IS_TUNNEL)) {
         /* This is either a random MTU Phase 1/3 label or an Upload MTU probe.
-         * Send a generic "OK" TXT reply so the client MTU test passes. */
-        LOG_DEBUG("  [PROBE] Identified non-tunnel probe (qid=%u flags=%02x). Sending OK.\n",
-                  query_id, q_flags);
+         * Send a "OK:[LEN]" TXT reply so the client can verify if truncation occurred. */
+        LOG_DEBUG("  [PROBE] Identified non-tunnel probe (qid=%u flags=%02x). Sending OK:%zd.\n",
+                  query_id, q_flags, rawlen);
         uint8_t reply[512]; size_t rlen = sizeof(reply);
-        const uint8_t resp[] = "OK";
-        if (build_txt_reply_naked(reply, &rlen, query_id, qname, resp, sizeof(resp)-1) == 0)
+        char resp[32];
+        int resp_len = snprintf(resp, sizeof(resp), "OK:%zd", rawlen);
+        if (build_txt_reply_naked(reply, &rlen, query_id, qname, (const uint8_t*)resp, (size_t)resp_len) == 0)
             send_udp_reply(src, reply, rlen);
         return;
     }

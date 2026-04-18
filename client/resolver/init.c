@@ -252,9 +252,9 @@ void resolver_init_phase(void) {
       LOG_DEBUG("Resolver %s failed Phase 3 (no EDNS/TXT), using minimal MTU "
                "fallback\n",
                r->ip);
-      r->true_upstream_mtu = 512;
+      r->true_upstream_mtu = 140;
       r->true_downstream_mtu = 220;
-      r->upstream_mtu = 512;
+      r->upstream_mtu = 140;
       r->downstream_mtu = 220;
       r->edns0_supported = false;
       rpool_set_state(&g_pool, i, RSV_ACTIVE);

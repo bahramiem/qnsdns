@@ -38,7 +38,7 @@ void init_mtu_binary_search(mtu_binary_search_t *search, int current, int max_mt
     
     search->active = true;
     /* Default max MTU if not specified */
-    int effective_max = max_mtu > 0 ? max_mtu : (is_upload ? 512 : 4096);
+    int effective_max = max_mtu > 0 ? max_mtu : (is_upload ? 140 : 4096);
     /* Lower bound starts at current or min_mtu */
     search->low = current > min_mtu ? current : min_mtu;
     /* Upper bound starts at min(current + window, max_mtu) */
@@ -124,7 +124,7 @@ void mark_mtu_tested(mtu_binary_search_t *search, int mtu, bool success) {
         }
         /* Double the window upwards to find real upper bound if we're hitting high limit */
         int effective_max = search->is_upload ? 
-                           (g_cfg.max_upload_mtu > 0 ? g_cfg.max_upload_mtu : 512) : 
+                           (g_cfg.max_upload_mtu > 0 ? g_cfg.max_upload_mtu : 140) : 
                            (g_cfg.max_download_mtu > 0 ? g_cfg.max_download_mtu : 4096);
                            
         if (search->high <= mtu && mtu < effective_max) {

@@ -178,7 +178,7 @@ static void on_probe_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf, const
                     if (p->test_res) {
                         p->test_res->edns_supported = edns_ok;
                         p->test_res->txt_supported = txt_ok;
-                        p->test_res->upstream_mtu = 512;
+                        p->test_res->upstream_mtu = 140;
                     }
                     if (!edns_ok && !txt_ok) {
                         rpool_set_state(&g_pool, ridx, RSV_DEAD);
@@ -194,55 +194,67 @@ static void on_probe_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf, const
                 bool success = false;
                 if (nread >= 12) {
                     uint8_t *resp = (uint8_t *)buf->base;
+                    uint16_t qdcount = (resp[4] << 8) | resp[5];
+                    uint16_t ancount = (resp[6] << 8) | resp[7];
                     uint8_t rcode = resp[3] & 0x0F;
-                    /* Only accept NOERROR (0) or NXDOMAIN (3) as success - SERVFAIL (2) means query was rejected */
+
                     if (g_cfg.log_level >= 3) {
-                        LOG_DEBUG("[MTU] Got response: size=%d, RCODE=%d, test_mtu=%d\n", (int)nread, rcode, p->mtu_test_val);
+                        LOG_DEBUG("[MTU] Got response: rcode=%d, ancount=%d, test_mtu=%d\n", rcode, ancount, p->mtu_test_val);
                     }
-                if (rcode == RCODE_OKAY || rcode == RCODE_NAME_ERROR) {
-                        success = true;
-                        
-                        /* For Upload MTU, manually parse OPT record to find resolver's true acceptable payload limit
-                         * (we must bypass dns_decode as it fails on the oversized QNAMEs we sent) */
-                        if (p->test_type == PROBE_TEST_MTU_UP && nread > 12) {
-                            size_t offset = 12;
+
+                    if (rcode == RCODE_OKAY && ancount > 0) {
+                        size_t offset = 12;
+                        /* Skip Questions */
+                        for (int i = 0; i < qdcount && offset < (size_t)nread; i++) {
                             while (offset < (size_t)nread) {
-                                uint8_t len = resp[offset];
-                                if (len == 0) { offset++; break; }
-                                if ((len & 0xC0) == 0xC0) {
-                                    if (offset + 2 > (size_t)nread) break;
-                                    offset = ((len & 0x3F) << 8) | resp[offset + 1];
-                                    break;
-                                }
-                                if (offset + 1 + len > (size_t)nread) break;
-                                offset += 1 + len;
+                                uint8_t len = resp[offset++];
+                                if (len == 0) break;
+                                if ((len & 0xC0) == 0xC0) { offset++; break; }
+                                offset += len;
                             }
-                            offset += 5; /* Skip null + QTYPE + QCLASS */
-                            if (offset < (size_t)nread) {
-                                while (offset + 11 <= (size_t)nread) {
-                                    uint8_t name = resp[offset];
-                                    uint16_t rtype = (resp[offset + 1] << 8) | resp[offset + 2];
-                                    if ((name & 0xC0) == 0xC0) {
-                                        if (offset + 13 > (size_t)nread) break;
-                                        offset = ((name & 0x3F) << 8) | resp[offset + 1];
-                                        if (offset >= (size_t)nread) break;
-                                        continue;
-                                    }
-                                    if (name == 0 && rtype == 41) { /* OPT */
-                                        uint16_t resolver_payload = (resp[offset + 3] << 8) | resp[offset + 4];
-                                        if (resolver_payload > 0 && p->test_res) {
-                                            if (p->mtu_test_val <= (int)resolver_payload) {
-                                                p->test_res->up_mtu_search.optimal = p->mtu_test_val;
-                                            }
-                                        }
-                                        break;
-                                    }
-                                    uint16_t rdlen = (resp[offset + 9] << 8) | resp[offset + 10];
-                                    if (offset + 11 + rdlen > (size_t)nread) break;
-                                    offset += 11 + rdlen;
-                                }
-                            }
+                            offset += 4; /* QTYPE + QCLASS */
                         }
+
+                        /* Parse Answers for TXT "OK:LEN" */
+                        for (int i = 0; i < ancount && offset < (size_t)nread; i++) {
+                            /* Skip Name */
+                            while (offset < (size_t)nread) {
+                                uint8_t len = resp[offset++];
+                                if (len == 0) break;
+                                if ((len & 0xC0) == 0xC0) { offset++; break; }
+                                offset += len;
+                            }
+                            if (offset + 10 > (size_t)nread) break;
+                            uint16_t rtype = (resp[offset] << 8) | resp[offset + 1];
+                            uint16_t rdlen = (resp[offset + 8] << 8) | resp[offset + 9];
+                            offset += 10;
+                            if (rtype == RR_TXT && rdlen > 0 && offset + rdlen <= (size_t)nread) {
+                                uint8_t txt_len = resp[offset];
+                                if (txt_len < rdlen && txt_len > 3) {
+                                    char txt[64];
+                                    size_t copy_len = txt_len > 60 ? 60 : txt_len;
+                                    memcpy(txt, resp + offset + 1, copy_len);
+                                    txt[copy_len] = '\0';
+                                    if (strncmp(txt, "OK:", 3) == 0) {
+                                        int verified_len = atoi(txt + 3);
+                                        if (verified_len == p->mtu_test_val) {
+                                            success = true;
+                                            if (g_cfg.log_level >= 3) {
+                                                LOG_INFO("[MTU] Verified MTU %d for %s\n", verified_len, r->ip);
+                                            }
+                                        } else {
+                                            LOG_DEBUG("[MTU] Verification failed for %s: Sent %d, Server received %d\n", 
+                                                      r->ip, p->mtu_test_val, verified_len);
+                                        }
+                                    }
+                                }
+                            }
+                            offset += rdlen;
+                        }
+                    } else if (rcode == RCODE_NAME_ERROR || rcode == RCODE_OKAY) {
+                         /* For MTU_DOWN, we often rely on simple arrival if ancount=0 but it's not ideal.
+                          * However, MTU_UP MUST have an answer to be verified. */
+                         if (p->test_type == PROBE_TEST_MTU_DOWN) success = true;
                     }
                 }
                 
