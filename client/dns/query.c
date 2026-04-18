@@ -71,7 +71,6 @@ size_t inline_dotify(char *buf, size_t buflen, size_t len) {
     if (current_pos == next_dot && dots > 0) {
       *dst-- = '.';
       next_dot -= 57;
-      current_pos--;
       dots--;
       continue;
     }
