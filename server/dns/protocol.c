@@ -147,6 +147,10 @@ int build_txt_reply_multi(uint8_t *outbuf, size_t *outlen,
 
         uint8_t packet[1024];
         size_t packet_len = 0;
+        if (g_cfg.log_level >= 3) {
+            LOG_DEBUG("  [BUILD] Frag %d: chunk=%d b64=%zu overhead=%zu budget=%zu\n", 
+                      frag_count, chunk_data_len, b64_chars, frag_overhead, safe_packet_budget);
+        }
         memcpy(packet, &hdr, sizeof(hdr));
         packet_len += sizeof(hdr);
 
@@ -260,6 +264,13 @@ static void on_udp_send_done(uv_udp_send_t *r, int status) {
 }
 
 void send_udp_reply(const struct sockaddr_in *dest, const uint8_t *data, size_t len) {
+    char ip[INET_ADDRSTRLEN];
+    uv_ip4_name(dest, ip, sizeof(ip));
+    if (g_cfg.log_level >= 3) {
+        LOG_DEBUG("  [OUT] -> %s:%d len=%zu (qid=%u)\n", 
+                  ip, ntohs(dest->sin_port), len, 
+                  (len >= 2) ? (uint16_t)((data[0] << 8) | data[1]) : 0);
+    }
     udp_reply_t *rep = malloc(sizeof(*rep));
     if (!rep) return;
     memcpy(&rep->dest, dest, sizeof(*dest));
@@ -519,8 +530,11 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     int sidx = session_find_by_id(session_id);
     if (sidx < 0) {
         sidx = session_alloc_by_id(session_id);
-        if (sidx < 0) return;
-        LOG_INFO("New session id=%u\n", session_id);
+        if (sidx < 0) {
+            LOG_WARN("Failed to allocate session for id=%u\n", session_id);
+            return;
+        }
+        LOG_INFO("New session id=%u allocated at index %d\n", session_id, sidx);
     }
 
     srv_session_t *sess = &g_sessions[sidx];
@@ -541,9 +555,11 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         memcpy(&hs, payload, sizeof(hs));
         
         if (hs.version != DNSTUN_VERSION) {
-            LOG_DEBUG("  [HANDSHAKE] Error: protocol version mismatch (recv:%u expected:%u)\n", hs.version, DNSTUN_VERSION);
+            LOG_DEBUG("  [HANDSHAKE] sid=%u Error: protocol version mismatch (recv:%u expected:%u)\n", 
+                      session_id, hs.version, DNSTUN_VERSION);
             return;
         }
+        LOG_DEBUG("  [HANDSHAKE] sid=%u version=%u (valid)\n", session_id, hs.version);
         
         uint16_t umtu = ntohs(hs.upstream_mtu);
         uint16_t dmtu = ntohs(hs.downstream_mtu);
@@ -572,8 +588,11 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         /* Echo the handshake back to the client as data to acknowledge sync.
          * Use the current sequence 'seq' for ACK to avoid over-ACKing seq+1. */
         if (build_txt_reply_multi(reply, &rlen, query_id, qname, (uint8_t*)&hs, sizeof(hs), sess->cl_downstream_mtu, 0, seq, sess->session_id, true, false, &nfrags, NULL) == 0) {
-            LOG_DEBUG("Session %u: sending HANDSHAKE echo back to client (ack=%u)\n", sess->session_id, seq);
+            LOG_DEBUG("Session %u: sending HANDSHAKE echo back to client (ack=%u, rlen=%zu, qid=%u)\n", 
+                      sess->session_id, seq, rlen, query_id);
             send_udp_reply(src, reply, rlen);
+        } else {
+            LOG_WARN("Session %u: FAILED to build HANDSHAKE echo reply\n", sess->session_id);
         }
         sess->rx_next = seq + 1; /* Adopt client sequence exactly */
         session_handle_data(sidx, NULL, 0, seq, 1);

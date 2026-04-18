@@ -148,6 +148,17 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                         const struct sockaddr *addr, unsigned flags) {
   if (nread <= 0) return;
   dns_query_ctx_t *q = h->data;
+  
+  if (g_cfg.log_level >= 3) {
+      char hex[128] = {0};
+      for (size_t i = 0; i < (nread < 16 ? (size_t)nread : 16); i++) 
+          sprintf(hex + i*2, "%02x", (uint8_t)buf->base[i]);
+      LOG_DEBUG("  [UDP_RX] len=%zd from %s qid=%u hex=%s%s\n", 
+                nread, g_pool.resolvers[q->resolver_idx].ip,
+                (nread >= 2) ? (uint16_t)(((uint8_t)buf->base[0] << 8) | (uint8_t)buf->base[1]) : 0,
+                hex, nread > 16 ? "..." : "");
+  }
+
   int ridx = q->resolver_idx;
   double rtt = (double)(uv_hrtime() / 1000000ULL - q->sent_ms);
   rpool_on_ack(&g_pool, ridx, rtt);
@@ -367,6 +378,9 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
     /* Unify with MTU probe format by adding .x. separator before domain */
     char qn[2048]; 
     snprintf(qn, sizeof(qn), "%s.x.%s", (char *)q->sendbuf, domain);
+    if (g_cfg.log_level >= 3) {
+        LOG_DEBUG("  [DNS_BUILD] qname=%s\n", qn);
+    }
     
     dns_question_t quest={0}; quest.name=qn; quest.type=RR_TXT; quest.class=CLASS_IN;
     dns_query_t query={0}; query.id=rand_u16(); query.query=true; query.rd=true; query.qdcount=1; query.questions=&quest;
