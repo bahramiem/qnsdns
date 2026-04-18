@@ -135,7 +135,8 @@ int rpool_next_ready(resolver_pool_t *pool, int interval_ms) {
             int jitter = (interval_ms > 0) ? (rand() % (interval_ms / 10 + 1)) : 0;
             uint64_t final_interval = (uint64_t)interval_ms + (uint64_t)jitter;
 
-            if (now - r->last_query_ms >= final_interval) {
+            /* If interval_ms is 0, we bypass the cooldown (used for Handshakes/Bursts) */
+            if (interval_ms == 0 || (now - r->last_query_ms >= final_interval)) {
                 ready_count++;
                 if (result < 0) {
                     r->last_query_ms = now;
@@ -306,6 +307,7 @@ int rpool_flux_domain(const dnstun_config_t *cfg) {
 int rpool_swarm_merge(resolver_pool_t *pool, const char **ips, int count) {
     int added = 0;
     for (int i = 0; i < count; i++) {
+        /* Use 0ms interval (bypass cooldown) for Handshakes/Bursts to ensure immediate firing */
         int idx = rpool_add(pool, ips[i]);
         if (idx >= 0) {
             pool->resolvers[idx].from_swarm = true;

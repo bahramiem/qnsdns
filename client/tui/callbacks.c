@@ -56,10 +56,12 @@ void on_poll_timer(uv_timer_t *t) {
         session_t *s = &g_sessions[i];
         if (s->closed || !s->established) continue;
 
-        if (s->send_len > 0) {
+        static uint64_t last_poll_log = 0;
+        if (s->send_len > 0 && (now - last_poll_log > 1000)) {
             LOG_INFO("Session %u: Poll (buf=%zu est=%d sync=%d next=%u acked=%u prog=%d)\n",
                      s->session_id, s->send_len, s->established, s->fec_synced, 
                      s->tx_next, s->tx_acked, s->tx_burst_esi);
+            last_poll_log = now;
         }
 
         /* Retransmission Rewind */
@@ -104,14 +106,16 @@ void on_poll_timer(uv_timer_t *t) {
             if (s->tx_burst_esi == 0) s->tx_burst_total = (uint16_t)N;
             
             int prev_esi = s->tx_burst_esi;
-            if (g_cfg.log_level >= 1) {
-                LOG_INFO("Session %u: Firing burst seq=%u progress=%d/%d\n", 
-                         s->session_id, s->tx_next, s->tx_burst_esi, N);
-            }
             int sent = fire_dns_multi_symbols(i, s->tx_next, (const uint8_t **)fec.symbols, sym_size, N, (int *)&s->tx_burst_esi, false);
-            if (sent > 0 && s->tx_burst_esi >= N) {
-                LOG_INFO("Session %u: Burst seq=%u complete.\n", s->session_id, s->tx_next);
-                s->tx_next++; s->tx_burst_esi = 0;
+            if (sent > 0) {
+                if (g_cfg.log_level >= 1) {
+                    LOG_INFO("Session %u: Fired burst symbols (progress %d -> %d/%d)\n", 
+                             s->session_id, prev_esi, s->tx_burst_esi, N);
+                }
+                if (s->tx_burst_esi >= N) {
+                    LOG_INFO("Session %u: Burst seq=%u complete.\n", s->session_id, s->tx_next);
+                    s->tx_next++; s->tx_burst_esi = 0;
+                }
             }
 
             if (s->tx_burst_esi >= s->tx_burst_total) {
