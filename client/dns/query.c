@@ -363,16 +363,17 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
     dns_query_ctx_t *q = calloc(1, sizeof(*q));
     if (!q) return symbols_sent_this_call;
     uv_udp_init(g_loop, &q->udp); q->udp.data = q;
-    /* Use 10ms minimum interval for data to allow bursts while preventing flooding */
-    int ridx = rpool_next_ready(&g_pool, 10); 
+    /* Use 5ms minimum interval for data to allow bursts while preventing flooding */
+    int ridx = rpool_next_ready(&g_pool, 5); 
     if (ridx < 0) {
         static uint32_t last_warn_tick = 0;
         if (uv_hrtime() / 1000000000ULL > last_warn_tick) {
-            LOG_WARN("Session %u: No resolver ready for burst (seq=%u esi=%d). Waiting...\n", 
+            LOG_WARN("Session %u: No resolver ready for burst (seq=%u esi=%d). Batched send will resume on next tick.\n", 
                      session_idx, seq, cur_esi);
             last_warn_tick = (uint32_t)(uv_hrtime() / 1000000000ULL);
         }
         uv_close((uv_handle_t *)&q->udp, on_dns_query_close); 
+        /* Trigger immediate retry on next iteration to finish burst */
         return symbols_sent_this_call; 
     }
     resolver_t *r = &g_pool.resolvers[ridx];
@@ -425,16 +426,14 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
     }
 
     size_t bl = base32_encode((char *)q->sendbuf, tp, tl);
+    if (g_cfg.log_level >= 3) {
+        LOG_INFO("DIAG: [B32_ENCODE] raw=%zu -> b32=%zu chars: %s\n", tl, bl, (char*)q->sendbuf);
+    }
     size_t dl = inline_dotify((char *)q->sendbuf, sizeof(q->sendbuf), bl);
     
-    /* 
-     * CRITICAL: Reverting to old working QNAME format. 
-     * 1. Add trailing dot to ensure an absolute FQDN (avoids suffix search issues).
-     * 2. Remove the '.x.' separator for tunnel traffic (keeps format simple like old working code).
-     * DO NOT REMOVE THIS TRAILING DOT - it is required for network traversal via some resolvers.
-     */
     char qn[2048]; 
-    q->sendbuf[bl] = '\0';
+    /* Truncation Fix: inline_dotify already null-terminates. 
+     * Overwriting at index 'bl' was cutting off the final characters moved by dots. */
     memset(qn, 0, sizeof(qn));
     int n = snprintf(qn, sizeof(qn), "%.*s.%s.", (int)dl, (char *)q->sendbuf, domain);
     if (n < 0 || (size_t)n >= sizeof(qn)) {

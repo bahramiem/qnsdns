@@ -637,6 +637,11 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
             sym_total = sess->cl_fec_n;
             cur_ptr += sym_len;
             cur_rem -= sym_len;
+            
+            if (g_cfg.log_level >= 3) {
+                LOG_INFO("DIAG: [FEC_ADD] sid=%u esi=%u len=%zu (progress for burst %u)\n",
+                         session_id, sym_esi, sym_len, seq);
+            }
         } else if (!is_poll && !is_sync) {
             /* Single raw/compressed packet */
             sym_data = cur_ptr;
