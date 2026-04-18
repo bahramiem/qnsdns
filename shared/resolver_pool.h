@@ -75,4 +75,7 @@ int  rpool_flux_domain(const dnstun_config_t *cfg);
 /* Swarm — add a list of IPs received from the server */
 int  rpool_swarm_merge(resolver_pool_t *pool, const char **ips, int count);
 
+/* Get human-readable name/IP of a resolver */
+const char* rpool_get_name(resolver_pool_t *pool, int idx);
+
 #endif /* DNSTUN_RESOLVER_POOL_H */

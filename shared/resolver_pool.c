@@ -304,3 +304,9 @@ int rpool_swarm_merge(resolver_pool_t *pool, const char **ips, int count) {
     }
     return added;
 }
+
+/* ── Get resolver name/IP ───────────────────────────────────────────────────*/
+const char* rpool_get_name(resolver_pool_t *pool, int idx) {
+    if (idx < 0 || idx >= pool->count) return "unknown";
+    return pool->resolvers[idx].ip;
+}
