@@ -65,9 +65,10 @@ void on_socks5_close(uv_handle_t *h) {
     socks5_client_t *c = h->data;
     if (c && c->session_idx >= 0 && c->session_idx < DNSTUN_MAX_SESSIONS) {
         session_t *s = &g_sessions[c->session_idx];
-        DBGLOG("[CLOSE] session_idx=%d session_id=%u target=%s:%u tx_next=%u\n",
+        DBGLOG("[CLOSE] session_idx=%d session_id=%u target=%s:%u tx_next=%u time_active=%lds\n",
                c->session_idx, s->session_id,
-               s->target_host, s->target_port, s->tx_next);
+               s->target_host, s->target_port, s->tx_next,
+               (long)(time(NULL) - s->last_active));
         s->closed    = true;
         s->client_ptr = NULL;
         if (g_stats.active_sessions > 0)
@@ -235,7 +236,9 @@ static size_t socks5_handle_data(socks5_client_t *c, const uint8_t *data, size_t
         /* Delay SOCKS5 Success until FEC sync echo arrives from server */
         sess->socks5_pending_ok = true;
         sess->socks5_connected  = false;
-        LOG_DEBUG("Session %u: SOCKS5 SUCCESS pended (waiting for FEC sync)\n", sess->session_id);
+        sess->last_handshake = time(NULL);
+        LOG_INFO("Session %u: SOCKS5 SUCCESS pended (waiting for FEC sync, target=%s:%u)\n", 
+                 sess->session_id, sess->target_host, sess->target_port);
         
         return min_len;
     }

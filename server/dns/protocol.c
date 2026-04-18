@@ -429,8 +429,14 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     ssize_t rawlen  = base32_decode(raw, b32_payload, b32_len);
 
     if (rawlen < 0) {
-        LOG_DEBUG("  [IN] REJECTED (base32 decode failed): qname=%s from %s\n", qname, src_ip);
+        LOG_DEBUG("  [RAW] sid=N/A: Base32 decode failed for payload\n");
         return;
+    }
+
+    if (log_level() >= 3) {
+        char hex[128] = {0};
+        for (size_t i = 0; i < (rawlen < 16 ? (size_t)rawlen : 16); i++) sprintf(hex + i*2, "%02x", raw[i]);
+        LOG_DEBUG("  [RAW] DECODED (len=%zd): %s%s\n", rawlen, hex, rawlen > 16 ? "..." : "");
     }
 
     if (rawlen < (ssize_t)sizeof(query_header_t)) {
@@ -453,7 +459,8 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     if (!(q_flags & CHUNK_FLAG_IS_TUNNEL)) {
         /* This is either a random MTU Phase 1/3 label or an Upload MTU probe.
          * Send a generic "OK" TXT reply so the client MTU test passes. */
-        LOG_DEBUG("  [PROBE] Identified non-tunnel probe (flags=%02x). Sending OK.\n", q_flags);
+        LOG_DEBUG("  [PROBE] Identified non-tunnel probe (qid=%u flags=%02x). Sending OK.\n",
+                  query_id, q_flags);
         uint8_t reply[512]; size_t rlen = sizeof(reply);
         const uint8_t resp[] = "OK";
         if (build_txt_reply_naked(reply, &rlen, query_id, qname, resp, sizeof(resp)-1) == 0)
@@ -572,7 +579,8 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
 
     /* REJECT data packets if FEC not yet synced via Handshake */
     if (cur_rem > 0 && !is_poll && !is_sync && sess->cl_symbol_size == 0) {
-        LOG_DEBUG("  [IN] sid=%u: DROPPED data pkt (waiting for Handshake/FEC sync bits)\n", session_id);
+        LOG_WARN("  [IN] sid=%u: DROPPED data pkt (seq=%u) because handshake is not yet complete\n", 
+                 session_id, seq);
         goto send_reply;
     }
 

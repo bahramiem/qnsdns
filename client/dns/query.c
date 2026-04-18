@@ -346,9 +346,20 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
     qh.seq = seq;
 
     uint8_t tp[1400]; size_t tl=0; memcpy(tp, &qh, sizeof(qh)); tl+=sizeof(qh); memcpy(tp+tl, pb, pl); tl+=pl;
+    
+    if (log_level() >= 3) {
+        char hex[128] = {0};
+        for (size_t i = 0; i < (tl < 16 ? tl : 16); i++) sprintf(hex + i*2, "%02x", tp[i]);
+        LOG_DEBUG("[UPSTREAM] RAW HDR+PAYLOAD (len=%zu): %s%s\n", tl, hex, tl > 16 ? "..." : "");
+    }
+
     size_t bl = base32_encode((char *)q->sendbuf, tp, tl);
     inline_dotify((char *)q->sendbuf, sizeof(q->sendbuf), bl);
-    char qn[512]; snprintf(qn, sizeof(qn), "%s.%s", (char *)q->sendbuf, domain);
+    
+    /* Unify with MTU probe format by adding .x. separator before domain */
+    char qn[512]; 
+    snprintf(qn, sizeof(qn), "%s.x.%s", (char *)q->sendbuf, domain);
+    
     dns_question_t quest={0}; quest.name=qn; quest.type=RR_TXT; quest.class=CLASS_IN;
     dns_query_t query={0}; query.id=rand_u16(); query.query=true; query.rd=true; query.qdcount=1; query.questions=&quest;
     LOG_DEBUG("[DNS_FIRE] qid=%u sid=%u flags=%02x seq=%u qname=%s to %s\n", 
