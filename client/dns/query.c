@@ -374,7 +374,7 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
     }
     
     query_header_t qh = {0};
-    qh.sid = (uint8_t)sess->session_id; qh.flags = fl; qh.seq = seq;
+    qh.sid = (uint8_t)sess->session_id; qh.flags = fl | 0x80; qh.seq = seq;
     
     if (g_cfg.log_level >= 2) {
         LOG_DEBUG("  [DNS_BUILD] SID=%u Flags=%02X Seq=%u Total=%d CurESI=%d\n", 
