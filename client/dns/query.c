@@ -122,6 +122,7 @@ typedef struct dns_query_ctx {
   struct sockaddr_in dest;
   int resolver_idx;
   int session_idx;
+  uint16_t qid;
   uint16_t seq;
   uint64_t sent_ms;
   uint8_t sendbuf[2048];
@@ -419,6 +420,7 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
 
     dns_query_t query={0}; 
     query.id=rand_u16(); 
+    q->qid = query.id;
     query.query=true; 
     query.rd=true; 
     query.qdcount=1; 

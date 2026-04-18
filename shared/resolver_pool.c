@@ -148,7 +148,7 @@ int rpool_next_ready(resolver_pool_t *pool, int interval_ms) {
                           r->ip, (unsigned long long)(now - r->last_query_ms), (unsigned long long)final_interval);
             }
         }
-        if (result < 0 && g_cfg.log_level >= 3) {
+        if (result < 0 && pool->cfg->log_level >= 3) {
             LOG_DEBUG("[POOL] No resolvers ready (active=%d, ready=%d, needed_interval=%d)\n", 
                       pool->active_count, ready_count, interval_ms);
         }
