@@ -4,7 +4,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include "constants.h"
+#include "types.h"
 
 /* ──────────────────────────────────────────────
    Config structure — covers ALL features

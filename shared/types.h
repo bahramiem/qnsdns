@@ -7,7 +7,6 @@
 #include <stddef.h>
 #include <time.h>
 #include "shared/codec.h"
-#include "constants.h"
 
 #ifdef _WIN32
 #  include <winsock2.h>
@@ -18,7 +17,40 @@
 #endif
 
 /* ──────────────────────────────────────────────
-   Capability Header (prepended to every query)
+   Constants
+────────────────────────────────────────────── */
+#define DNSTUN_MAX_RESOLVERS     4096
+#define DNSTUN_MAX_SESSIONS      256    /* 8-bit session ID: 0-255 */
+#define DNSTUN_MAX_DOMAINS       32
+#define DNSTUN_MAX_LABEL_LEN     63
+#define DNSTUN_MAX_QNAME_LEN     253
+
+/* Buffer sizes for downstream MTU
+ * DEFAULT: 320 for DNS TXT compatibility (ensures total response < 512 bytes)
+ * Server will use this unless client reports different preference via handshake */
+#define DNSTUN_MAX_DOWNSTREAM_MTU   220    /* Maximally compatible default for DNS TXT */
+#define DNSTUN_SERVER_BUFFER_SIZE   65536  /* 64KB */
+#define DNSTUN_CLIENT_BUFFER_SIZE   65536  /* 64KB */
+
+/* max payload bytes per DNS query
+ * With new 5-byte header and base32 encoding:
+ * - chunk_header_t (5 bytes)
+ * - base32 encoding overhead (~1.6x)
+ * - QNAME prefix (~22 bytes)
+ * - base32 dotify overhead
+ * Reduced to 110 to keep total QNAME < 253 even with longer domains. */
+#define DNSTUN_CHUNK_PAYLOAD     110    /* max base32 payload bytes per DNS query */
+#define DNSTUN_SESSION_ID_LEN    8
+#define DNSTUN_VERSION           1
+
+/* Downstream encoding types (for server → client) */
+#define DNSTUN_ENC_BASE64       0      /* Default */
+#define DNSTUN_ENC_HEX          1
+
+#define DNSTUN_DEBUG_PREFIX "PROTO_TEST_"      /* Prefix for protocol loop test (matches 't'/'T' key) */
+
+/* ──────────────────────────────────────────────
+   Client Capability Header (prepended to every query)
    This tells the server the client's capabilities for this resolver path.
    Format: version(1) + upstream_mtu(2) + downstream_mtu(2) + encoding(1) + loss_pct(1)
    Total: 7 bytes
@@ -33,6 +65,44 @@ typedef struct {
     uint16_t ack_seq;        /* The sequence number the client is expecting next (Downstream ACK) */
 } capability_header_t;
 #pragma pack(pop)
+
+/* ──────────────────────────────────────────────
+   Resolver Health States
+────────────────────────────────────────────── */
+typedef enum {
+    RSV_ACTIVE   = 0,   /* healthy, in round-robin */
+    RSV_PENALTY  = 1,   /* rate-limited, in cooldown */
+    RSV_DEAD     = 2,   /* failed all tests */
+    RSV_ZOMBIE   = 3,   /* intercepting / poisoned */
+    RSV_TESTING  = 4    /* currently being benchmarked */
+} resolver_state_t;
+
+/* ──────────────────────────────────────────────
+   Encoding format discovered per resolver
+────────────────────────────────────────────── */
+typedef enum {
+    ENC_BINARY = 0,
+    ENC_BASE64 = 1
+} enc_format_t;
+
+/* ──────────────────────────────────────────────
+   Cipher suite
+────────────────────────────────────────────── */
+typedef enum {
+    CIPHER_NONE       = 0,
+    CIPHER_CHACHA20   = 1,
+    CIPHER_AES256GCM  = 2,
+    CIPHER_NOISE_NK   = 3
+} cipher_t;
+
+/* ──────────────────────────────────────────────
+   Transport mode
+────────────────────────────────────────────── */
+typedef enum {
+    TRANSPORT_UDP  = 0,  /* raw UDP port 53 */
+    TRANSPORT_DOH  = 1,  /* DNS-over-HTTPS port 443 */
+    TRANSPORT_DOT  = 2   /* DNS-over-TLS  port 853 */
+} transport_t;
 
 /* ──────────────────────────────────────────────
    Resolver record — all discovered capabilities
