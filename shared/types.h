@@ -38,6 +38,7 @@
  * - QNAME prefix (~22 bytes)
  * - base32 dotify overhead
  * Reduced to 110 to keep total QNAME < 253 even with longer domains. */
+#define DNSTUN_MAX_CHUNK_PAYLOAD 256
 #define DNSTUN_SESSION_ID_LEN    8
 #define DNSTUN_VERSION           1
 
@@ -371,7 +372,7 @@ static inline void resp_set_encoding(uint8_t *flags, uint8_t enc) {
 ────────────────────────────────────────────── */
 typedef struct {
     chunk_header_t hdr;
-    uint8_t        data[DNSTUN_CHUNK_PAYLOAD];
+    uint8_t        data[DNSTUN_MAX_CHUNK_PAYLOAD];
     size_t         data_len;
     bool           acked;
     time_t         sent_at;
