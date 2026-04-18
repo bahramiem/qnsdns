@@ -368,7 +368,8 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
     if (!q) return symbols_sent_this_call;
     uv_udp_init(g_loop, &q->udp); q->udp.data = q;
     /* Use 1ms minimum interval for bursts to allow rapid completion of parity symbols */
-    int ridx = rpool_next_ready(&g_pool, 1); 
+    /* Restoration Fix: Slow down pacing from 1ms to 10ms per resolver to match stable version rhythm */
+    int ridx = rpool_next_ready(&g_pool, 10); 
     if (ridx < 0) {
         static uint32_t last_warn_tick = 0;
         if (uv_hrtime() / 1000000000ULL > last_warn_tick) {
@@ -414,6 +415,7 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
     
     query_header_t qh = {0};
     qh.sid = (uint8_t)sess->session_id; qh.flags = fl | 0x80; qh.seq = seq;
+    qh.magic = DNSTUN_MAGIC; // 0x514E marker for alignment
     
     if (g_cfg.log_level >= 2) {
         LOG_DEBUG("  [DNS_BUILD] SID=%u Flags=%02X Seq=%u Total=%d CurESI=%d\n", 

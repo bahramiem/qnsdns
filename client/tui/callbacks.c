@@ -89,7 +89,7 @@ void on_poll_timer(uv_timer_t *t) {
         } else {
             /* Data Burst (Resume Logic) */
             int K = (s->cl_fec_k > 0) ? (int)s->cl_fec_k : 10;
-            int N = (s->cl_fec_n > 0) ? (int)s->cl_fec_n : 15;
+            int N = (s->cl_fec_n > 0) ? (int)s->cl_fec_n : 20;
             size_t sym_size = (s->cl_symbol_size > 0) ? (size_t)s->cl_symbol_size : (size_t)g_cfg.chunk_payload;
 
             /* Check if we need to encode a new burst */

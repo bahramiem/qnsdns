@@ -461,6 +461,14 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     }
 
     query_header_t *q_hdr = (query_header_t *)raw;
+    
+    /* Shield Fix: Verify magic alignment marker before processing any metadata */
+    if (q_hdr->magic != DNSTUN_MAGIC) {
+        LOG_DEBUG("  [IN] ALIGNMENT ERROR (magic %04X != %04X): qname=%s from %s. Possible Bit-Shift.\n", 
+                  q_hdr->magic, DNSTUN_MAGIC, qname, src_ip);
+        return;
+    }
+
     uint8_t session_id = q_hdr->sid;
     uint8_t q_flags     = q_hdr->flags;
     uint16_t seq       = q_hdr->seq;

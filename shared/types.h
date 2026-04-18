@@ -157,12 +157,15 @@ typedef struct resolver {
     FEC parameters (K, N) are negotiated during handshake.
     Layout: session_id(1) + flags(1) + seq(2) + esi(1)
   ────────────────────────────────────────────── */
+#define DNSTUN_MAGIC 0x514E  /* "QN" - used to verify alignment and reject shifted Base32 */
+
 #pragma pack(push, 1)
 typedef struct {
     uint8_t  sid;            /* full 8-bit session ID (0 - 255) */
     uint8_t  flags;          /* full 8-bit flags (includes CHUNK_FLAG_IS_TUNNEL) */
     uint16_t seq;            /* burst id / sequence number (2 bytes) */
-} query_header_t;            /* Common Query Header: 4 bytes */
+    uint16_t magic;          /* magic marker for alignment check (0x514E) */
+} query_header_t;            /* Common Query Header: 6 bytes */
 #pragma pack(pop)
 
 /* Helper defines for compatibility and clarity */
