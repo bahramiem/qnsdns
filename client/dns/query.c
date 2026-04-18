@@ -431,8 +431,6 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
     size_t dl = inline_dotify((char *)q->sendbuf, sizeof(q->sendbuf), bl);
     
     char qn[2048]; 
-    LOG_INFO("AUDIT: String at idx %zu before manual null: 0x%02x\n", bl, (unsigned char)q->sendbuf[bl]);
-    q->sendbuf[bl] = '\0';
     memset(qn, 0, sizeof(qn));
     int n = snprintf(qn, sizeof(qn), "%.*s.%s.", (int)dl, (char *)q->sendbuf, domain);
     if (n < 0 || (size_t)n >= sizeof(qn)) {
