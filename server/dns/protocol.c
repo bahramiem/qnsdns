@@ -106,7 +106,6 @@ int build_txt_reply_multi(uint8_t *outbuf, size_t *outlen,
                           uint16_t query_id, const char *qname,
                           const uint8_t *data, size_t data_len,
                           uint16_t mtu, uint16_t start_seq,
-                          uint16_t ack_seq,
                           uint8_t session_id, bool has_seq,
                           bool buffer_has_more,
                           int *num_frags, size_t *bytes_consumed) {
@@ -143,7 +142,7 @@ int build_txt_reply_multi(uint8_t *outbuf, size_t *outlen,
             hdr.flags |= RESP_FLAG_MORE_DATA;
         }
         hdr.seq = current_seq;
-        hdr.ack_seq = ack_seq;
+        hdr.ack_seq = 0;
 
         uint8_t packet[1024];
         size_t packet_len = 0;
@@ -235,13 +234,12 @@ int build_txt_reply_with_seq(uint8_t *outbuf, size_t *outlen,
                              uint16_t query_id, const char *qname,
                              const uint8_t *data, size_t data_len,
                              uint16_t mtu, uint16_t seq,
-                             uint16_t ack_seq,
                              uint8_t session_id, bool has_seq,
                              bool buffer_has_more) {
     int nf = 0;
     size_t bc = 0;
     return build_txt_reply_multi(outbuf, outlen, query_id, qname, data, data_len,
-                                 mtu, seq, ack_seq, session_id, has_seq,
+                                 mtu, seq, session_id, has_seq,
                                  buffer_has_more, &nf, &bc);
 }
 
@@ -336,9 +334,6 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     while (tok && part_count < 16) { parts[part_count++] = tok; tok = strtok(NULL, "."); }
 
     int  domain_parts   = 0;
-    bool is_mtu_probe   = false;
-    bool is_crypto_probe = false;
-    bool is_capability_probe = false;
     bool is_mine        = false;
 
     for (int d = 0; d < g_cfg.domain_count; d++) {
@@ -378,20 +373,13 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     }
 
     int payload_start_idx = part_count - domain_parts;
-    if (payload_start_idx >= 1 && parts[0] != NULL) {
-#ifdef _WIN32
-        if (_strnicmp(parts[0], "mtu-req-", 8) == 0) is_mtu_probe = true;
-        if (_strnicmp(parts[0], "CRYPTO_", 7)  == 0) is_crypto_probe = true;
-        if (_stricmp(parts[0], "probe")       == 0) is_capability_probe = true;
-#else
-        if (strncasecmp(parts[0], "mtu-req-", 8) == 0) is_mtu_probe = true;
-        if (strncasecmp(parts[0], "CRYPTO_", 7)  == 0) is_crypto_probe = true;
-        if (strcasecmp(parts[0], "probe")       == 0) is_capability_probe = true;
-#endif
-    }
+    bool is_mtu_probe = (parts[0] != NULL && strncasecmp(parts[0], "mtu-req-", 8) == 0);
+    bool is_capability_probe = (parts[0] != NULL && strcasecmp(parts[0], "probe") == 0);
+    bool is_qtest_probe = (parts[0] != NULL && strncasecmp(parts[0], "qtest-", 6) == 0);
+    bool is_crypto_probe = (parts[0] != NULL && strncasecmp(parts[0], "CRYPTO_", 7) == 0);
 
     if (qtype != RR_TXT && qtype != RR_ANY && qtype != RR_A) {
-        if (!is_mtu_probe && !is_capability_probe && !is_crypto_probe) {
+        if (!is_mtu_probe && !is_capability_probe && !is_crypto_probe && !is_qtest_probe) {
             uint8_t nx[512];
             nx[0] = query_id >> 8; nx[1] = query_id & 0xFF;
             nx[2] = 0x81; nx[3] = 0x03;
@@ -422,7 +410,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         return;
     }
 
-    if (is_capability_probe) {
+    if (is_capability_probe || is_qtest_probe) {
         uint8_t reply[512]; size_t rlen = sizeof(reply);
         const uint8_t resp[] = "OK";
         if (build_txt_reply_naked(reply, &rlen, query_id, qname, resp, sizeof(resp)-1) == 0)
@@ -460,13 +448,10 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         return;
     }
 
-    query_header_t *q_hdr = (query_header_t *)raw;
-    
-    /* Shield Fix: Verify magic alignment marker before processing any metadata */
-    if (q_hdr->magic != DNSTUN_MAGIC) {
-        LOG_DEBUG("  [IN] ALIGNMENT ERROR (magic %04X != %04X): qname=%s from %s. Possible Bit-Shift.\n", 
-                  q_hdr->magic, DNSTUN_MAGIC, qname, src_ip);
-        return;
+    if (g_cfg.log_level >= 2) {
+        char hex[128] = {0};
+        for (size_t i = 0; i < (rawlen < 16 ? (size_t)rawlen : 16); i++) sprintf(hex + i*2, "%02x", raw[i]);
+        LOG_INFO("DIAG: [IN_RAW] sid=%u DecodeHex: %s%s\n", raw[0], hex, rawlen > 16 ? "..." : "");
     }
 
     uint8_t session_id = q_hdr->sid;

@@ -175,6 +175,12 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         session_t *s = &g_sessions[q->session_idx];
         server_response_header_t resp_hdr;
         memcpy(&resp_hdr, raw_decoded, sizeof(resp_hdr));
+        
+        if (g_cfg.log_level >= 2) {
+            char hex[128] = {0};
+            for (size_t i = 0; i < (decoded_len < 16 ? (size_t)decoded_len : 16); i++) sprintf(hex + i*2, "%02x", raw_decoded[i]);
+            LOG_INFO("DIAG: [REPLY_RAW] sid=%u DecodeHex: %s%s\n", resp_hdr.session_id, hex, decoded_len > 16 ? "..." : "");
+        }
         if (resp_hdr.session_id != s->session_id) {
             LOG_DEBUG("  [IN] IGNORED (sid mismatch: recv=%u, current=%u) from %s\n", 
                       resp_hdr.session_id, s->session_id, g_pool.resolvers[ridx].ip);
@@ -415,7 +421,6 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
     
     query_header_t qh = {0};
     qh.sid = (uint8_t)sess->session_id; qh.flags = fl | 0x80; qh.seq = seq;
-    qh.magic = DNSTUN_MAGIC; // 0x514E marker for alignment
     
     if (g_cfg.log_level >= 2) {
         LOG_DEBUG("  [DNS_BUILD] SID=%u Flags=%02X Seq=%u Total=%d CurESI=%d\n", 
@@ -424,10 +429,10 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
 
     uint8_t tp[2048]; size_t tl = 0; memcpy(tp, &qh, sizeof(qh)); tl+=sizeof(qh); memcpy(tp+tl, pb, pl); tl+=pl;
     
-    if (g_cfg.log_level >= 3) {
+    if (g_cfg.log_level >= 2) {
         char hex[128] = {0};
         for (size_t i = 0; i < (tl < 16 ? tl : 16); i++) sprintf(hex + i*2, "%02x", tp[i]);
-        LOG_INFO("DIAG: [UPSTREAM] PRE_B32 (len=%zu): %s%s\n", tl, hex, tl > 16 ? "..." : "");
+        LOG_INFO("DIAG: [UP_RAW] sid=%u PreB32Hex: %s%s (len=%zu)\n", qh.sid, hex, tl > 16 ? "..." : "", tl);
     }
 
     size_t bl = base32_encode((char *)q->sendbuf, tp, tl);

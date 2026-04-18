@@ -155,17 +155,15 @@ typedef struct resolver {
    Ultra-Compact DNS Tunnel chunk header (5 bytes)
     Used for upstream: Client → Server (Base32 in QNAME)
     FEC parameters (K, N) are negotiated during handshake.
-    Layout: session_id(1) + flags(1) + seq(2) + esi(1)
+    Layout: session_id(1) + flags(1) + seq(2)
   ────────────────────────────────────────────── */
-#define DNSTUN_MAGIC 0x514E  /* "QN" - used to verify alignment and reject shifted Base32 */
 
 #pragma pack(push, 1)
 typedef struct {
-    uint8_t  sid;            /* full 8-bit session ID (0 - 255) */
-    uint8_t  flags;          /* full 8-bit flags (includes CHUNK_FLAG_IS_TUNNEL) */
-    uint16_t seq;            /* burst id / sequence number (2 bytes) */
-    uint16_t magic;          /* magic marker for alignment check (0x514E) */
-} query_header_t;            /* Common Query Header: 6 bytes */
+    uint8_t  sid;            /* session id */
+    uint8_t  flags;          /* flags */
+    uint16_t seq;            /* sequence number */
+} query_header_t;            /* 4 bytes total */
 #pragma pack(pop)
 
 /* Helper defines for compatibility and clarity */
@@ -184,8 +182,7 @@ typedef struct {
                               * bit 2: compression (1 = payload is compressed)
                               * bits 3-7: reserved */
     uint16_t seq;            /* sequence number (2 bytes) */
-    uint16_t ack_seq;        /* cumulative ACK: next expected upstream seq (2 bytes) */
-} server_response_header_t;   /* Total: 6 bytes */
+} server_response_header_t;   /* Total: 4 bytes */
 #pragma pack(pop)
 
 /* Flag bit masks for server_response_header_t */

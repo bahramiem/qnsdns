@@ -385,9 +385,8 @@ int build_mtu_test_query(uint8_t *buf, size_t *outlen, const char *domain, uint1
         if (!raw) return -1;
         memset(raw, 0, effective_mtu);
 
-        /* Mandatory Header (SID=0, Flags=0, SEQ=0, Magic=514E) to identify as non-tunnel */
+        /* Mandatory Header (SID=0, Flags=0, SEQ=0) to identify as non-tunnel */
         query_header_t qh = {0};
-        qh.magic = DNSTUN_MAGIC; // Alignment shield
         memcpy(raw, &qh, hdr_sz);
 
         /* Fill remainder with random data */
