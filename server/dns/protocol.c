@@ -315,6 +315,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     const char *qname    = qry->questions[0].name;
     uint16_t    query_id = qry->id;
     uint16_t    qtype    = qry->questions[0].type;
+    LOG_DEBUG("  [RAW] qid=%u qtype=%u qname=%s from %s\n", query_id, qtype, qname, src_ip);
 
     char tmp[DNSTUN_MAX_QNAME_LEN + 1];
     strncpy(tmp, qname, sizeof(tmp) - 1);
@@ -428,12 +429,12 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     ssize_t rawlen  = base32_decode(raw, b32_payload, b32_len);
 
     if (rawlen < 0) {
-        LOG_DEBUG("  [IN] REJECTED (base32 decode failed): qname=%s\n", qname);
+        LOG_DEBUG("  [IN] REJECTED (base32 decode failed): qname=%s from %s\n", qname, src_ip);
         return;
     }
 
     if (rawlen < (ssize_t)sizeof(query_header_t)) {
-        LOG_DEBUG("  [IN] REJECTED (too short: %zd < %zu): qname=%s\n", rawlen, sizeof(query_header_t), qname);
+        LOG_DEBUG("  [IN] REJECTED (too short: %zd < %zu): qname=%s from %s\n", rawlen, sizeof(query_header_t), qname, src_ip);
         return;
     }
 
