@@ -124,6 +124,7 @@ int rpool_next_ready(resolver_pool_t *pool, int interval_ms) {
     if (pool->active_count > 0) {
         uint64_t now = uv_hrtime() / 1000000ULL;
         int start_idx = pool->rr_cursor % pool->active_count;
+        int ready_count = 0;
 
         for (int i = 0; i < pool->active_count; i++) {
             int current_ptr = (start_idx + i) % pool->active_count;
@@ -135,12 +136,21 @@ int rpool_next_ready(resolver_pool_t *pool, int interval_ms) {
             uint64_t final_interval = (uint64_t)interval_ms + (uint64_t)jitter;
 
             if (now - r->last_query_ms >= final_interval) {
-                r->last_query_ms = now;
-                result = idx;
-                /* Update cursor for next call to maintain fair distribution */
-                pool->rr_cursor = (current_ptr + 1) % pool->active_count;
-                break;
+                ready_count++;
+                if (result < 0) {
+                    r->last_query_ms = now;
+                    result = idx;
+                    /* Update cursor for next call to maintain fair distribution */
+                    pool->rr_cursor = (current_ptr + 1) % pool->active_count;
+                }
+            } else if (g_cfg.log_level >= 3) {
+                LOG_DEBUG("  [POOL] Resolver %s cooling down (%llu / %llu ms)\n", 
+                          r->ip, (unsigned long long)(now - r->last_query_ms), (unsigned long long)final_interval);
             }
+        }
+        if (result < 0 && g_cfg.log_level >= 3) {
+            LOG_DEBUG("[POOL] No resolvers ready (active=%d, ready=%d, needed_interval=%d)\n", 
+                      pool->active_count, ready_count, interval_ms);
         }
     }
     uv_mutex_unlock(&pool->lock);

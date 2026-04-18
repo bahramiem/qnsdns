@@ -268,11 +268,19 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
   if (!uv_is_closing((uv_handle_t *)&q->udp)) { uv_close((uv_handle_t *)&q->udp, on_dns_query_close); uv_close((uv_handle_t *)&q->timer, on_dns_query_close); }
 }
 
-static void on_dns_send(uv_udp_send_t *sr, int status) {
-    dns_query_ctx_t *q = sr->handle->data;
-    if (status != 0 && !uv_is_closing((uv_handle_t *)&q->udp)) {
-        rpool_on_loss(&g_pool, q->resolver_idx); g_stats.queries_lost++;
-        uv_close((uv_handle_t *)&q->udp, on_dns_query_close); uv_close((uv_handle_t *)&q->timer, on_dns_query_close);
+static void on_dns_send(uv_udp_send_t *req, int status) {
+    dns_query_ctx_t *q = req->data;
+    if (status == 0) {
+        if (g_cfg.log_level >= 2) {
+            LOG_DEBUG("  [UDP_TX] sent to %s qid=%u seq=%u\n", 
+                      g_pool.resolvers[q->resolver_idx].ip, q->qid, q->seq);
+        }
+    } else {
+        LOG_WARN("  [UDP_TX] FAILED status=%d\n", status);
+        if (!uv_is_closing((uv_handle_t *)&q->udp)) {
+            rpool_on_loss(&g_pool, q->resolver_idx); g_stats.queries_lost++;
+            uv_close((uv_handle_t *)&q->udp, on_dns_query_close); uv_close((uv_handle_t *)&q->timer, on_dns_query_close);
+        }
     }
 }
 
@@ -324,7 +332,16 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
     if (!q) return symbols_sent_this_call;
     uv_udp_init(g_loop, &q->udp); q->udp.data = q;
     int ridx = rpool_next_ready(&g_pool, g_cfg.poll_interval_ms);
-    if (ridx < 0) { uv_close((uv_handle_t *)&q->udp, on_dns_query_close); return symbols_sent_this_call; }
+    if (ridx < 0) {
+        static uint32_t last_warn_tick = 0;
+        if (uv_hrtime() / 1000000000ULL > last_warn_tick) {
+            LOG_WARN("Session %u: No resolver ready for burst (seq=%u esi=%d). Waiting...\n", 
+                     session_idx, seq, cur_esi);
+            last_warn_tick = (uint32_t)(uv_hrtime() / 1000000000ULL);
+        }
+        uv_close((uv_handle_t *)&q->udp, on_dns_query_close); 
+        return symbols_sent_this_call; 
+    }
     resolver_t *r = &g_pool.resolvers[ridx];
     q->resolver_idx = ridx; q->session_idx = session_idx; q->seq = seq;
     int didx = rpool_flux_domain(&g_cfg);

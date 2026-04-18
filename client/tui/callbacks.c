@@ -84,8 +84,21 @@ void on_poll_timer(uv_timer_t *t) {
             int N = (s->cl_fec_n > 0) ? (int)s->cl_fec_n : 15;
             size_t sym_size = DNSTUN_CHUNK_PAYLOAD;
 
+            if (g_cfg.log_level >= 3) {
+                LOG_DEBUG("Session %u: Poll Tick (buffered=%zu established=%d syn=%d)\n", 
+                          s->session_id, s->send_len, s->established, s->fec_synced);
+            }
+
+            if (g_cfg.log_level >= 2 && s->send_len > 0) {
+                LOG_INFO("Session %u: Preparing FEC for %zu bytes (K=%d N=%d)\n", 
+                         s->session_id, take, K, N);
+            }
+
             fec_encoded_t fec = codec_fec_encode(s->send_buf, take, K, N - K);
-            if (fec.total_count == 0 || !fec.symbols) { LOG_ERR("Session %u: FEC fail\n", s->session_id); continue; }
+            if (fec.total_count == 0 || !fec.symbols) { 
+                LOG_ERR("Session %u: FEC fail (take=%zu K=%d)\n", s->session_id, take, K); 
+                continue; 
+            }
 
             if (s->tx_burst_esi == 0) s->tx_burst_total = (uint16_t)N;
             
