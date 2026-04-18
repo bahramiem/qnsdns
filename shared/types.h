@@ -38,7 +38,6 @@
  * - QNAME prefix (~22 bytes)
  * - base32 dotify overhead
  * Reduced to 110 to keep total QNAME < 253 even with longer domains. */
-#define DNSTUN_CHUNK_PAYLOAD     110    /* max base32 payload bytes per DNS query */
 #define DNSTUN_SESSION_ID_LEN    8
 #define DNSTUN_VERSION           1
 

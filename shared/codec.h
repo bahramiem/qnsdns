@@ -47,7 +47,7 @@ typedef struct {
     bool      has_oti;              /* true if OTI is valid */
 } fec_encoded_t;
 
-fec_encoded_t codec_fec_encode(const uint8_t *in, size_t inlen, int k, int r);
+fec_encoded_t codec_fec_encode(const uint8_t *in, size_t inlen, int k, int r, uint16_t symbol_size);
 
 /* 6. FEC DECODE (RaptorQ) */
 codec_result_t codec_fec_decode_raw(fec_encoded_t *encoded, uint16_t k);

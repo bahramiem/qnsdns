@@ -45,7 +45,7 @@ extern void resolvers_save(void);
 
 void on_poll_timer(uv_timer_t *t) {
     (void)t;
-    int chunk_size = DNSTUN_CHUNK_PAYLOAD;
+    int chunk_size = g_cfg.chunk_payload;
     if (g_cfg.encryption) chunk_size -= 28;
 
     static uint64_t last_poll[DNSTUN_MAX_SESSIONS] = {0};
@@ -89,7 +89,7 @@ void on_poll_timer(uv_timer_t *t) {
             /* Data Burst (Resume Logic) */
             int K = (s->cl_fec_k > 0) ? (int)s->cl_fec_k : 10;
             int N = (s->cl_fec_n > 0) ? (int)s->cl_fec_n : 15;
-            size_t sym_size = (s->cl_symbol_size > 0) ? (size_t)s->cl_symbol_size : DNSTUN_CHUNK_PAYLOAD;
+            size_t sym_size = (s->cl_symbol_size > 0) ? (size_t)s->cl_symbol_size : (size_t)g_cfg.chunk_payload;
 
             /* Check if we need to encode a new burst */
             if (!s->tx_fec_active) {
@@ -98,7 +98,7 @@ void on_poll_timer(uv_timer_t *t) {
                     LOG_INFO("Session %u: Encoding new FEC burst for %zu bytes (K=%d N=%d)\n", 
                              s->session_id, take, K, N);
                 }
-                s->tx_fec = codec_fec_encode(s->send_buf, take, K, N - K);
+                s->tx_fec = codec_fec_encode(s->send_buf, take, K, N - K, (uint16_t)sym_size);
                 if (s->tx_fec.total_count == 0 || !s->tx_fec.symbols) {
                     LOG_ERR("Session %u: FEC fail (take=%zu K=%d)\n", s->session_id, take, K);
                     continue;

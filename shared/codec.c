@@ -328,12 +328,12 @@ static struct RaptorQ_v1 *get_rq_raw_api(void) {
  * - We prepend a 2-byte length to the data before encoding to handle variable sizes within the fixed block.
  */
 
-fec_encoded_t codec_fec_encode(const uint8_t *in, size_t inlen, int k, int r) {
+fec_encoded_t codec_fec_encode(const uint8_t *in, size_t inlen, int k, int r, uint16_t symbol_size) {
     fec_encoded_t res = {0};
     struct RaptorQ_v1 *api = get_rq_raw_api();
     if (!api) return res;
 
-    uint16_t T = DNSTUN_CHUNK_PAYLOAD;
+    uint16_t T = symbol_size;
     int total = k + r;
 
     /* Per plan: prepend 2-byte length to data for reconstruction without OTI */

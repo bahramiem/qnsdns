@@ -50,6 +50,7 @@ void config_defaults(dnstun_config_t *cfg, bool is_server) {
     cfg->downstream_mtu      = 220;
     cfg->fec_k               = 10;
     cfg->fec_n               = 15;
+    cfg->chunk_payload       = 110;
 
     /* mtu_testing - Binary search MTU testing like client.py */
     cfg->max_upload_mtu       = 140;     /* Maximum upload MTU to test */
@@ -152,6 +153,7 @@ int config_set_key(dnstun_config_t *cfg,
         else if (strcmp(key,"downstream_mtu")==0)    cfg->downstream_mtu   = atoi(value);
         else if (strcmp(key,"fec_k")==0)             cfg->fec_k            = atoi(value);
         else if (strcmp(key,"fec_n")==0)             cfg->fec_n            = atoi(value);
+        else if (strcmp(key,"chunk_payload")==0)     cfg->chunk_payload    = atoi(value);
         else if (strcmp(key,"downstream_compression")==0) cfg->downstream_compression = parse_bool(value);
     }
     /* [mtu_testing] - Binary search MTU testing like client.py */
@@ -252,7 +254,8 @@ int config_create_default(const char *path, bool is_server) {
         fprintf(f, "[tuning]\n");
         fprintf(f, "downstream_mtu = 220\n");
         fprintf(f, "fec_k          = 10\n");
-        fprintf(f, "fec_n          = 15\n\n");
+        fprintf(f, "fec_n          = 15\n");
+        fprintf(f, "chunk_payload  = 110\n\n");
         fprintf(f, "[swarm]\n");
         fprintf(f, "serve        = true\n");
         fprintf(f, "save_to_disk = true\n");

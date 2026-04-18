@@ -318,8 +318,18 @@ void send_mtu_handshake(int session_idx) {
     
     int best_symbol = (int)min_mtu - (int)overhead;
     
+    /* Dot-aware MTU adjustment:
+     * Each dot added by inline_dotify adds 1 byte to the QNAME.
+     * Labels are 57 chars. Overhead is roughly 1/57th of the Base32 length.
+     * Base32 length is roughly (best_symbol + overhead) * 8 / 5.
+     */
+    int b32_len = (int)((best_symbol + (int)overhead) * 1.6);
+    int dot_overhead = (b32_len / 57) + 1;
+    best_symbol -= dot_overhead;
+
     if (g_cfg.log_level >= 2) {
-        LOG_DEBUG("Scaling: bottleneck_mtu=%u overhead=%zu predicted_symbol=%d\n", min_mtu, overhead, best_symbol);
+        LOG_DEBUG("Scaling: bottleneck_mtu=%u overhead=%zu dots=%d predicted_symbol=%d\n", 
+                  min_mtu, overhead, dot_overhead, best_symbol);
     }
     
     /* ADAPTIVE BOOTSTRAP:
@@ -331,7 +341,7 @@ void send_mtu_handshake(int session_idx) {
     }
     
     if (best_symbol < 16)  best_symbol = 16;  
-    if (best_symbol > 110) best_symbol = 110; 
+    if (best_symbol > g_cfg.chunk_payload) best_symbol = g_cfg.chunk_payload; 
 
     handshake_packet_t hs = {0};
     hs.version = DNSTUN_VERSION; 
