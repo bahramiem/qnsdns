@@ -407,7 +407,7 @@ codec_result_t codec_fec_decode_raw(fec_encoded_t *encoded, uint16_t k) {
     if (!api) { res.error = true; return res; }
 
     uint16_t T = (uint16_t)encoded->symbol_len;
-    if (T == 0) T = DNSTUN_CHUNK_PAYLOAD;
+    if (T == 0) T = 110;
 
     /* Decoder(type, symbols, symbol_size, report_type) */
     struct RaptorQ_ptr *dec = api->Decoder(RQ_DEC_8, (RaptorQ_Block_Size)k, T, RQ_COMPLETE);
