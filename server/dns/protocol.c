@@ -390,7 +390,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
 #endif
     }
 
-    if (qtype != RR_TXT && qtype != RR_ANY) {
+    if (qtype != RR_TXT && qtype != RR_ANY && qtype != RR_A) {
         if (!is_mtu_probe && !is_capability_probe && !is_crypto_probe) {
             uint8_t nx[512];
             nx[0] = query_id >> 8; nx[1] = query_id & 0xFF;
