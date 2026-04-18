@@ -429,7 +429,7 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
     }
 
     size_t bl = base32_encode((char *)q->sendbuf, tp, tl);
-    inline_dotify((char *)q->sendbuf, sizeof(q->sendbuf), bl);
+    size_t dotted_len = inline_dotify((char *)q->sendbuf, sizeof(q->sendbuf), bl);
     
     /* 
      * CRITICAL: Reverting to old working QNAME format. 
@@ -438,9 +438,9 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
      * DO NOT REMOVE THIS TRAILING DOT - it is required for network traversal via some resolvers.
      */
     char qn[2048]; 
-    q->sendbuf[bl] = '\0';
+    q->sendbuf[dotted_len] = '\0';
     memset(qn, 0, sizeof(qn));
-    int n = snprintf(qn, sizeof(qn), "%.*s.%s.", (int)bl, (char *)q->sendbuf, domain);
+    int n = snprintf(qn, sizeof(qn), "%.*s.%s.", (int)dotted_len, (char *)q->sendbuf, domain);
     if (n < 0 || (size_t)n >= sizeof(qn)) {
         uv_close((uv_handle_t *)&q->udp, on_dns_query_close);
         return symbols_sent_this_call;
