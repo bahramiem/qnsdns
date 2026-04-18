@@ -347,7 +347,7 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
 
     uint8_t tp[1400]; size_t tl=0; memcpy(tp, &qh, sizeof(qh)); tl+=sizeof(qh); memcpy(tp+tl, pb, pl); tl+=pl;
     
-    if (log_level() >= 3) {
+    if (g_cfg.log_level >= 3) {
         char hex[128] = {0};
         for (size_t i = 0; i < (tl < 16 ? tl : 16); i++) sprintf(hex + i*2, "%02x", tp[i]);
         LOG_DEBUG("[UPSTREAM] RAW HDR+PAYLOAD (len=%zu): %s%s\n", tl, hex, tl > 16 ? "..." : "");
@@ -357,7 +357,7 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
     inline_dotify((char *)q->sendbuf, sizeof(q->sendbuf), bl);
     
     /* Unify with MTU probe format by adding .x. separator before domain */
-    char qn[512]; 
+    char qn[2048]; 
     snprintf(qn, sizeof(qn), "%s.x.%s", (char *)q->sendbuf, domain);
     
     dns_question_t quest={0}; quest.name=qn; quest.type=RR_TXT; quest.class=CLASS_IN;

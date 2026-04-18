@@ -433,7 +433,7 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         return;
     }
 
-    if (log_level() >= 3) {
+    if (g_cfg.log_level >= 3) {
         char hex[128] = {0};
         for (size_t i = 0; i < (rawlen < 16 ? (size_t)rawlen : 16); i++) sprintf(hex + i*2, "%02x", raw[i]);
         LOG_DEBUG("  [RAW] DECODED (len=%zd): %s%s\n", rawlen, hex, rawlen > 16 ? "..." : "");

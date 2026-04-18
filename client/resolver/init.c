@@ -34,7 +34,7 @@ extern tui_stats_t g_stats;
 /* Forward declaration for aggregation stats */
 extern void log_aggregation_stats(void);
 
-extern int log_level(void);
+/* extern int log_level(void); */
 
 
 /* ────────────────────────────────────────────── */

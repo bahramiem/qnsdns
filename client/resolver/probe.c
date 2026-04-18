@@ -32,7 +32,7 @@ extern uv_loop_t       *g_loop;
 extern dnstun_config_t  g_cfg;
 extern resolver_pool_t  g_pool;
 static uint16_t rand_u16(void) { return (uint16_t)(rand() & 0xFFFF); }
-extern int log_level(void);
+/* extern int log_level(void); */
 
 
 
