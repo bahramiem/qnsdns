@@ -165,7 +165,11 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         session_t *s = &g_sessions[q->session_idx];
         server_response_header_t resp_hdr;
         memcpy(&resp_hdr, raw_decoded, sizeof(resp_hdr));
-        if (resp_hdr.session_id != s->session_id) continue;
+        if (resp_hdr.session_id != s->session_id) {
+            LOG_DEBUG("  [IN] IGNORED (sid mismatch: recv=%u, current=%u) from %s\n", 
+                      resp_hdr.session_id, s->session_id, rpool_get_name(&g_pool, ridx));
+            continue;
+        }
         if (resp_hdr.flags & RESP_FLAG_MORE_DATA) s->fast_poll = true;
         
         /* ACK Pruning */
@@ -337,7 +341,7 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
     }
     
     query_header_t qh = {0};
-    qh.sid = (uint8_t)session_idx;
+    qh.sid = s->session_id;
     qh.flags = fl | CHUNK_FLAG_IS_TUNNEL;
     qh.seq = seq;
 
@@ -345,6 +349,7 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
     size_t bl = base32_encode((char *)q->sendbuf, tp, tl);
     inline_dotify((char *)q->sendbuf, sizeof(q->sendbuf), bl);
     char qn[512]; snprintf(qn, sizeof(qn), "%s.%s", (char *)q->sendbuf, domain);
+    LOG_DEBUG("[DNS_FIRE] qid=%u sid=%u flags=%02x seq=%u qname=%s\n", q->udp.u.id, qh.sid, qh.flags, qh.seq, qn);
     dns_question_t quest={0}; quest.name=qn; quest.type=RR_TXT; quest.class=CLASS_IN;
     dns_query_t query={0}; query.id=rand_u16(); query.query=true; query.rd=true; query.qdcount=1; query.questions=&quest;
     size_t pktsz = sizeof(q->recvbuf); /* temporary use of recvbuf for encoding */

@@ -303,8 +303,8 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
 
     dns_decoded_t decoded[DNS_DECODEBUF_4K];
     size_t decsz = sizeof(decoded);
-    if (dns_decode(decoded, &decsz, (const dns_packet_t *)buf->base,
-                   (size_t)nread) != RCODE_OKAY) {
+    if (dns_decode(decoded, &decsz, (const dns_packet_t *)buf->base, (size_t)nread) != RCODE_OKAY) {
+        LOG_DEBUG("  [IN] dns_decode FAILED for %zd bytes from %s\n", nread, src_ip);
         g_stats.queries_lost++;
         return;
     }
@@ -360,6 +360,11 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                 break; 
             }
         }
+    }
+
+    if (!is_mine) {
+        LOG_DEBUG("  [IN] REJECTED (not my domain): qid=%u qname=%s from %s\n", query_id, qname, src_ip);
+        return;
     }
 
     int payload_start_idx = part_count - domain_parts;
@@ -422,8 +427,13 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
     size_t  b32_len = strlen(b32_payload);
     ssize_t rawlen  = base32_decode(raw, b32_payload, b32_len);
 
+    if (rawlen < 0) {
+        LOG_DEBUG("  [IN] REJECTED (base32 decode failed): qname=%s\n", qname);
+        return;
+    }
+
     if (rawlen < (ssize_t)sizeof(query_header_t)) {
-        LOG_DEBUG("  [IN] sid=? rawlen=%zd (too short)\n", rawlen);
+        LOG_DEBUG("  [IN] REJECTED (too short: %zd < %zu): qname=%s\n", rawlen, sizeof(query_header_t), qname);
         return;
     }
 
