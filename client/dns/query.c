@@ -375,19 +375,48 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
     size_t bl = base32_encode((char *)q->sendbuf, tp, tl);
     inline_dotify((char *)q->sendbuf, sizeof(q->sendbuf), bl);
     
-    /* Unify with MTU probe format by adding .x. separator before domain */
+    /* 
+     * CRITICAL: Reverting to old working QNAME format. 
+     * 1. Add trailing dot to ensure an absolute FQDN (avoids suffix search issues).
+     * 2. Remove the '.x.' separator for tunnel traffic (keeps format simple like old working code).
+     * DO NOT REMOVE THIS TRAILING DOT - it is required for network traversal via some resolvers.
+     */
     char qn[2048]; 
-    snprintf(qn, sizeof(qn), "%s.x.%s", (char *)q->sendbuf, domain);
+    snprintf(qn, sizeof(qn), "%s.%s.", (char *)q->sendbuf, domain);
     if (g_cfg.log_level >= 3) {
         LOG_DEBUG("  [DNS_BUILD] qname=%s\n", qn);
     }
     
     dns_question_t quest={0}; quest.name=qn; quest.type=RR_TXT; quest.class=CLASS_IN;
-    dns_query_t query={0}; query.id=rand_u16(); query.query=true; query.rd=true; query.qdcount=1; query.questions=&quest;
+
+    /* 
+     * CRITICAL: Add EDNS0 (OPT record) to every query.
+     * This signals support for larger payloads and prevents some resolvers (like 8.8.8.8) 
+     * from dropping these queries as "suspicious" tunneling. 
+     * DO NOT REMOVE THIS RECORD.
+     */
+    dns_answer_t edns = {0};
+    edns.generic.name  = (char *)".";
+    edns.generic.type  = RR_OPT;
+    edns.generic.class = 1232; /* Advertised UDP payload size */
+    edns.generic.ttl   = 0;
+
+    dns_query_t query={0}; 
+    query.id=rand_u16(); 
+    query.query=true; 
+    query.rd=true; 
+    query.qdcount=1; 
+    query.questions=&quest;
+    query.arcount = 1;
+    query.additional = &edns;
+
     LOG_DEBUG("[DNS_FIRE] qid=%u sid=%u flags=%02x seq=%u qname=%s to %s\n", 
               query.id, qh.sid, qh.flags, qh.seq, qn, rpool_get_name(&g_pool, ridx));
     size_t pktsz = sizeof(q->recvbuf); /* temporary use of recvbuf for encoding */
-    if (dns_encode((dns_packet_t *)q->recvbuf, &pktsz, &query) != RCODE_OKAY) { uv_close((uv_handle_t *)&q->udp, on_dns_query_close); continue; }
+    if (dns_encode((dns_packet_t *)q->recvbuf, &pktsz, &query) != RCODE_OKAY) { 
+        uv_close((uv_handle_t *)&q->udp, on_dns_query_close); 
+        continue; 
+    }
     memcpy(q->sendbuf, q->recvbuf, pktsz); q->sendlen = pktsz;
     uv_timer_init(g_loop, &q->timer); q->timer.data = q; uv_timer_start(&q->timer, on_dns_timeout, 8000, 0); uv_udp_recv_start(&q->udp, on_dns_alloc, on_dns_recv);
     q->sent_ms = uv_hrtime()/1000000ULL; uv_buf_t b = uv_buf_init((char *)q->sendbuf, (unsigned)pktsz);
