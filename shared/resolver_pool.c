@@ -362,6 +362,7 @@ bool rpool_any_unverified(resolver_pool_t *pool) {
             unv = true;
             break;
         }
+    }
     if (unv && pool->cfg->log_level >= 2) {
         LOG_DEBUG("Pool contains unverified active resolvers (e.g. %s)\n", pool->active_count > 0 ? pool->resolvers[pool->active[0]].ip : "none");
     }

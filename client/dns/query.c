@@ -316,6 +316,7 @@ void send_mtu_handshake(int session_idx) {
     if (g_cfg.log_level >= 2) {
         LOG_DEBUG("Scaling: bottleneck_mtu=%u overhead=%zu predicted_symbol=%d\n", min_mtu, overhead, best_symbol);
     }
+    /* ADAPTIVE BOOTSTRAP:
      * If any active resolvers are still unverified (searching for MTU),
      * we use a hyper-safe 32-byte symbol size to guarantee connection boot.
      */
