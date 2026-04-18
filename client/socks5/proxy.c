@@ -120,6 +120,7 @@ static size_t socks5_handle_data(socks5_client_t *c, const uint8_t *data, size_t
             uint8_t nmethods = data[1];
             size_t greeting_len = 2 + nmethods;
             if (len >= greeting_len) {
+                bool no_auth_supported = false;
                 for (int i = 0; i < nmethods; i++) {
                     if (data[2 + i] == 0x00) { no_auth_supported = true; break; }
                 }
@@ -135,6 +136,7 @@ static size_t socks5_handle_data(socks5_client_t *c, const uint8_t *data, size_t
                     uv_close((uv_handle_t*)&c->tcp, on_socks5_close);
                 }
                 return greeting_len;
+            }
         }
         return 0;
     }

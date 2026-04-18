@@ -400,7 +400,14 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
      */
     char qn[2048]; 
     q->sendbuf[bl] = '\0';
-    snprintf(qn, sizeof(qn), "%s.%s.", (char *)q->sendbuf, domain);
+    memset(qn, 0, sizeof(qn));
+    if (bl + strlen(domain) + 2 < sizeof(qn)) {
+        sprintf(qn, "%s.%s.", (char *)q->sendbuf, domain);
+    } else {
+        LOG_ERR("QNAME too long: %zu + %zu\n", bl, strlen(domain));
+        uv_close((uv_handle_t *)&q->udp, on_dns_query_close);
+        return symbols_sent_this_call;
+    }
     if (g_cfg.log_level >= 3) {
         LOG_DEBUG("  [DNS_BUILD] qname=%s\n", qn);
     }
