@@ -87,10 +87,10 @@ void on_poll_timer(uv_timer_t *t) {
             }
         } else {
             /* Data Burst (Resume Logic) */
-            size_t take = (s->send_len > (size_t)DNSTUN_CHUNK_PAYLOAD) ? (size_t)DNSTUN_CHUNK_PAYLOAD : s->send_len;
             int K = (s->cl_fec_k > 0) ? (int)s->cl_fec_k : 10;
             int N = (s->cl_fec_n > 0) ? (int)s->cl_fec_n : 15;
-            size_t sym_size = DNSTUN_CHUNK_PAYLOAD;
+            size_t sym_size = (s->cl_symbol_size > 0) ? (size_t)s->cl_symbol_size : DNSTUN_CHUNK_PAYLOAD;
+            size_t take = (s->send_len > sym_size) ? sym_size : s->send_len;
 
             if (g_cfg.log_level >= 2 && s->send_len > 0) {
                 LOG_INFO("Session %u: Preparing FEC for %zu bytes (K=%d N=%d)\n", 

@@ -296,18 +296,43 @@ static void on_dns_response(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf, con
 /* ────────────────────────────────────────────── */
 
 void send_mtu_handshake(int session_idx) {
+    if (session_idx < 0 || session_idx >= DNSTUN_MAX_SESSIONS) return;
     session_t *s = &g_sessions[session_idx];
+    
+    /* 
+     * Dynamic Symbol Size Calculation:
+     * 1. Get the minimum upstream MTU across all active resolvers.
+     * 2. Programmatically calculate protocol overhead:
+     *    - sizeof(query_header_t) : common query header (sid, flags, seq)
+     *    - 2 bytes : compact ACK header prepended to DATA/FEC
+     *    - 1 byte  : ESI (encoding symbol ID) prepended to each FEC symbol
+     *    - 8 bytes : Safe margin for Base32 dotify and resolver quirks
+     */
+    uint16_t min_mtu = rpool_get_min_upstream_mtu(&g_pool);
+    size_t overhead = sizeof(query_header_t) + 2 + 1 + 8;
+    
+    int best_symbol = (int)min_mtu - (int)overhead;
+    if (best_symbol < 16)  best_symbol = 16;  /* reasonable minimum */
+    if (best_symbol > 110) best_symbol = 110; /* clamp to original max */
+
     handshake_packet_t hs = {0};
     hs.version = DNSTUN_VERSION; 
-    hs.upstream_mtu = htons(512); 
+    hs.upstream_mtu = htons(min_mtu); 
     hs.downstream_mtu = htons(220); 
     hs.fec_k = htons((uint16_t)g_cfg.fec_k); 
     hs.fec_n = htons((uint16_t)g_cfg.fec_n); 
-    hs.symbol_size = htons(DNSTUN_CHUNK_PAYLOAD); 
+    hs.symbol_size = htons((uint16_t)best_symbol); 
     hs.encoding = DNSTUN_ENC_BASE64;
+
+    /* Store the chosen size in the session so local logic knows what we proposed */
+    s->cl_symbol_size = (uint16_t)best_symbol;
+
     const uint8_t *hs_ptr[1] = {(const uint8_t *)&hs};
     int esi = 0;
-    for (int i=0; i<3; i++) { esi = 0; fire_dns_multi_symbols(session_idx, 0, hs_ptr, sizeof(hs), 1, &esi, false); }
+    for (int i=0; i<3; i++) { 
+        esi = 0; 
+        fire_dns_multi_symbols(session_idx, 0, hs_ptr, sizeof(hs), 1, &esi, false); 
+    }
 }
 
 /* ────────────────────────────────────────────── */

@@ -322,3 +322,32 @@ const char* rpool_get_name(resolver_pool_t *pool, int idx) {
     if (idx < 0 || idx >= pool->count) return "unknown";
     return pool->resolvers[idx].ip;
 }
+
+uint16_t rpool_get_min_upstream_mtu(resolver_pool_t *pool) {
+    if (!pool) return 220; /* safe default */
+
+    uv_mutex_lock(&pool->lock);
+    
+    uint16_t min_mtu = 0xFFFF;
+    int found = 0;
+
+    for (int i = 0; i < pool->active_count; i++) {
+        int idx = pool->active[i];
+        if (idx < 0 || idx >= pool->count) continue;
+        
+        uint16_t mtu = pool->resolvers[idx].upstream_mtu;
+        if (mtu > 0) {
+            if (mtu < min_mtu) min_mtu = mtu;
+            found++;
+        }
+    }
+
+    uv_mutex_unlock(&pool->lock);
+
+    /* If no active resolvers or all report 0, return a safe but discovery-compliant default */
+    if (!found || min_mtu == 0xFFFF) {
+        return 140; 
+    }
+
+    return min_mtu;
+}
