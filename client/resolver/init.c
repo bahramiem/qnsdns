@@ -175,14 +175,14 @@ void resolver_init_phase(void) {
 
       init_mtu_binary_search(
           &results[i].up_mtu_search, 0,
-          g_cfg.max_upload_mtu > 0 ? g_cfg.max_upload_mtu : 1500, 30,
+          g_cfg.max_upload_mtu > 0 ? g_cfg.max_upload_mtu : 140, 30,
           g_cfg.min_upload_mtu,
           g_cfg.mtu_test_retries > 0 ? g_cfg.mtu_test_retries : 2, true, 0);
 
       /* Use Phase 3 EDNS advertised payload as a starting upper bound for downstream MTU search.
        * If Phase 3 failed or reported very low, use max_download_mtu (default 1200+). */
       int down_hint = results[i].downstream_mtu;
-      if (down_hint < 512) down_hint = g_cfg.max_download_mtu > 0 ? g_cfg.max_download_mtu : 1500;
+      if (down_hint < 140) down_hint = g_cfg.max_download_mtu > 0 ? g_cfg.max_download_mtu : 140;
       if (down_hint > 4096) down_hint = 4096;
 
       init_mtu_binary_search(&results[i].down_mtu_search, 0,

@@ -52,7 +52,7 @@ void config_defaults(dnstun_config_t *cfg, bool is_server) {
     cfg->fec_n               = 15;
 
     /* mtu_testing - Binary search MTU testing like client.py */
-    cfg->max_upload_mtu       = 512;     /* Maximum upload MTU to test */
+    cfg->max_upload_mtu       = 140;     /* Maximum upload MTU to test */
     cfg->max_download_mtu      = 700;    /* Maximum download MTU to test (400-700 like Python reference) */
     cfg->min_upload_mtu        = 0;       /* Minimum acceptable upload MTU (0 = no minimum) */
     cfg->min_download_mtu      = 400;    /* Minimum download MTU to test */
