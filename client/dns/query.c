@@ -329,8 +329,8 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
     dns_query_ctx_t *q = calloc(1, sizeof(*q));
     if (!q) return symbols_sent_this_call;
     uv_udp_init(g_loop, &q->udp); q->udp.data = q;
-    /* Use 0ms interval (bypass cooldown) for Handshakes/Bursts to ensure immediate firing */
-    int ridx = rpool_next_ready(&g_pool, 0); 
+    /* Use 10ms minimum interval for data to allow bursts while preventing flooding */
+    int ridx = rpool_next_ready(&g_pool, 10); 
     if (ridx < 0) {
         static uint32_t last_warn_tick = 0;
         if (uv_hrtime() / 1000000000ULL > last_warn_tick) {
@@ -404,7 +404,6 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
     memset(qn, 0, sizeof(qn));
     int n = snprintf(qn, sizeof(qn), "%.*s.%s.", (int)bl, (char *)q->sendbuf, domain);
     if (n < 0 || (size_t)n >= sizeof(qn)) {
-        LOG_ERR("QNAME too long or invalid: sid=%u\n", session_idx);
         uv_close((uv_handle_t *)&q->udp, on_dns_query_close);
         return symbols_sent_this_call;
     }
