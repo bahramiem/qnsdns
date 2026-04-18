@@ -105,7 +105,8 @@ void on_poll_timer(uv_timer_t *t) {
 
             if (s->tx_burst_esi == 0) s->tx_burst_total = (uint16_t)N;
             
-            int esi_prog = (int)s->tx_burst_esi;
+            int prev_esi = (int)s->tx_burst_esi;
+            int esi_prog = prev_esi;
             int sent = fire_dns_multi_symbols(i, s->tx_next, (const uint8_t **)fec.symbols, sym_size, N, &esi_prog, false);
             s->tx_burst_esi = (uint16_t)esi_prog;
 

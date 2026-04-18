@@ -402,10 +402,9 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
     char qn[2048]; 
     q->sendbuf[bl] = '\0';
     memset(qn, 0, sizeof(qn));
-    if (bl + strlen(domain) + 2 < sizeof(qn)) {
-        snprintf(qn, sizeof(qn), "%.*s.%s.", (int)bl, (char *)q->sendbuf, domain);
-    } else {
-        LOG_ERR("QNAME too long: %zu + %zu\n", bl, strlen(domain));
+    int n = snprintf(qn, sizeof(qn), "%.*s.%s.", (int)bl, (char *)q->sendbuf, domain);
+    if (n < 0 || (size_t)n >= sizeof(qn)) {
+        LOG_ERR("QNAME too long or invalid: sid=%u\n", session_idx);
         uv_close((uv_handle_t *)&q->udp, on_dns_query_close);
         return symbols_sent_this_call;
     }
