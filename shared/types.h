@@ -6,7 +6,6 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <time.h>
-#include "shared/codec.h"
 
 #ifdef _WIN32
 #  include <winsock2.h>
@@ -454,11 +453,6 @@ typedef struct session {
     uint8_t  *recv_buf;
     size_t    recv_len;
     size_t    recv_cap;
-
-    /* Persistent FEC Stage */
-    fec_encoded_t tx_fec;    /* Current burst symbols */
-    bool          tx_fec_active;
-    size_t        tx_fec_len;  /* encoded byte count for the current burst */
 
     /* Handshake-negotiated parameters */
     uint16_t  cl_fec_k;

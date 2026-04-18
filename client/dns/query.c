@@ -58,20 +58,25 @@ size_t inline_dotify(char *buf, size_t buflen, size_t len) {
     if (buflen > 0) buf[0] = '\0';
     return 0;
   }
-  size_t dots = (len - 1) / 63;
+  size_t dots = len / 57;
   size_t new_len = len + dots;
   if (new_len + 1 > buflen) return (size_t)-1;
   buf[new_len] = '\0';
   char *src = buf + len - 1;
   char *dst = buf + new_len - 1;
-  int count = 0;
-  while (src >= buf) {
-    if (count > 0 && count % 63 == 0 && dots > 0) {
+  size_t next_dot = len - (len % 57);
+  if (next_dot == len) next_dot = len - 57;
+  size_t current_pos = len;
+  while (current_pos > 0) {
+    if (current_pos == next_dot && dots > 0) {
       *dst-- = '.';
+      next_dot -= 57;
+      current_pos--;
       dots--;
+      continue;
     }
     *dst-- = *src--;
-    count++;
+    current_pos--;
   }
   return new_len;
 }
@@ -307,9 +312,9 @@ void send_mtu_handshake(int session_idx) {
      * - sizeof(query_header_t) : 4 bytes (SID, Flags, SEQ)
      * - 2 bytes : compact ACK prepended to DATA/FEC
      * - 1 byte  : ESI prepended to FEC symbol
-     * Note: Headroom for dots and domains is already accounted for by the MTU probe test.
+     * - 30 bytes: Safety margin for Base32 dotify and resolver wire-format quirks
      */
-    size_t overhead = sizeof(query_header_t) + 2 + 1;
+    size_t overhead = sizeof(query_header_t) + 2 + 1 + 30;
     
     int best_symbol = (int)min_mtu - (int)overhead;
     
@@ -429,7 +434,7 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
     }
 
     size_t bl = base32_encode((char *)q->sendbuf, tp, tl);
-    size_t dotted_len = inline_dotify((char *)q->sendbuf, sizeof(q->sendbuf), bl);
+    inline_dotify((char *)q->sendbuf, sizeof(q->sendbuf), bl);
     
     /* 
      * CRITICAL: Reverting to old working QNAME format. 
@@ -438,9 +443,9 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
      * DO NOT REMOVE THIS TRAILING DOT - it is required for network traversal via some resolvers.
      */
     char qn[2048]; 
-    q->sendbuf[dotted_len] = '\0';
+    q->sendbuf[bl] = '\0';
     memset(qn, 0, sizeof(qn));
-    int n = snprintf(qn, sizeof(qn), "%.*s.%s.", (int)dotted_len, (char *)q->sendbuf, domain);
+    int n = snprintf(qn, sizeof(qn), "%.*s.%s.", (int)bl, (char *)q->sendbuf, domain);
     if (n < 0 || (size_t)n >= sizeof(qn)) {
         uv_close((uv_handle_t *)&q->udp, on_dns_query_close);
         return symbols_sent_this_call;

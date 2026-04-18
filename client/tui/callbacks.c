@@ -90,57 +90,44 @@ void on_poll_timer(uv_timer_t *t) {
             int K = (s->cl_fec_k > 0) ? (int)s->cl_fec_k : 10;
             int N = (s->cl_fec_n > 0) ? (int)s->cl_fec_n : 15;
             size_t sym_size = (s->cl_symbol_size > 0) ? (size_t)s->cl_symbol_size : DNSTUN_CHUNK_PAYLOAD;
+            size_t take = (s->send_len > sym_size) ? sym_size : s->send_len;
 
-            /* 1. Start or Resume Burst Calculation */
-            if (!s->tx_fec_active) {
-                size_t take = (s->send_len > sym_size) ? sym_size : s->send_len;
-                s->tx_fec_len = take;
-                s->tx_fec = codec_fec_encode(s->send_buf, take, K, N - K);
-                if (s->tx_fec.total_count == 0 || !s->tx_fec.symbols) {
-                    LOG_ERR("Session %u: FEC fail (take=%zu K=%d)\n", s->session_id, take, K);
-                    continue;
-                }
-                s->tx_fec_active = true;
-                s->tx_burst_esi = 0;
-                s->tx_burst_total = (uint16_t)N;
-                LOG_INFO("Session %u: START BURST seq=%u bytes=%zu (K=%d N=%d)\n", 
-                         s->session_id, s->tx_next, take, K, N);
+            if (g_cfg.log_level >= 2 && s->send_len > 0) {
+                LOG_INFO("Session %u: Preparing FEC for %zu bytes (K=%d N=%d)\n", 
+                         s->session_id, take, K, N);
             }
 
-            /* 2. Fire available symbols through and track and progress */
+            fec_encoded_t fec = codec_fec_encode(s->send_buf, take, K, N - K);
+            if (fec.total_count == 0 || !fec.symbols) { 
+                LOG_ERR("Session %u: FEC fail (take=%zu K=%d)\n", s->session_id, take, K); 
+                continue; 
+            }
+
+            if (s->tx_burst_esi == 0) s->tx_burst_total = (uint16_t)N;
+            
             int prev_esi = (int)s->tx_burst_esi;
             int esi_prog = prev_esi;
-            int sent = fire_dns_multi_symbols(i, s->tx_next, (const uint8_t **)s->tx_fec.symbols, sym_size, N, &esi_prog, false);
+            int sent = fire_dns_multi_symbols(i, s->tx_next, (const uint8_t **)fec.symbols, sym_size, N, &esi_prog, false);
             s->tx_burst_esi = (uint16_t)esi_prog;
 
             if (sent > 0) {
-                LOG_INFO("Session %u: Fired burst symbols (progress %d -> %d/%d)\n", 
-                         s->session_id, prev_esi, s->tx_burst_esi, N);
-            }
-
-            /* 3. Burst Completion Check */
-            if (s->tx_burst_esi >= N) {
-                LOG_INFO("Session %u: BURST COMPLETE seq=%u (advancing tx_next)\n", s->session_id, s->tx_next);
-                
-                /* Store offset for ACK pruning before we increment */
-                s->tx_offset_map[s->tx_next % 256] = (uint32_t)s->tx_fec_len;
-                
-                /* Advance sequence */
-                s->tx_next++;
-                
-                /* Clean up current symbols */
-                codec_fec_free(&s->tx_fec);
-                s->tx_fec_active = false;
-                s->tx_burst_esi = 0;
-                s->tx_burst_total = 0;
-
-                /* Shift buffer */
-                if (s->tx_fec_len < s->send_len) {
-                    memmove(s->send_buf, s->send_buf + s->tx_fec_len, s->send_len - s->tx_fec_len);
+                if (g_cfg.log_level >= 1) {
+                    LOG_INFO("Session %u: Fired burst symbols (progress %d -> %d/%d)\n", 
+                             s->session_id, prev_esi, s->tx_burst_esi, N);
                 }
-                s->send_len -= s->tx_fec_len;
-                s->tx_fec_len = 0;
+                if (s->tx_burst_esi >= N) {
+                    LOG_INFO("Session %u: Burst seq=%u complete.\n", s->session_id, s->tx_next);
+                    s->tx_next++; s->tx_burst_esi = 0;
+                }
             }
+
+            if (s->tx_burst_esi >= s->tx_burst_total) {
+                s->tx_offset_map[s->tx_next % 256] = (uint32_t)take;
+                s->tx_next++; s->tx_burst_esi = 0; s->tx_burst_total = 0;
+                if (take < s->send_len) memmove(s->send_buf, s->send_buf + take, s->send_len - take);
+                s->send_len -= take;
+            }
+            codec_fec_free(&fec);
             last_poll[i] = now_ms;
         }
     }
