@@ -456,6 +456,7 @@ typedef struct session {
     uint16_t  cl_fec_k;
     uint16_t  cl_fec_n;
     uint16_t  cl_symbol_size;
+    uint8_t   cl_loss_pct;
     char      user_id[16];
 
     /* sliding window / reliability */
