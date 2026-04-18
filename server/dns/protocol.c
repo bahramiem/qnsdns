@@ -634,6 +634,11 @@ void on_server_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
             size_t to_extract = (size_t)cur_rem < sess->cl_symbol_size ? (size_t)cur_rem : sess->cl_symbol_size;
             sym_data = cur_ptr;
             sym_len = to_extract;
+            if (sym_esi >= sess->cl_fec_n) {
+                LOG_WARN("Session %u: Dropping invalid ESI %u (max %d)\n", session_id, sym_esi, sess->cl_fec_n);
+                continue;
+            }
+            
             sym_total = sess->cl_fec_n;
             cur_ptr += sym_len;
             cur_rem -= sym_len;

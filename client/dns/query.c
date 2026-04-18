@@ -363,17 +363,16 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
     dns_query_ctx_t *q = calloc(1, sizeof(*q));
     if (!q) return symbols_sent_this_call;
     uv_udp_init(g_loop, &q->udp); q->udp.data = q;
-    /* Use 5ms minimum interval for data to allow bursts while preventing flooding */
-    int ridx = rpool_next_ready(&g_pool, 5); 
+    /* Use 10ms minimum interval for data to allow bursts while preventing flooding */
+    int ridx = rpool_next_ready(&g_pool, 10); 
     if (ridx < 0) {
         static uint32_t last_warn_tick = 0;
         if (uv_hrtime() / 1000000000ULL > last_warn_tick) {
-            LOG_WARN("Session %u: No resolver ready for burst (seq=%u esi=%d). Batched send will resume on next tick.\n", 
+            LOG_WARN("Session %u: No resolver ready for burst (seq=%u esi=%d). Waiting...\n", 
                      session_idx, seq, cur_esi);
             last_warn_tick = (uint32_t)(uv_hrtime() / 1000000000ULL);
         }
         uv_close((uv_handle_t *)&q->udp, on_dns_query_close); 
-        /* Trigger immediate retry on next iteration to finish burst */
         return symbols_sent_this_call; 
     }
     resolver_t *r = &g_pool.resolvers[ridx];
@@ -432,8 +431,8 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
     size_t dl = inline_dotify((char *)q->sendbuf, sizeof(q->sendbuf), bl);
     
     char qn[2048]; 
-    /* Truncation Fix: inline_dotify already null-terminates. 
-     * Overwriting at index 'bl' was cutting off the final characters moved by dots. */
+    LOG_INFO("AUDIT: String at idx %zu before manual null: 0x%02x\n", bl, (unsigned char)q->sendbuf[bl]);
+    q->sendbuf[bl] = '\0';
     memset(qn, 0, sizeof(qn));
     int n = snprintf(qn, sizeof(qn), "%.*s.%s.", (int)dl, (char *)q->sendbuf, domain);
     if (n < 0 || (size_t)n >= sizeof(qn)) {

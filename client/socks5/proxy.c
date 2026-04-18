@@ -302,6 +302,7 @@ static void on_socks5_read(uv_stream_t *s, ssize_t nread, const uv_buf_t *buf) {
     }
 
     if (nread == 0) {
+        LOG_INFO("AUDIT: Silence detected (nread == 0). Triggering premature CLOSE.\n");
         if (c->state == 2 && !uv_is_closing((uv_handle_t*)s))
             uv_close((uv_handle_t*)s, on_socks5_close);
         return;
