@@ -298,6 +298,7 @@ void send_mtu_handshake(int session_idx) {
      * Protocol overhead: 4 (Hdr) + 2 (Ack) + 1 (ESI) = 7.
      * We add a 20-byte safety buffer for restrictive character-count limits.
      */
+    uint16_t min_mtu = rpool_get_min_upstream_mtu(&g_pool);
     int bootstrap_mtu = (int)min_mtu - 20;
     if (bootstrap_mtu < 64) bootstrap_mtu = 64;
 
