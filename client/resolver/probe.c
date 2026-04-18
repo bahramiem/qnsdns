@@ -305,8 +305,10 @@ int build_test_dns_query(uint8_t *outbuf, size_t *outlen, const char *domain, ui
     if (test_type == PROBE_TEST_LONGNAME) {
         char labels[256];
         int pos = 0;
+        /* Use 'qtest-' prefix to ensure server doesn't misidentify as tunnel packet */
+        strcpy(labels, "qtest-"); pos = (int)strlen(labels);
         for (int i=0; i<3; i++) {
-            for (int j=0; j<63; j++) labels[pos++] = 'a';
+            for (int j=0; j<(63 - (i==0?6:0)); j++) labels[pos++] = 'z';
             labels[pos++] = '.';
         }
         labels[pos] = '\0';
@@ -383,8 +385,9 @@ int build_mtu_test_query(uint8_t *buf, size_t *outlen, const char *domain, uint1
         if (!raw) return -1;
         memset(raw, 0, effective_mtu);
 
-        /* Mandatory Header (SID=0, Flags=0, SEQ=0) to identify as non-tunnel */
+        /* Mandatory Header (SID=0, Flags=0, SEQ=0, Magic=514E) to identify as non-tunnel */
         query_header_t qh = {0};
+        qh.magic = DNSTUN_MAGIC; // Alignment shield
         memcpy(raw, &qh, hdr_sz);
 
         /* Fill remainder with random data */

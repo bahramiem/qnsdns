@@ -49,7 +49,7 @@ void config_defaults(dnstun_config_t *cfg, bool is_server) {
     cfg->idle_timeout_sec     = 120;
     cfg->downstream_mtu      = 220;
     cfg->fec_k               = 10;
-    cfg->fec_n               = 15;
+    cfg->fec_n               = 20;
     cfg->chunk_payload       = 110;
     cfg->socks5_idle_timeout  = 60;
 
