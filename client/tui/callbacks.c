@@ -56,6 +56,11 @@ void on_poll_timer(uv_timer_t *t) {
         session_t *s = &g_sessions[i];
         if (s->closed || !s->established) continue;
 
+        if (s->send_len > 0) {
+            LOG_INFO("Session %u: Poll (buffered=%zu established=%d synced=%d tx_next=%u tx_acked=%u)\n", 
+                     s->session_id, s->send_len, s->established, s->fec_synced, s->tx_next, s->tx_acked);
+        }
+
         /* Retransmission Rewind */
         if (s->send_len > 0 && s->tx_next > s->tx_acked) {
             if (s->last_ack_time > 0 && (now - s->last_ack_time > 5)) {
@@ -79,15 +84,10 @@ void on_poll_timer(uv_timer_t *t) {
             }
         } else {
             /* Data Burst (Resume Logic) */
-            size_t take = (s->send_len > (size_t)chunk_size) ? (size_t)chunk_size : s->send_len;
+            size_t take = (s->send_len > (size_t)DNSTUN_CHUNK_PAYLOAD) ? (size_t)DNSTUN_CHUNK_PAYLOAD : s->send_len;
             int K = (s->cl_fec_k > 0) ? (int)s->cl_fec_k : 10;
             int N = (s->cl_fec_n > 0) ? (int)s->cl_fec_n : 15;
             size_t sym_size = DNSTUN_CHUNK_PAYLOAD;
-
-            if (g_cfg.log_level >= 3) {
-                LOG_DEBUG("Session %u: Poll Tick (buffered=%zu established=%d syn=%d)\n", 
-                          s->session_id, s->send_len, s->established, s->fec_synced);
-            }
 
             if (g_cfg.log_level >= 2 && s->send_len > 0) {
                 LOG_INFO("Session %u: Preparing FEC for %zu bytes (K=%d N=%d)\n", 

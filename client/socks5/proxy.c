@@ -120,7 +120,6 @@ static size_t socks5_handle_data(socks5_client_t *c, const uint8_t *data, size_t
             uint8_t nmethods = data[1];
             size_t greeting_len = 2 + nmethods;
             if (len >= greeting_len) {
-                bool no_auth_supported = false;
                 for (int i = 0; i < nmethods; i++) {
                     if (data[2 + i] == 0x00) { no_auth_supported = true; break; }
                 }
@@ -128,13 +127,14 @@ static size_t socks5_handle_data(socks5_client_t *c, const uint8_t *data, size_t
                     uint8_t reply[2] = {0x05, 0x00};
                     socks5_send(c, reply, 2);
                     c->state = 1;
+                    LOG_INFO("  [SOCKS5] Auth NO_AUTH sent, state -> COMMAND (1)\n");
                 } else {
                     uint8_t reply[2] = {0x05, 0xFF};
                     socks5_send(c, reply, 2);
+                    LOG_WARN("  [SOCKS5] No supported auth methods\n");
                     uv_close((uv_handle_t*)&c->tcp, on_socks5_close);
                 }
                 return greeting_len;
-            }
         }
         return 0;
     }
@@ -162,9 +162,11 @@ static size_t socks5_handle_data(socks5_client_t *c, const uint8_t *data, size_t
         if (data[1] != 0x01) {
             uint8_t err[10] = {0x05, 0x07, 0x00, 0x01, 0,0,0,0,0,0};
             socks5_send(c, err, 10);
+            LOG_WARN("  [SOCKS5] Unsupported command 0x%x\n", data[1]);
             uv_close((uv_handle_t*)&c->tcp, on_socks5_close);
             return min_len;
         }
+        LOG_INFO("  [SOCKS5] Command 0x%x (CONNECT) received for state -> PENDING\n", data[1]);
 
         int session_idx = -1;
         for (int i = 0; i < DNSTUN_MAX_SESSIONS; i++) {

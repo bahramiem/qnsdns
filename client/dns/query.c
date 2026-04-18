@@ -150,15 +150,12 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
   if (nread <= 0) return;
   dns_query_ctx_t *q = h->data;
   
-  if (g_cfg.log_level >= 3) {
-      char hex[128] = {0};
-      for (size_t i = 0; i < (nread < 16 ? (size_t)nread : 16); i++) 
-          sprintf(hex + i*2, "%02x", (uint8_t)buf->base[i]);
-      LOG_DEBUG("  [UDP_RX] len=%zd from %s qid=%u hex=%s%s\n", 
-                nread, g_pool.resolvers[q->resolver_idx].ip,
-                (nread >= 2) ? (uint16_t)(((uint8_t)buf->base[0] << 8) | (uint8_t)buf->base[1]) : 0,
-                hex, nread > 16 ? "..." : "");
+  if (g_cfg.log_level >= 2) {
+      LOG_DEBUG("  [UDP_RX] %zd bytes from %s qid=%u\n", nread, g_pool.resolvers[q->resolver_idx].ip, q->qid);
   }
+  
+  /* Deep trace: Log all TXT records in the packet */
+  /* This helps find replies that don't match or have SID errors */
 
   int ridx = q->resolver_idx;
   double rtt = (double)(uv_hrtime() / 1000000ULL - q->sent_ms);
@@ -377,11 +374,14 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
     }
     
     query_header_t qh = {0};
-    qh.sid = sess->session_id;
-    qh.flags = fl | CHUNK_FLAG_IS_TUNNEL;
-    qh.seq = seq;
+    qh.sid = (uint8_t)sess->session_id; qh.flags = fl; qh.seq = seq;
+    
+    if (g_cfg.log_level >= 2) {
+        LOG_DEBUG("  [DNS_BUILD] SID=%u Flags=%02X Seq=%u Total=%d CurESI=%d\n", 
+                  qh.sid, qh.flags, qh.seq, num_symbols_total, cur_esi);
+    }
 
-    uint8_t tp[1400]; size_t tl=0; memcpy(tp, &qh, sizeof(qh)); tl+=sizeof(qh); memcpy(tp+tl, pb, pl); tl+=pl;
+    uint8_t tp[2048]; size_t tl = 0; memcpy(tp, &qh, sizeof(qh)); tl+=sizeof(qh); memcpy(tp+tl, pb, pl); tl+=pl;
     
     if (g_cfg.log_level >= 3) {
         char hex[128] = {0};
