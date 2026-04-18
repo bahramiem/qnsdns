@@ -78,5 +78,6 @@ int  rpool_swarm_merge(resolver_pool_t *pool, const char **ips, int count);
 /* Get human-readable name/IP of a resolver */
 const char* rpool_get_name(resolver_pool_t *pool, int idx);
 uint16_t    rpool_get_min_upstream_mtu(resolver_pool_t *pool);
+bool        rpool_any_unverified(resolver_pool_t *pool);
 
 #endif /* DNSTUN_RESOLVER_POOL_H */

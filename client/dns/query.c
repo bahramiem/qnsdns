@@ -309,16 +309,28 @@ void send_mtu_handshake(int session_idx) {
      *    - 8 bytes : Safe margin for Base32 dotify and resolver quirks
      */
     uint16_t min_mtu = rpool_get_min_upstream_mtu(&g_pool);
-    size_t overhead = sizeof(query_header_t) + 2 + 1 + 8;
+    size_t overhead = sizeof(query_header_t) + 2 + 1 + 11;
     
     int best_symbol = (int)min_mtu - (int)overhead;
-    if (best_symbol < 16)  best_symbol = 16;  /* reasonable minimum */
-    if (best_symbol > 110) best_symbol = 110; /* clamp to original max */
+    
+    if (g_cfg.log_level >= 2) {
+        LOG_DEBUG("Scaling: bottleneck_mtu=%u overhead=%zu predicted_symbol=%d\n", min_mtu, overhead, best_symbol);
+    }
+     * If any active resolvers are still unverified (searching for MTU),
+     * we use a hyper-safe 32-byte symbol size to guarantee connection boot.
+     */
+    if (rpool_any_unverified(&g_pool) && best_symbol > 32) {
+        LOG_INFO("Session %d: Bootstrapping with conservative symbols (32 bytes) until MTU verified\n", session_idx);
+        best_symbol = 32;
+    }
+    
+    if (best_symbol < 16)  best_symbol = 16;  
+    if (best_symbol > 110) best_symbol = 110; 
 
     handshake_packet_t hs = {0};
     hs.version = DNSTUN_VERSION; 
     hs.upstream_mtu = htons(min_mtu); 
-    hs.downstream_mtu = htons(220); 
+    hs.downstream_mtu = htons((uint16_t)g_cfg.downstream_mtu); 
     hs.fec_k = htons((uint16_t)g_cfg.fec_k); 
     hs.fec_n = htons((uint16_t)g_cfg.fec_n); 
     hs.symbol_size = htons((uint16_t)best_symbol); 

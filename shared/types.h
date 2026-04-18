@@ -142,6 +142,8 @@ typedef struct resolver {
     /* Background recovery */
     time_t             last_probe;
 
+    bool               mtu_verified;   /* true if binary search successfully found an optimal value */
+
     /* Swarm */
     bool               from_swarm;     /* added by server swarm sync */
 

@@ -53,7 +53,7 @@ int rpool_add(resolver_pool_t *pool, const char *ip) {
     r->state          = RSV_DEAD; /* start in dead; testing promotes it */
     r->cwnd           = pool->cfg->cwnd_init;
     r->cwnd_max       = pool->cfg->cwnd_max;
-    r->upstream_mtu   = 220;  /* conservative default */
+    r->upstream_mtu   = 128;  /* conservative default for bootstrap */
     r->downstream_mtu = 512;
     r->loss_rate      = 0.0;
     r->fec_k          = 10;
@@ -350,4 +350,21 @@ uint16_t rpool_get_min_upstream_mtu(resolver_pool_t *pool) {
     }
 
     return min_mtu;
+}
+
+bool rpool_any_unverified(resolver_pool_t *pool) {
+    if (!pool) return true;
+    uv_mutex_lock(&pool->lock);
+    bool unv = false;
+    for (int i = 0; i < pool->active_count; i++) {
+        int idx = pool->active[i];
+        if (idx >= 0 && idx < pool->count && !pool->resolvers[idx].mtu_verified) {
+            unv = true;
+            break;
+        }
+    if (unv && pool->cfg->log_level >= 2) {
+        LOG_DEBUG("Pool contains unverified active resolvers (e.g. %s)\n", pool->active_count > 0 ? pool->resolvers[pool->active[0]].ip : "none");
+    }
+    uv_mutex_unlock(&pool->lock);
+    return unv;
 }

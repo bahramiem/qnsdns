@@ -351,142 +351,123 @@ int build_test_dns_query(uint8_t *outbuf, size_t *outlen, const char *domain, ui
 }
 
 int build_mtu_test_query(uint8_t *buf, size_t *outlen, const char *domain, uint16_t id, int target_mtu, probe_test_type_t test_type) {
-    size_t offset = 0;
+    if (!buf || !outlen || *outlen < 512) return -1;
     size_t bufsize = *outlen;
+    size_t offset = 0;
     bool is_upload = (test_type == PROBE_TEST_MTU_UP);
-    const char *p;
-    size_t label_len;
 
     /* DNS Header (12 bytes) */
     buf[offset++] = (id >> 8) & 0xFF;
     buf[offset++] = id & 0xFF;
     buf[offset++] = 0x01;               /* Flags: RD = 1 */
     buf[offset++] = 0x00;
-    buf[offset++] = 0x00;               /* QDCOUNT */
+    buf[offset++] = 0x00;               /* QDCOUNT = 1 */
     buf[offset++] = 0x01;
-    buf[offset++] = 0x00;               /* ANCOUNT */
+    buf[offset++] = 0x00;               /* ANCOUNT = 0 */
     buf[offset++] = 0x00;
-    buf[offset++] = 0x00;               /* NSCOUNT */
+    buf[offset++] = 0x00;               /* NSCOUNT = 0 */
     buf[offset++] = 0x00;
-    buf[offset++] = 0x00;               /* ARCOUNT */
-    buf[offset++] = 0x01;               /* 1 if EDNS */
+    buf[offset++] = 0x00;               /* ARCOUNT = 1 (EDNS) */
+    buf[offset++] = 0x01;
 
     if (is_upload && target_mtu > 0) {
-        size_t domain_len = strlen(domain);
-        size_t label_count = 0;
-        p = domain;
-        while (*p) {
-            const char *dot = strchr(p, '.');
-            if (!dot) dot = p + strlen(p);
-            if (dot > p) label_count++;
-            if (!*dot) break;
-            p = dot + 1;
-        }
-        /* Base QNAME bytes: 2 (separator label: len=1, 'x') + encoded domain size + 1 (terminator).
-         * Encoded domain size = sum(label_lengths) + number_of_labels, i.e., domain_len + label_count.
-         * Thus: base = 2 + (domain_len + label_count) + 1 = domain_len + label_count + 3.
-         * Previous code incorrectly used: 1 + domain_len + 2 = domain_len + 3 (missing label_count).
-         * The missing label_count bytes caused systematic underestimation of upload MTU.
+        /* 
+         * DECODED PAYLOAD CENTRIC PROBING:
+         * We pack exactly 'target_mtu' bytes into a raw buffer and then Base32 encode it.
+         * Effective minimum is sizeof(query_header_t).
          */
-        size_t base_qname_bytes = 2 + domain_len + label_count + 1;
-        size_t overhead = 12 + 4 + 11 + base_qname_bytes;
-        size_t padding_needed = (target_mtu > (int)overhead) ? (target_mtu - (int)overhead) : 0;
+        size_t hdr_sz = sizeof(query_header_t);
+        uint16_t effective_mtu = (target_mtu < (int)hdr_sz) ? (uint16_t)hdr_sz : (uint16_t)target_mtu;
+        
+        uint8_t *raw = malloc(effective_mtu);
+        if (!raw) return -1;
+        memset(raw, 0, effective_mtu);
 
-        /* Add Protocol Header (SID=0, Flags=0, SEQ=0) to identify as non-tunnel */
-        query_header_t qh = {0}; 
-        qh.sid = 0; qh.flags = 0; qh.seq = 0;
-        char hs_b32[16];
-        base32_encode(hs_b32, (uint8_t*)&qh, sizeof(qh));
-        
-        size_t hs_len = strlen(hs_b32);
-        buf[offset++] = (uint8_t)hs_len;
-        memcpy(buf + offset, hs_b32, hs_len);
-        offset += hs_len;
-        
-        /* Padding follows */
-        static const char b32_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-        while (padding_needed > (int)hs_len) {
-            padding_needed -= hs_len; /* account for header already added */
-            label_len = (padding_needed > 63) ? 63 : padding_needed;
-            if (offset + 1 + label_len + 1 > bufsize - 64) break;
-            buf[offset++] = (uint8_t)label_len;
-            for (size_t i = 0; i < label_len; i++) {
-                buf[offset++] = b32_chars[rand() % 32];
-            }
-            padding_needed -= label_len;
+        /* Mandatory Header (SID=0, Flags=0, SEQ=0) to identify as non-tunnel */
+        query_header_t qh = {0};
+        memcpy(raw, &qh, hdr_sz);
+
+        /* Fill remainder with random data */
+        if (effective_mtu > hdr_sz) {
+            for (size_t i = hdr_sz; i < effective_mtu; i++) raw[i] = (uint8_t)(rand() % 256);
         }
 
-        /* Add separator between padding labels and domain (old code added 0x2e as separator) */
-        buf[offset++] = 0x01;  /* Single-character label */
-        buf[offset++] = 'x';    /* Separator label "x" */
+        /* Base32 encode */
+        char *b32_payload = malloc(effective_mtu * 2 + 8);
+        if (!b32_payload) { free(raw); return -1; }
+        size_t b32_len = base32_encode((uint8_t*)b32_payload, raw, effective_mtu);
+        b32_payload[b32_len] = '\0';
+        free(raw);
 
-        p = domain;
-        while (*p) {
-            const char *dot = strchr(p, '.');
-            if (!dot) dot = p + strlen(p);
-            label_len = dot - p;
-            if (offset + label_len + 1 > bufsize - 64) break;
+        /* Split into DNS labels */
+        size_t b32_pos = 0;
+        while (b32_pos < b32_len) {
+            size_t label_len = (b32_len - b32_pos > 63) ? 63 : (b32_len - b32_pos);
+            if (offset + 1 + label_len > bufsize - 128) break;
             buf[offset++] = (uint8_t)label_len;
-            memcpy(buf + offset, p, label_len);
+            memcpy(buf + offset, b32_payload + b32_pos, label_len);
             offset += label_len;
-            p = dot;
-            if (*p) p++;
+            b32_pos += label_len;
         }
-    } else if (!is_upload && target_mtu > 0) {
-        char prefix[32];
-        snprintf(prefix, sizeof(prefix), "mtu-req-%d", target_mtu);
+        free(b32_payload);
+
+        /* Add separator 'x' */
+        if (offset + 2 < bufsize - 128) {
+            buf[offset++] = 0x01;
+            buf[offset++] = 'x';
+        }
         
-        size_t prefix_len = strlen(prefix);
-        buf[offset++] = (uint8_t)prefix_len;
-        memcpy(buf + offset, prefix, prefix_len);
-        offset += prefix_len;
-        
-        const char *p = domain;
-        while (*p) {
-            const char *dot = strchr(p, '.');
-            if (!dot) dot = p + strlen(p);
-            size_t label_len = dot - p;
-            if (offset + label_len + 1 > bufsize - 64) break;
+        /* Add domain */
+        const char *d_ptr = domain;
+        while (*d_ptr) {
+            const char *dot = strchr(d_ptr, '.');
+            if (!dot) dot = d_ptr + strlen(d_ptr);
+            size_t label_len = dot - d_ptr;
+            if (offset + 1 + label_len > bufsize - 128) break;
             buf[offset++] = (uint8_t)label_len;
-            memcpy(buf + offset, p, label_len);
+            memcpy(buf + offset, d_ptr, label_len);
             offset += label_len;
-            p = dot;
-            if (*p) p++;
+            d_ptr = dot;
+            if (*d_ptr) d_ptr++;
         }
     } else {
-        const char *p = domain;
-        while (*p) {
-            const char *dot = strchr(p, '.');
-            if (!dot) dot = p + strlen(p);
-            size_t label_len = dot - p;
-            if (offset + label_len + 1 > bufsize - 64) break;
+        /* Non-upload or simple probe */
+        char prefix[64];
+        if (target_mtu > 0) snprintf(prefix, sizeof(prefix), "mtu-req-%d", target_mtu);
+        else snprintf(prefix, sizeof(prefix), "probe-%u", id);
+        
+        size_t plen = strlen(prefix);
+        buf[offset++] = (uint8_t)plen;
+        memcpy(buf + offset, prefix, plen);
+        offset += plen;
+        
+        const char *d_ptr = domain;
+        while (*d_ptr) {
+            const char *dot = strchr(d_ptr, '.');
+            if (!dot) dot = d_ptr + strlen(d_ptr);
+            size_t label_len = dot - d_ptr;
+            if (offset + 1 + label_len > bufsize - 128) break;
             buf[offset++] = (uint8_t)label_len;
-            memcpy(buf + offset, p, label_len);
+            memcpy(buf + offset, d_ptr, label_len);
             offset += label_len;
-            p = dot;
-            if (*p) p++;
+            d_ptr = dot;
+            if (*d_ptr) d_ptr++;
         }
     }
-    
-    buf[offset++] = 0;
 
-    buf[offset++] = 0x00;  /* QTYPE: TXT (16) */
-    buf[offset++] = 0x10;
-    buf[offset++] = 0x00;  /* QCLASS: IN */
-    buf[offset++] = 0x01;
+    buf[offset++] = 0; /* QNAME Term */
+    buf[offset++] = 0x00; buf[offset++] = 0x10; /* TXT */
+    buf[offset++] = 0x00; buf[offset++] = 0x01; /* IN */
 
-    buf[offset++] = 0x00;           
-    buf[offset++] = 0x00;           
-    buf[offset++] = 0x29;
-    uint16_t udp_size = (target_mtu > 0 && target_mtu < 1400) ? (uint16_t)target_mtu : 1232;
-    buf[offset++] = (udp_size >> 8) & 0xFF;
-    buf[offset++] = udp_size & 0xFF;
-    buf[offset++] = 0x00;           
-    buf[offset++] = 0x00;
-    buf[offset++] = 0x00;
-    buf[offset++] = 0x00;
-    buf[offset++] = 0x00;           
-    buf[offset++] = 0x00;
+    /* EDNS */
+    buf[offset++] = 0x00; buf[offset++] = 0x00; buf[offset++] = 0x29; 
+    buf[offset++] = 0x04; buf[offset++] = 0xD0; /* 1232 */
+    buf[offset++] = 0x00; buf[offset++] = 0x00; buf[offset++] = 0x00;
+    buf[offset++] = 0x00; buf[offset++] = 0x00; buf[offset++] = 0x00;
+
+    if (g_cfg.log_level >= 3 && is_upload) {
+        LOG_DEBUG("[MTU] Build query for %d-byte decoded payload\n", target_mtu);
+    }
 
     *outlen = offset;
     return 0;

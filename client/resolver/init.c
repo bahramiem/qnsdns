@@ -230,6 +230,7 @@ void resolver_init_phase(void) {
         r->true_upstream_mtu = 50;
       
       r->upstream_mtu = r->true_upstream_mtu;
+      r->mtu_verified = (results[i].up_mtu_search.optimal > 0);
       if (g_cfg.max_upload_mtu > 0 && r->upstream_mtu > g_cfg.max_upload_mtu)
           r->upstream_mtu = g_cfg.max_upload_mtu;
 
