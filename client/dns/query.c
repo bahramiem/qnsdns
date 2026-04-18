@@ -49,48 +49,28 @@ void on_socks5_close(uv_handle_t *h);
 /* Random 16-bit number for DNS transaction IDs */
 static uint16_t rand_u16(void) { return (uint16_t)(rand() & 0xFFFF); }
 
-/* Diagnostic hex logger */
-static void log_diag_hex(const char *prefix, const uint8_t *data, size_t len) {
-    char hex[1024] = {0};
-    size_t dlen = (len < 512) ? len : 512;
-    for (size_t i = 0; i < dlen; i++) {
-        sprintf(hex + i*2, "%02x", data[i]);
-    }
-    LOG_INFO("DIAG: %s (len=%zu): %s%s\n", prefix, len, hex, len > 512 ? "..." : "");
-}
-
 /* ────────────────────────────────────────────── */
 /*  Inline Dotify                                 */
 /* ────────────────────────────────────────────── */
 
 size_t inline_dotify(char *buf, size_t buflen, size_t len) {
-  if (len == 0) {
-    if (buflen > 0) buf[0] = '\0';
-    return 0;
-  }
-  size_t dots = len / 57;
+  if (len == 0) return 0;
+  size_t dots = (len - 1) / 57;
   size_t new_len = len + dots;
-  LOG_INFO("DIAG: dotify start len=%zu dots=%zu expected_new_len=%zu\n", len, dots, new_len);
-  
   if (new_len + 1 > buflen) return (size_t)-1;
+
   buf[new_len] = '\0';
-  char *src = buf + len - 1;
-  char *dst = buf + new_len - 1;
-  size_t next_dot = len - (len % 57);
-  if (next_dot == len) next_dot = len - 57;
-  size_t current_pos = len;
-  while (current_pos > 0) {
-    if (current_pos == next_dot && dots > 0) {
-      LOG_DEBUG("DIAG: dotify insert dot at dst_pos=%zu (dots left=%zu)\n", (size_t)(dst - buf), dots);
-      *dst-- = '.';
-      next_dot -= 57;
-      dots--;
-      continue;
-    }
-    *dst-- = *src--;
-    current_pos--;
+  
+  /* Use temporary buffer to guarantee correctness for all label boundaries */
+  char tmp[2048];
+  if (new_len >= sizeof(tmp)) return (size_t)-1;
+  
+  size_t s = 0, d = 0;
+  while (s < len) {
+    if (s > 0 && s % 57 == 0) tmp[d++] = '.';
+    tmp[d++] = buf[s++];
   }
-  LOG_INFO("DIAG: dotify end final_len=%zu string='%.16s...'\n", new_len, buf);
+  memcpy(buf, tmp, new_len);
   return new_len;
 }
 
@@ -313,38 +293,23 @@ void send_mtu_handshake(int session_idx) {
     session_t *s = &g_sessions[session_idx];
     
     /* 
-     * PROGRAMMATIC OVERHEAD CALCULATION:
-     * - sizeof(query_header_t) : 4 bytes (SID, Flags, SEQ)
-     * - 2 bytes : compact ACK prepended to DATA/FEC
-     * - 1 byte  : ESI prepended to FEC symbol
-     * - 22 bytes: Safety padding for Base32 dotify and resolver wire-format quirks
+     * MTU OVERHEAD CALCULATION WITH SAFETY MARGIN:
+     * We need: base32_chars + dots + protocol_overhead < min_mtu.
+     * Protocol overhead: 4 (Hdr) + 2 (Ack) + 1 (ESI) = 7.
+     * We add a 20-byte safety buffer for restrictive character-count limits.
      */
-    uint16_t min_mtu = rpool_get_min_upstream_mtu(&g_pool);
-    /* 
-     * PROGRAMMATIC OVERHEAD CALCULATION:
-     * - sizeof(query_header_t) : 4 bytes (SID, Flags, SEQ)
-     * - 2 bytes : compact ACK prepended to DATA/FEC
-     * - 1 byte  : ESI prepended to FEC symbol
-     * - 30 bytes: Safety margin for Base32 dotify and resolver wire-format quirks
-     */
-    size_t overhead = sizeof(query_header_t) + 2 + 1;
-    
-    int best_symbol = (int)min_mtu - (int)overhead;
-    
-    /* Dot-aware MTU adjustment:
-     * Each dot added by inline_dotify adds 1 byte to the QNAME.
-     * Labels are 57 chars. Overhead is roughly 1/57th of the Base32 length.
-     * Base32 length is roughly (best_symbol + overhead) * 8 / 5.
-     */
-    int b32_len = (int)((best_symbol + (int)overhead) * 1.6);
-    int dot_overhead = (b32_len / 57) + 1;
-    best_symbol -= dot_overhead;
+    int bootstrap_mtu = (int)min_mtu - 20;
+    if (bootstrap_mtu < 64) bootstrap_mtu = 64;
 
-    if (g_cfg.log_level >= 2) {
-        LOG_INFO("DIAG: Scaling bottleneck_mtu=%u overhead=%zu dots=%d predicted_symbol=%d\n", 
-                  min_mtu, overhead, dot_overhead, best_symbol);
-        LOG_INFO("DIAG: B32_len=%d dot_overhead=%d total_predicted_qname=%d\n",
-                  b32_len, dot_overhead, b32_len + dot_overhead);
+    size_t protocol_overhead = sizeof(query_header_t) + 2 + 1;
+    int best_symbol = g_cfg.chunk_payload;
+    
+    while (best_symbol > 16) {
+        size_t raw_len = protocol_overhead + best_symbol;
+        size_t b32_len = (raw_len * 8 + 4) / 5;
+        size_t dots = (b32_len > 0) ? (b32_len - 1) / 57 : 0;
+        if (b32_len + dots < (size_t)bootstrap_mtu) break;
+        best_symbol -= 8;
     }
     
     /* ADAPTIVE BOOTSTRAP:
@@ -452,10 +417,6 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
 
     uint8_t tp[2048]; size_t tl = 0; memcpy(tp, &qh, sizeof(qh)); tl+=sizeof(qh); memcpy(tp+tl, pb, pl); tl+=pl;
     
-    if (g_cfg.log_level >= 1) {
-        log_diag_hex("PRE_B32_PAYLOAD", tp, tl);
-    }
-    
     if (g_cfg.log_level >= 3) {
         char hex[128] = {0};
         for (size_t i = 0; i < (tl < 16 ? tl : 16); i++) sprintf(hex + i*2, "%02x", tp[i]);
@@ -519,7 +480,6 @@ int fire_dns_multi_symbols(int session_idx, uint16_t seq,
     memcpy(q->sendbuf, q->recvbuf, pktsz); q->sendlen = pktsz;
     uv_timer_init(g_loop, &q->timer); q->timer.data = q; uv_timer_start(&q->timer, on_dns_timeout, 8000, 0); uv_udp_recv_start(&q->udp, on_dns_alloc, on_dns_recv);
     q->sent_ms = uv_hrtime()/1000000ULL; uv_buf_t b = uv_buf_init((char *)q->sendbuf, (unsigned)pktsz);
-    log_diag_hex("WIRE_TX", q->sendbuf, pktsz);
     if (uv_udp_send(&q->send_req, &q->udp, &b, 1, (const struct sockaddr *)&r->addr, on_dns_send) != 0) { uv_close((uv_handle_t *)&q->udp, on_dns_query_close); uv_close((uv_handle_t *)&q->timer, on_dns_query_close); continue; }
     r->last_query_ms = q->sent_ms; 
     symbols_sent_this_call += (to_pack > 0 ? to_pack : 1); 

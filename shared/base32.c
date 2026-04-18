@@ -107,6 +107,7 @@ ptrdiff_t base32_decode(uint8_t *out, const char *in, size_t inlen) {
 
     for (size_t i = 0; i < inlen; i++) {
         if (in[i] == '=' || in[i] == '\0') break;
+        if (in[i] == '.') continue;
         int v = b32_val(in[i]);
         if (v < 0) return -1;
         buf = (buf << 5) | (uint64_t)v;
