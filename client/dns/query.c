@@ -58,25 +58,20 @@ size_t inline_dotify(char *buf, size_t buflen, size_t len) {
     if (buflen > 0) buf[0] = '\0';
     return 0;
   }
-  size_t dots = len / 57;
+  size_t dots = (len - 1) / 63;
   size_t new_len = len + dots;
   if (new_len + 1 > buflen) return (size_t)-1;
   buf[new_len] = '\0';
   char *src = buf + len - 1;
   char *dst = buf + new_len - 1;
-  size_t next_dot = len - (len % 57);
-  if (next_dot == len) next_dot = len - 57;
-  size_t current_pos = len;
-  while (current_pos > 0) {
-    if (current_pos == next_dot && dots > 0) {
+  int count = 0;
+  while (src >= buf) {
+    if (count > 0 && count % 63 == 0 && dots > 0) {
       *dst-- = '.';
-      next_dot -= 57;
-      current_pos--;
       dots--;
-      continue;
     }
     *dst-- = *src--;
-    current_pos--;
+    count++;
   }
   return new_len;
 }
