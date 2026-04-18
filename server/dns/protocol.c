@@ -73,6 +73,13 @@ int build_txt_reply_naked(uint8_t *outbuf, size_t *outlen,
     q.type = RR_TXT;
     q.class = CLASS_IN;
 
+    dns_answer_t edns = {0};
+    edns.opt.name = (char *)".";
+    edns.opt.type = RR_OPT;
+    edns.opt.udp_payload = 4096;
+    edns.opt.ttl = 0;
+    edns.opt.version = 0;
+
     dns_query_t resp = {0};
     resp.id = query_id;
     resp.query = false;
@@ -80,9 +87,10 @@ int build_txt_reply_naked(uint8_t *outbuf, size_t *outlen,
     resp.ra = true;
     resp.qdcount = 1;
     resp.ancount = 1;
-    resp.arcount = 0;
+    resp.arcount = 1;
     resp.questions = &q;
     resp.answers = &ans;
+    resp.additional = &edns;
 
     size_t sz = *outlen;
     dns_rcode_t rc = dns_encode((dns_packet_t *)outbuf, &sz, &resp);

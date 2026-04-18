@@ -153,7 +153,8 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
   rpool_on_ack(&g_pool, ridx, rtt);
   dns_decoded_t decoded[DNS_DECODEBUF_4K];
   size_t decsz = sizeof(decoded);
-  if (dns_decode(decoded, &decsz, (const dns_packet_t *)buf->base, (size_t)nread) == RCODE_OKAY) {
+  dns_rcode_t rc = dns_decode(decoded, &decsz, (const dns_packet_t *)buf->base, (size_t)nread);
+  if (rc == RCODE_OKAY) {
     dns_query_t *resp = (dns_query_t *)decoded;
     for (int i = 0; i < (int)resp->ancount; i++) {
         dns_answer_t *ans = &resp->answers[i];
@@ -209,7 +210,7 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
                     s->socks5_connected = true;
                     s->socks5_pending_ok = false;
                 }
-                return;
+                continue; 
             } else {
                 LOG_DEBUG("  [HANDSHAKE] Potential echo rejected: version mismatch (recv %u, expected %u)\n",
                           echo->version, DNSTUN_VERSION);
@@ -217,6 +218,8 @@ static void on_dns_recv(uv_udp_t *h, ssize_t nread, const uv_buf_t *buf,
         }
 
         /* Data Processing */
+        if (paylen == 0) continue;
+
         bool has_seq = (resp_hdr.flags & RESP_FLAG_HAS_SEQ) != 0;
         uint16_t seq = has_seq ? resp_hdr.seq : 0;
         if (has_seq) {
