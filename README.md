@@ -1,3 +1,10 @@
+Not Working now
+
+
+
+
+
+
 # qnsdns: High-Performance DNS Tunnel VPN 🚀
 
 **qnsdns** (also referred to as `dnstun`) is a cutting-edge SOCKS5 proxy that encapsulates all your real web traffic inside standard DNS queries. It is meticulously engineered for speed, absolute reliability, and evading Deep Packet Inspection (DPI) in heavily restricted environments.
